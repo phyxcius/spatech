@@ -6,6 +6,8 @@ export class ApiError extends Error {
   }
 }
 
+const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
 export async function apiFetch<T>(
   path: string,
   options: {
@@ -15,7 +17,8 @@ export async function apiFetch<T>(
   } = {}
 ): Promise<T> {
   const { method = 'GET', body, token } = options;
-  const res = await fetch(path, {
+  const targetUrl = path.startsWith('/') && API_BASE ? `${API_BASE}${path}` : path;
+  const res = await fetch(targetUrl, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -24,7 +27,15 @@ export async function apiFetch<T>(
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 
+  const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
+  if (!res.ok && res.status === 404 && contentType.includes('text/html')) {
+    throw new ApiError(
+      404,
+      'El servidor backend (/api) no está disponible en este hosting estático. Despliega la app en Node.js (npm run build && npm start) o configura VITE_API_BASE_URL.'
+    );
+  }
+
   let parsed: any = {};
   try {
     parsed = text ? JSON.parse(text) : {};
