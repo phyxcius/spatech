@@ -4,7 +4,7 @@ import { AdminPanel } from './components/AdminPanel.tsx';
 import { BusinessPanel } from './components/BusinessPanel.tsx';
 import { ClientPortal } from './components/ClientPortal.tsx';
 import { OrderTracking } from './components/OrderTracking.tsx';
-import { isStaticHostMode, subscribeStaticMode } from './lib/staticFallback.ts';
+import { isFirebaseRtdbMode, subscribeFirebaseRtdbMode } from './lib/firebaseRtdb.ts';
 import type { PedidoPublico } from './types.ts';
 
 type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'ADMIN';
@@ -15,9 +15,9 @@ export default function App() {
   const [lastOrderCodigo, setLastOrderCodigo] = useState<string | null>(null);
   const [lastOrderPin, setLastOrderPin] = useState<string | null>(null);
   const [assistantSignal, setAssistantSignal] = useState(0);
-  const [staticMode, setStaticMode] = useState(() => isStaticHostMode());
+  const [rtdbMode, setRtdbMode] = useState(() => isFirebaseRtdbMode());
 
-  useEffect(() => subscribeStaticMode(setStaticMode), []);
+  useEffect(() => subscribeFirebaseRtdbMode(setRtdbMode), []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -108,10 +108,10 @@ export default function App() {
         </button>
       </div>
 
-      {staticMode && (
+      {rtdbMode && (
         <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 pt-2">
           <div className="rounded-xl border border-[#D4AF37]/30 bg-[#D4AF37]/10 px-3.5 py-2 text-[11px] text-[#9A7B2C] dark:text-[#E5C158]">
-            Modo catálogo local en GitHub Pages: los pedidos y reservas de esta sesión se guardan en tu navegador.
+            Conectado en tiempo real a Firebase Realtime Database (spatech-b3edf).
           </div>
         </div>
       )}

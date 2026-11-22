@@ -17,6 +17,7 @@ import {
   solicitarRecarga,
   validarPinYEntregar,
 } from './finance.ts';
+import { syncSnapshotToFirebaseRtdb } from './rtdbSync.ts';
 import {
   createRateLimiter,
   createSessionToken,
@@ -53,13 +54,37 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   const app = express();
   app.set('trust proxy', 1);
   app.use((req, res, next) => {
-    const allowedOrigin = process.env.CORS_ORIGIN || '*';
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    const reqOrigin = req.headers.origin;
+    const isAuthRoute = req.path.startsWith('/api/negocio') || req.path.startsWith('/api/admin');
+    const configuredOrigins = (process.env.CORS_ORIGIN || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (reqOrigin) {
+      if (configuredOrigins.includes(reqOrigin)) {
+        res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+        res.setHeader('Vary', 'Origin');
+      } else if (!isAuthRoute) {
+        res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+        res.setHeader('Vary', 'Origin');
+      }
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
+    }
+    next();
+  });
+  app.use('/api', (req, res, next) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      res.on('finish', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          void syncSnapshotToFirebaseRtdb(db);
+        }
+      });
     }
     next();
   });

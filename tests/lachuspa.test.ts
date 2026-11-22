@@ -7,6 +7,7 @@ import { auditarLibroContable, expireStaleOrders } from '../server/finance.ts';
 import { validateProductionEnv } from '../server/security.ts';
 
 async function startTestServer() {
+  process.env.DISABLE_FIREBASE_SYNC = 'true';
   process.env.JWT_SECRET = 'la_chuspa_test_secret_key_with_more_than_32_characters_ok';
   process.env.SUPERADMIN_PIN = '998877';
   process.env.WHATSAPP_VERIFY_TOKEN = 'cusco_wa_verify_token';

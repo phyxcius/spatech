@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createApp } from './server/app.ts';
 import { initDatabase, seedDatabase } from './server/db.ts';
 import { expireStaleOrders } from './server/finance.ts';
+import { syncSnapshotToFirebaseRtdb } from './server/rtdbSync.ts';
 import { validateProductionEnv } from './server/security.ts';
 
 function resolvePort(): number {
@@ -26,6 +27,7 @@ async function bootstrap() {
 
   const db = initDatabase();
   seedDatabase(db);
+  void syncSnapshotToFirebaseRtdb(db);
 
   setInterval(() => {
     try {

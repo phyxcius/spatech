@@ -1,7 +1,7 @@
 import {
-  handleStaticFallback,
-  isStaticHostMode,
-} from './staticFallback.ts';
+  handleFirebaseRtdbRequest,
+  isFirebaseRtdbMode,
+} from './firebaseRtdb.ts';
 
 export class ApiError extends Error {
   status: number;
@@ -23,11 +23,11 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const { method = 'GET', body, token } = options;
 
-  if (!API_BASE && isStaticHostMode() && path.startsWith('/api/')) {
+  if (!API_BASE && isFirebaseRtdbMode() && path.startsWith('/api/')) {
     try {
-      return handleStaticFallback<T>(path, method, body, token);
+      return await handleFirebaseRtdbRequest<T>(path, method, body, token);
     } catch (err) {
-      throw new ApiError(400, err instanceof Error ? err.message : 'Error en modo estático');
+      throw new ApiError(400, err instanceof Error ? err.message : 'Error al conectar con Firebase RTDB');
     }
   }
 
@@ -45,9 +45,9 @@ export async function apiFetch<T>(
   } catch (networkErr) {
     if (!API_BASE && path.startsWith('/api/') && typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
       try {
-        return handleStaticFallback<T>(path, method, body, token);
+        return await handleFirebaseRtdbRequest<T>(path, method, body, token);
       } catch (err) {
-        throw new ApiError(400, err instanceof Error ? err.message : 'Error de red');
+        throw new ApiError(400, err instanceof Error ? err.message : 'Error conectando con Firebase RTDB');
       }
     }
     throw networkErr;
@@ -58,9 +58,9 @@ export async function apiFetch<T>(
   if (!res.ok && (res.status === 404 || res.status === 405) && contentType.includes('text/html')) {
     if (!API_BASE && path.startsWith('/api/')) {
       try {
-        return handleStaticFallback<T>(path, method, body, token);
+        return await handleFirebaseRtdbRequest<T>(path, method, body, token);
       } catch (err) {
-        throw new ApiError(res.status, err instanceof Error ? err.message : 'Acción no disponible en hosting estático');
+        throw new ApiError(res.status, err instanceof Error ? err.message : 'Error consultando Firebase RTDB');
       }
     }
     throw new ApiError(
