@@ -15,7 +15,7 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { apiFetch, speakSpanish } from '../lib/api.ts';
+import { apiFetch, speakSpanish, stopSpeaking } from '../lib/api.ts';
 import {
   formatSoles,
   RUBRO_LABELS,
@@ -71,7 +71,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [gpsStatus, setGpsStatus] = useState<'default' | 'live' | 'denied'>('default');
   const [loading, setLoading] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
-  const [speakReplies, setSpeakReplies] = useState(false);
+  const [speakReplies, setSpeakReplies] = useState(true);
   const [replyText, setReplyText] = useState<string>(
     'Solicita un traslado ejecutivo, guía privado, mesa gourmet o botica 24h en Cusco.'
   );
@@ -158,6 +158,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   async function handleSearch(customQuery?: string, forcedCat?: Rubro, silent = false) {
     const q = (customQuery ?? query).trim();
+    if (!silent && speakReplies && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.resume();
+      } catch {
+        // ignore
+      }
+    }
     setLoading(true);
     setErrorMsg(null);
     try {
@@ -374,9 +381,20 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               <h1 className="font-display text-3xl sm:text-5xl font-semibold tracking-tight text-balance leading-[1.08] text-[#14171F] dark:text-[#F4F1EA]">
                 Movilidad ejecutiva, alta cocina y experiencias curadas en un solo gesto.
               </h1>
-              <p className="text-sm sm:text-base text-[#555B66] dark:text-[#A3A9B5] max-w-2xl leading-relaxed">
-                {replyText}
-              </p>
+              <div className="flex items-start gap-3 max-w-2xl">
+                <p className="text-sm sm:text-base text-[#555B66] dark:text-[#A3A9B5] leading-relaxed flex-1">
+                  {replyText}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => speakSpanish(replyText)}
+                  title="Escuchar respuesta con voz"
+                  aria-label="Escuchar respuesta con voz"
+                  className="min-h-[36px] min-w-[36px] shrink-0 rounded-xl border border-[#D4AF37]/35 bg-[#D4AF37]/10 text-[#9A7B2C] dark:text-[#E5C158] flex items-center justify-center hover:bg-[#D4AF37]/20 transition-colors"
+                >
+                  <Volume2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Buscador protagonista con voz y texto */}
@@ -467,7 +485,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSpeakReplies((v) => !v)}
+                  onClick={() => {
+                    const next = !speakReplies;
+                    setSpeakReplies(next);
+                    if (next) {
+                      speakSpanish(replyText);
+                    } else {
+                      stopSpeaking();
+                    }
+                  }}
                   className={`min-h-[44px] px-3.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                     speakReplies
                       ? 'border-[#D4AF37] text-[#9A7B2C] dark:text-[#E5C158]'

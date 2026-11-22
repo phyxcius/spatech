@@ -1,3 +1,8 @@
+import {
+  handleStaticFallback,
+  isStaticHostMode,
+} from './staticFallback.ts';
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -17,22 +22,50 @@ export async function apiFetch<T>(
   } = {}
 ): Promise<T> {
   const { method = 'GET', body, token } = options;
+
+  if (!API_BASE && isStaticHostMode() && path.startsWith('/api/')) {
+    try {
+      return handleStaticFallback<T>(path, method, body, token);
+    } catch (err) {
+      throw new ApiError(400, err instanceof Error ? err.message : 'Error en modo estático');
+    }
+  }
+
   const targetUrl = path.startsWith('/') && API_BASE ? `${API_BASE}${path}` : path;
-  const res = await fetch(targetUrl, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  let res: Response;
+  try {
+    res = await fetch(targetUrl, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (networkErr) {
+    if (!API_BASE && path.startsWith('/api/') && typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+      try {
+        return handleStaticFallback<T>(path, method, body, token);
+      } catch (err) {
+        throw new ApiError(400, err instanceof Error ? err.message : 'Error de red');
+      }
+    }
+    throw networkErr;
+  }
 
   const contentType = res.headers.get('content-type') || '';
   const text = await res.text();
-  if (!res.ok && res.status === 404 && contentType.includes('text/html')) {
+  if (!res.ok && (res.status === 404 || res.status === 405) && contentType.includes('text/html')) {
+    if (!API_BASE && path.startsWith('/api/')) {
+      try {
+        return handleStaticFallback<T>(path, method, body, token);
+      } catch (err) {
+        throw new ApiError(res.status, err instanceof Error ? err.message : 'Acción no disponible en hosting estático');
+      }
+    }
     throw new ApiError(
-      404,
-      'El servidor backend (/api) no está disponible en este hosting estático. Despliega la app en Node.js (npm run build && npm start) o configura VITE_API_BASE_URL.'
+      res.status,
+      'El servidor backend (/api) no está disponible en este hosting estático. Configura VITE_API_BASE_URL o abre la app en Node.js.'
     );
   }
 
@@ -77,14 +110,85 @@ export function playLuxuryChime(): void {
   }
 }
 
+let cachedVoices: SpeechSynthesisVoice[] = [];
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  const refreshVoices = () => {
+    try {
+      cachedVoices = window.speechSynthesis.getVoices();
+    } catch {
+      cachedVoices = [];
+    }
+  };
+  refreshVoices();
+  window.speechSynthesis.addEventListener?.('voiceschanged', refreshVoices);
+}
+
+function pickGoogleSpanishVoice(): SpeechSynthesisVoice | undefined {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return undefined;
+  const voices = cachedVoices.length > 0 ? cachedVoices : window.speechSynthesis.getVoices();
+  const spanishVoices = voices.filter((v) => v.lang.toLowerCase().startsWith('es'));
+  if (spanishVoices.length === 0) return undefined;
+
+  const scoreVoice = (v: SpeechSynthesisVoice): number => {
+    const name = v.name.toLowerCase();
+    const lang = v.lang.toLowerCase();
+    let score = 0;
+    if (name.includes('google')) score += 100;
+    if (name.includes('natural') || name.includes('neural') || name.includes('online')) score += 40;
+    if (lang === 'es-us' || lang === 'es-419') score += 30;
+    else if (lang === 'es-pe' || lang === 'es-mx') score += 28;
+    else if (lang === 'es-es') score += 22;
+    if (!v.localService) score += 10;
+    return score;
+  };
+
+  return [...spanishVoices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
+}
+
+export function stopSpeaking(): void {
+  try {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function speakSpanish(text: string): void {
   try {
-    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'es-PE';
-    utter.rate = 1.02;
-    window.speechSynthesis.speak(utter);
+    if (typeof window === 'undefined' || !('speechSynthesis' in window) || !text.trim()) return;
+    const synth = window.speechSynthesis;
+    const wasBusy = synth.speaking || synth.pending;
+    if (wasBusy) {
+      synth.cancel();
+    }
+
+    const trigger = () => {
+      try {
+        if (synth.paused) synth.resume();
+        const utter = new SpeechSynthesisUtterance(text);
+        const voice = pickGoogleSpanishVoice();
+        if (voice) {
+          utter.voice = voice;
+          utter.lang = voice.lang;
+        } else {
+          utter.lang = 'es-US';
+        }
+        utter.rate = 1.0;
+        utter.pitch = 1.0;
+        utter.volume = 1.0;
+        synth.speak(utter);
+      } catch {
+        // ignore speech errors
+      }
+    };
+
+    if (wasBusy) {
+      window.setTimeout(trigger, 50);
+    } else {
+      trigger();
+    }
   } catch {
     // ignore speech errors
   }
