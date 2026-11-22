@@ -811,7 +811,12 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/butacas') {
-    return { rutas: toArray(snap.butacas) } as T;
+    return {
+      rutas: toArray(snap.butacas).map((r) => ({
+        ...r,
+        asientos_ocupados: Array.isArray(r.asientos_ocupados) ? r.asientos_ocupados : [],
+      })),
+    } as T;
   }
 
   if (cleanPath === '/api/public/butacas/reservar' && method === 'POST') {
@@ -1117,6 +1122,6 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   throw new Error(
-    'Esta acción administrativa avanzada requiere el servidor Node.js conectado (VITE_API_BASE_URL).'
+    'Esta acción administrativa avanzada requiere el servidor Node.js conectado (VITE_API_URL).'
   );
 }

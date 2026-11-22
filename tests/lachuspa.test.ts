@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
-import { createApp } from '../server/app.ts';
-import { initDatabase, seedDatabase } from '../server/db.ts';
-import { auditarLibroContable, expireStaleOrders } from '../server/finance.ts';
-import { validateProductionEnv } from '../server/security.ts';
+import { createApp } from '../backend/app.ts';
+import { initDatabase, seedDatabase } from '../backend/db.ts';
+import { auditarLibroContable, expireStaleOrders } from '../backend/finance.ts';
+import { validateProductionEnv } from '../backend/security.ts';
 
 async function startTestServer() {
   process.env.DISABLE_FIREBASE_SYNC = 'true';

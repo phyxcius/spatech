@@ -11,7 +11,10 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE = ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const ENV_VARS = (import.meta as { env?: Record<string, string | undefined> }).env;
+export const VITE_API_URL = (ENV_VARS?.VITE_API_URL || ENV_VARS?.VITE_API_BASE_URL || '')
+  .trim()
+  .replace(/\/$/, '');
 
 export async function apiFetch<T>(
   path: string,
@@ -23,7 +26,10 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const { method = 'GET', body, token } = options;
 
-  if (!API_BASE && isFirebaseRtdbMode() && path.startsWith('/api/')) {
+  const isGitHubPages =
+    typeof window !== 'undefined' && window.location.hostname.endsWith('.github.io');
+
+  if (!VITE_API_URL && path.startsWith('/api/') && (isFirebaseRtdbMode() || isGitHubPages)) {
     try {
       return await handleFirebaseRtdbRequest<T>(path, method, body, token);
     } catch (err) {
@@ -31,7 +37,7 @@ export async function apiFetch<T>(
     }
   }
 
-  const targetUrl = path.startsWith('/') && API_BASE ? `${API_BASE}${path}` : path;
+  const targetUrl = path.startsWith('/') && VITE_API_URL ? `${VITE_API_URL}${path}` : path;
   let res: Response;
   try {
     res = await fetch(targetUrl, {
@@ -43,7 +49,7 @@ export async function apiFetch<T>(
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   } catch (networkErr) {
-    if (!API_BASE && path.startsWith('/api/') && typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+    if (!VITE_API_URL && path.startsWith('/api/') && isGitHubPages) {
       try {
         return await handleFirebaseRtdbRequest<T>(path, method, body, token);
       } catch (err) {
@@ -53,10 +59,15 @@ export async function apiFetch<T>(
     throw networkErr;
   }
 
-  const contentType = res.headers.get('content-type') || '';
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
   const text = await res.text();
-  if (!res.ok && (res.status === 404 || res.status === 405) && contentType.includes('text/html')) {
-    if (!API_BASE && path.startsWith('/api/')) {
+  const looksLikeHtmlOrStatic405 =
+    res.status === 405 ||
+    contentType.includes('text/html') ||
+    text.trim().startsWith('<');
+
+  if (!res.ok && (res.status === 404 || res.status === 405 || res.status === 501) && looksLikeHtmlOrStatic405) {
+    if (!VITE_API_URL && path.startsWith('/api/')) {
       try {
         return await handleFirebaseRtdbRequest<T>(path, method, body, token);
       } catch (err) {
@@ -65,7 +76,7 @@ export async function apiFetch<T>(
     }
     throw new ApiError(
       res.status,
-      'El servidor backend (/api) no está disponible en este hosting estático. Configura VITE_API_BASE_URL o abre la app en Node.js.'
+      'El servidor backend (/api) no está disponible en este hosting estático. Configura VITE_API_URL o abre la app en Node.js.'
     );
   }
 

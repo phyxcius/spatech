@@ -56,16 +56,24 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.use((req, res, next) => {
     const reqOrigin = req.headers.origin;
     const isAuthRoute = req.path.startsWith('/api/negocio') || req.path.startsWith('/api/admin');
-    const configuredOrigins = (process.env.CORS_ORIGIN || '')
+    const defaultAllowedOrigins = [
+      'https://phyxcius.github.io',
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3000',
+    ];
+    if (process.env.APP_URL) {
+      defaultAllowedOrigins.push(process.env.APP_URL.replace(/\/$/, ''));
+    }
+    const configuredOrigins = (process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
       .split(',')
-      .map((s) => s.trim())
+      .map((s) => s.trim().replace(/\/$/, ''))
       .filter(Boolean);
+    const allowedSet = new Set([...defaultAllowedOrigins, ...configuredOrigins]);
 
     if (reqOrigin) {
-      if (configuredOrigins.includes(reqOrigin)) {
-        res.setHeader('Access-Control-Allow-Origin', reqOrigin);
-        res.setHeader('Vary', 'Origin');
-      } else if (!isAuthRoute) {
+      if (allowedSet.has(reqOrigin) || !isAuthRoute) {
         res.setHeader('Access-Control-Allow-Origin', reqOrigin);
         res.setHeader('Vary', 'Origin');
       }
@@ -191,7 +199,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
 
       const negocio = db
         .prepare('SELECT * FROM negocios WHERE id = ? AND activo = 1')
-        .get(negocio_id) as NegocioRow | undefined;
+        .get(negocio_id) as unknown as NegocioRow | undefined;
       if (!negocio) {
         throw new HttpError(404, 'Negocio no encontrado o inactivo');
       }
@@ -892,7 +900,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.get('/api/negocio/:negocioId/resumen', requireBusinessAuth, (req: AuthedRequest, res, next) => {
     try {
       const negocioId = Number(req.params.negocioId);
-      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as
+      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as
         | NegocioRow
         | undefined;
       if (!negocio) throw new HttpError(404, 'Negocio no encontrado');
@@ -952,7 +960,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.get('/api/negocio/:negocioId/pedidos', requireBusinessAuth, (req: AuthedRequest, res, next) => {
     try {
       const negocioId = Number(req.params.negocioId);
-      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as
+      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as
         | NegocioRow
         | undefined;
       if (!negocio) throw new HttpError(404, 'Negocio no encontrado');
@@ -1026,7 +1034,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       try {
         const negocioId = Number(req.params.negocioId);
         const pedidoId = Number(req.params.pedidoId);
-        const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as
+        const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
           | PedidoRow
           | undefined;
         if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
@@ -1085,7 +1093,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         if (!Number.isInteger(monto_centavos) || monto_centavos < 1000 || monto_centavos > 500000) {
           throw new HttpError(400, 'Contraoferta inválida');
         }
-        const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as
+        const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
           | PedidoRow
           | undefined;
         if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
@@ -1157,7 +1165,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
 
         const prestador = db
           .prepare('SELECT * FROM negocios WHERE id = ? AND activo = 1')
-          .get(negocio_destino_id) as NegocioRow | undefined;
+          .get(negocio_destino_id) as unknown as NegocioRow | undefined;
         if (!prestador) throw new HttpError(404, 'Negocio prestador no encontrado');
 
         const item = db

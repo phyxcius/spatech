@@ -2,11 +2,11 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createApp } from './server/app.ts';
-import { initDatabase, seedDatabase } from './server/db.ts';
-import { expireStaleOrders } from './server/finance.ts';
-import { syncSnapshotToFirebaseRtdb } from './server/rtdbSync.ts';
-import { validateProductionEnv } from './server/security.ts';
+import { createApp } from './backend/app.ts';
+import { initDatabase, seedDatabase } from './backend/db.ts';
+import { expireStaleOrders } from './backend/finance.ts';
+import { syncSnapshotToFirebaseRtdb } from './backend/rtdbSync.ts';
+import { validateProductionEnv } from './backend/security.ts';
 
 function resolvePort(): number {
   const idx = process.argv.indexOf('--port');
@@ -39,11 +39,12 @@ async function bootstrap() {
 
   const app = createApp({ db });
   const isProd = process.env.NODE_ENV === 'production';
-  const distDir = path.resolve(process.cwd(), 'dist');
+  const distDir = path.resolve(process.cwd(), 'frontend/dist');
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
+      configFile: path.resolve(process.cwd(), 'frontend/vite.config.ts'),
       server: { middlewareMode: true },
       appType: 'spa',
     });

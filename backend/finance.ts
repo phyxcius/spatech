@@ -86,7 +86,7 @@ export function aprobarRecarga(db: DatabaseSync, recargaId: number) {
     }
     const negocio = db
       .prepare('SELECT * FROM negocios WHERE id = ?')
-      .get(recarga.negocio_id) as NegocioRow | undefined;
+      .get(recarga.negocio_id) as unknown as NegocioRow | undefined;
     if (!negocio) {
       throw new HttpError(404, 'Negocio no encontrado');
     }
@@ -156,7 +156,7 @@ export function ajustarSaldoAdmin(
   }
 
   return runInTransaction(db, () => {
-    const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as
+    const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as
       | NegocioRow
       | undefined;
     if (!negocio) throw new HttpError(404, 'Negocio no encontrado');
@@ -194,7 +194,7 @@ export function ajustarSaldoAdmin(
 
 export function aceptarPedido(db: DatabaseSync, pedidoId: number, negocioId: number) {
   return runInTransaction(db, () => {
-    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as
+    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
       | PedidoRow
       | undefined;
     if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
@@ -205,7 +205,7 @@ export function aceptarPedido(db: DatabaseSync, pedidoId: number, negocioId: num
       throw new HttpError(409, `El pedido ya está en estado ${pedido.estado}`);
     }
 
-    const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as
+    const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as
       | NegocioRow
       | undefined;
     if (!negocio) throw new HttpError(404, 'Negocio no encontrado');
@@ -215,7 +215,7 @@ export function aceptarPedido(db: DatabaseSync, pedidoId: number, negocioId: num
 
     const regla = db
       .prepare('SELECT * FROM reglas_comision WHERE rubro = ?')
-      .get(negocio.rubro) as ReglaComisionRow | undefined;
+      .get(negocio.rubro) as unknown as ReglaComisionRow | undefined;
     const pctPlat = regla?.porcentaje_plataforma ?? 3;
     const pctRef = pedido.referido_negocio_id ? (regla?.porcentaje_referido ?? 0) : 0;
 
@@ -282,7 +282,7 @@ export function validarPinYEntregar(
   let remainingAttempts = 0;
 
   const result = runInTransaction(db, () => {
-    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as
+    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
       | PedidoRow
       | undefined;
     if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
@@ -461,7 +461,7 @@ export function cancelarPedido(
   motivo = 'Cancelado por el usuario'
 ) {
   return runInTransaction(db, () => {
-    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as
+    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
       | PedidoRow
       | undefined;
     if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
