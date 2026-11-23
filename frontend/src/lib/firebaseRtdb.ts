@@ -35,6 +35,7 @@ interface RtdbNegocio {
   codigo: string;
   rubro: Rubro;
   nombre: string;
+  telefono?: string;
   descripcion: string;
   lat: number;
   lng: number;
@@ -44,6 +45,14 @@ interface RtdbNegocio {
   saldo: number;
   saldo_retenido: number;
   calificacion: number;
+  horario_apertura?: string;
+  horario_cierre?: string;
+  abierto_24h?: number;
+  metodos_pago_aceptados?: string;
+  auto_aceptar_pedidos?: number;
+  alerta_voz_activa?: number;
+  tarifa_minima_centavos?: number;
+  radio_cobertura_km?: number;
   pin_salt: string;
   pin_hash: string;
 }
@@ -997,6 +1006,57 @@ export async function handleFirebaseRtdbRequest<T>(
     } as T;
   }
 
+  if (cleanPath === '/api/public/negocios/registro' && method === 'POST') {
+    const rubro = String(payload.rubro || 'RESTAURANTE') as Rubro;
+    const nombre = String(payload.nombre || '').trim();
+    const telefono = String(payload.telefono || '').trim();
+    const cleanPin = String(payload.pin || '').trim();
+    if (nombre.length < 2 || telefono.length < 6 || !/^\d{4}$/.test(cleanPin)) {
+      throw new Error('Completa nombre, WhatsApp y PIN de 4 dígitos.');
+    }
+    const id = Date.now();
+    const codigo = `NEG-${rubro.slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const hashed = await hashPinBrowser(cleanPin, `seed-${codigo}`);
+    const newBiz: RtdbNegocio = {
+      id,
+      codigo,
+      rubro,
+      nombre,
+      telefono,
+      descripcion: String(payload.descripcion || `Negocio verificado en ${rubro} en Cusco`),
+      lat: -13.5167,
+      lng: -71.9788,
+      zona: String(payload.zona || 'Centro Histórico, Cusco'),
+      en_linea: 1,
+      activo: 1,
+      saldo: 0,
+      saldo_retenido: 0,
+      calificacion: 4.9,
+      horario_apertura: '07:00',
+      horario_cierre: '22:30',
+      abierto_24h: 0,
+      metodos_pago_aceptados: 'Yape,Plin,Efectivo,Tarjeta',
+      auto_aceptar_pedidos: 0,
+      alerta_voz_activa: 1,
+      tarifa_minima_centavos: 600,
+      radio_cobertura_km: 8.0,
+      pin_salt: hashed.salt,
+      pin_hash: hashed.hash,
+    };
+    await rtdbFetch(`negocios/${codigo}`, 'PUT', newBiz);
+    return {
+      token: `rtdb-biz:${codigo}`,
+      negocio: {
+        ...newBiz,
+        en_linea: true,
+        abierto_24h: false,
+        auto_aceptar_pedidos: false,
+        alerta_voz_activa: true,
+        saldo_libre: 0,
+      },
+    } as T;
+  }
+
   if (cleanPath === '/api/negocio/login' && method === 'POST') {
     const negocios = toArray(snap.negocios);
     const biz = negocios.find((n) => n.codigo === payload.codigo);
@@ -1016,7 +1076,9 @@ export async function handleFirebaseRtdbRequest<T>(
     } as T;
   }
 
-  const bizMatch = cleanPath.match(/^\/api\/negocio\/(\d+)\/(resumen|pedidos|guias-disponibles|servicios|recargas|pedidos\/(\d+)\/(aceptar|entregar|cancelar))$/);
+  const bizMatch = cleanPath.match(
+    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|entregar|cancelar))$/
+  );
   if (bizMatch) {
     const bizId = Number(bizMatch[1]);
     const sub = bizMatch[2];
@@ -1037,8 +1099,20 @@ export async function handleFirebaseRtdbRequest<T>(
           codigo: biz.codigo,
           rubro: biz.rubro,
           nombre: biz.nombre,
+          telefono: biz.telefono || '+51984000000',
+          descripcion: biz.descripcion || '',
           zona: biz.zona,
+          lat: biz.lat,
+          lng: biz.lng,
           en_linea: biz.en_linea === 1,
+          horario_apertura: biz.horario_apertura || '07:00',
+          horario_cierre: biz.horario_cierre || '22:30',
+          abierto_24h: biz.abierto_24h === 1,
+          metodos_pago_aceptados: biz.metodos_pago_aceptados || 'Yape,Plin,Efectivo,Tarjeta',
+          auto_aceptar_pedidos: biz.auto_aceptar_pedidos === 1,
+          alerta_voz_activa: biz.alerta_voz_activa !== 0,
+          tarifa_minima_centavos: biz.tarifa_minima_centavos ?? 600,
+          radio_cobertura_km: biz.radio_cobertura_km ?? 8.0,
           saldo: biz.saldo,
           saldo_retenido: biz.saldo_retenido,
           saldo_libre: biz.saldo - biz.saldo_retenido,
@@ -1050,6 +1124,112 @@ export async function handleFirebaseRtdbRequest<T>(
         unidades: toArray(snap.unidades).filter((u) => u.negocio_id === biz.id),
         tasas: toArray(snap.divisas).filter((d) => d.negocio_id === biz.id),
       } as T;
+    }
+
+    if (sub === 'estado' && method === 'PATCH') {
+      const enLinea = payload.en_linea ? 1 : 0;
+      await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', { en_linea: enLinea });
+      return { ok: true, en_linea: enLinea === 1 } as T;
+    }
+
+    if (sub === 'configuracion' && method === 'PUT') {
+      const updates: Record<string, unknown> = {
+        nombre: typeof payload.nombre === 'string' && payload.nombre.trim() ? payload.nombre.trim() : biz.nombre,
+        telefono: typeof payload.telefono === 'string' && payload.telefono.trim() ? payload.telefono.trim() : biz.telefono || '+51984000000',
+        descripcion: typeof payload.descripcion === 'string' ? payload.descripcion.trim() : biz.descripcion,
+        zona: typeof payload.zona === 'string' && payload.zona.trim() ? payload.zona.trim() : biz.zona,
+        lat: typeof payload.lat === 'number' ? payload.lat : biz.lat,
+        lng: typeof payload.lng === 'number' ? payload.lng : biz.lng,
+        en_linea: typeof payload.en_linea === 'boolean' ? (payload.en_linea ? 1 : 0) : biz.en_linea,
+        horario_apertura: payload.horario_apertura || biz.horario_apertura || '07:00',
+        horario_cierre: payload.horario_cierre || biz.horario_cierre || '22:30',
+        abierto_24h: payload.abierto_24h ? 1 : 0,
+        metodos_pago_aceptados: payload.metodos_pago_aceptados || biz.metodos_pago_aceptados || 'Yape,Plin,Efectivo',
+        auto_aceptar_pedidos: payload.auto_aceptar_pedidos ? 1 : 0,
+        alerta_voz_activa: payload.alerta_voz_activa !== false ? 1 : 0,
+        tarifa_minima_centavos: Number(payload.tarifa_minima_centavos) || biz.tarifa_minima_centavos || 600,
+        radio_cobertura_km: Number(payload.radio_cobertura_km) || biz.radio_cobertura_km || 8,
+      };
+      await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', updates);
+      return { ok: true, negocio: { ...biz, ...updates } } as T;
+    }
+
+    if (sub === 'pin' && method === 'PUT') {
+      const check = await hashPinBrowser(String(payload.pin_actual || '').trim(), biz.pin_salt);
+      if (check.hash !== biz.pin_hash) throw new Error('El PIN actual es incorrecto.');
+      const next = await hashPinBrowser(String(payload.pin_nuevo || '').trim(), biz.pin_salt);
+      await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', { pin_hash: next.hash });
+      return { ok: true } as T;
+    }
+
+    if (sub.startsWith('servicios/') && (method === 'PATCH' || method === 'DELETE')) {
+      const srvId = sub.split('/')[1];
+      if (method === 'DELETE') {
+        await rtdbFetch(`servicios/${srvId}`, 'PUT', null);
+        return { ok: true } as T;
+      }
+      await rtdbFetch(`servicios/${srvId}`, 'PATCH', {
+        ...(payload.nombre ? { nombre: payload.nombre } : {}),
+        ...(payload.descripcion !== undefined ? { descripcion: payload.descripcion } : {}),
+        ...(payload.precio_centavos ? { precio_centavos: payload.precio_centavos } : {}),
+        ...(payload.stock !== undefined ? { stock: payload.stock } : {}),
+        ...(payload.disponible !== undefined ? { disponible: payload.disponible ? 1 : 0 } : {}),
+      });
+      return { ok: true } as T;
+    }
+
+    if (sub === 'unidades' && method === 'POST') {
+      const id = Date.now();
+      const unidad: RtdbUnidad = {
+        id,
+        negocio_id: biz.id,
+        negocio_nombre: biz.nombre,
+        conductor_nombre: String(payload.conductor_nombre || 'Conductor'),
+        placa: String(payload.placa || 'X1A-000').toUpperCase(),
+        modelo: String(payload.modelo || 'Toyota Yaris'),
+        color: String(payload.color || 'Plata'),
+        tarifa_base_centavos: Number(payload.tarifa_base_centavos) || 600,
+        tarifa_km_centavos: Number(payload.tarifa_km_centavos) || 220,
+        calificacion: 4.9,
+        lat: biz.lat,
+        lng: biz.lng,
+        estado: 'DISPONIBLE',
+        certificada: 1,
+      };
+      await rtdbFetch(`unidades/${id}`, 'PUT', unidad);
+      return { ok: true, unidad } as T;
+    }
+
+    if (sub.startsWith('unidades/') && (method === 'PATCH' || method === 'DELETE')) {
+      const uId = sub.split('/')[1];
+      if (method === 'DELETE') {
+        await rtdbFetch(`unidades/${uId}`, 'PUT', null);
+        return { ok: true } as T;
+      }
+      await rtdbFetch(`unidades/${uId}`, 'PATCH', payload);
+      return { ok: true } as T;
+    }
+
+    if (sub === 'divisas' && method === 'POST') {
+      const id = Date.now();
+      const tasa: RtdbDivisa = {
+        id,
+        negocio_id: biz.id,
+        negocio_nombre: biz.nombre,
+        zona: biz.zona,
+        moneda_origen: String(payload.moneda_origen || 'USD').toUpperCase(),
+        moneda_destino: 'PEN',
+        tasa_compra: Number(payload.tasa_compra) || 3.7,
+        tasa_venta: Number(payload.tasa_venta) || 3.78,
+      };
+      await rtdbFetch(`divisas/${id}`, 'PUT', tasa);
+      return { ok: true, tasa } as T;
+    }
+
+    if (sub.startsWith('divisas/') && method === 'PATCH') {
+      const tId = sub.split('/')[1];
+      await rtdbFetch(`divisas/${tId}`, 'PATCH', payload);
+      return { ok: true } as T;
     }
 
     if (sub === 'pedidos') {

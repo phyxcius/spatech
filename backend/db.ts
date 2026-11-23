@@ -41,6 +41,14 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
       saldo INTEGER NOT NULL DEFAULT 0 CHECK(saldo >= 0),
       saldo_retenido INTEGER NOT NULL DEFAULT 0 CHECK(saldo_retenido >= 0 AND saldo_retenido <= saldo),
       calificacion REAL NOT NULL DEFAULT 4.9,
+      horario_apertura TEXT NOT NULL DEFAULT '07:00',
+      horario_cierre TEXT NOT NULL DEFAULT '22:30',
+      abierto_24h INTEGER NOT NULL DEFAULT 0,
+      metodos_pago_aceptados TEXT NOT NULL DEFAULT 'Yape,Plin,Efectivo,Tarjeta',
+      auto_aceptar_pedidos INTEGER NOT NULL DEFAULT 0,
+      alerta_voz_activa INTEGER NOT NULL DEFAULT 1,
+      tarifa_minima_centavos INTEGER NOT NULL DEFAULT 600,
+      radio_cobertura_km REAL NOT NULL DEFAULT 8.0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -293,6 +301,26 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  // Migración idempotente para bases SQLite existentes
+  const cols = (db.prepare('PRAGMA table_info(negocios)').all() as Array<{ name: string }>).map(
+    (c) => c.name
+  );
+  const alterCols: Array<[string, string]> = [
+    ['horario_apertura', "TEXT NOT NULL DEFAULT '07:00'"],
+    ['horario_cierre', "TEXT NOT NULL DEFAULT '22:30'"],
+    ['abierto_24h', 'INTEGER NOT NULL DEFAULT 0'],
+    ['metodos_pago_aceptados', "TEXT NOT NULL DEFAULT 'Yape,Plin,Efectivo,Tarjeta'"],
+    ['auto_aceptar_pedidos', 'INTEGER NOT NULL DEFAULT 0'],
+    ['alerta_voz_activa', 'INTEGER NOT NULL DEFAULT 1'],
+    ['tarifa_minima_centavos', 'INTEGER NOT NULL DEFAULT 600'],
+    ['radio_cobertura_km', 'REAL NOT NULL DEFAULT 8.0'],
+  ];
+  for (const [col, def] of alterCols) {
+    if (!cols.includes(col)) {
+      db.exec(`ALTER TABLE negocios ADD COLUMN ${col} ${def};`);
+    }
+  }
 
   return db;
 }

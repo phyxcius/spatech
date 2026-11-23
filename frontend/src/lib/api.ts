@@ -66,16 +66,19 @@ export async function apiFetch<T>(
     contentType.includes('text/html') ||
     text.trim().startsWith('<');
 
-  if (!res.ok && (res.status === 404 || res.status === 405 || res.status === 501) && looksLikeHtmlOrStatic405) {
-    if (!VITE_API_URL && path.startsWith('/api/')) {
+  if (
+    path.startsWith('/api/') &&
+    (looksLikeHtmlOrStatic405 || (!res.ok && (res.status === 404 || res.status === 405 || res.status === 501)))
+  ) {
+    if (!VITE_API_URL) {
       try {
         return await handleFirebaseRtdbRequest<T>(path, method, body, token);
       } catch (err) {
-        throw new ApiError(res.status, err instanceof Error ? err.message : 'Error consultando Firebase RTDB');
+        throw new ApiError(res.status || 502, err instanceof Error ? err.message : 'Error consultando Firebase RTDB');
       }
     }
     throw new ApiError(
-      res.status,
+      res.status || 502,
       'El servidor backend (/api) no está disponible en este hosting estático. Configura VITE_API_URL o abre la app en Node.js.'
     );
   }
@@ -84,6 +87,9 @@ export async function apiFetch<T>(
   try {
     parsed = text ? JSON.parse(text) : {};
   } catch {
+    if (res.ok && path.startsWith('/api/')) {
+      throw new ApiError(502, 'Respuesta inválida del servidor API');
+    }
     parsed = { error: text };
   }
 

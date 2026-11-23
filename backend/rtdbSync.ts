@@ -36,7 +36,10 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
     try {
       const negocios = db
         .prepare(
-          'SELECT id, codigo, rubro, nombre, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido, calificacion FROM negocios'
+          `SELECT id, codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo,
+                  saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h,
+                  metodos_pago_aceptados, auto_aceptar_pedidos, alerta_voz_activa, tarifa_minima_centavos, radio_cobertura_km
+           FROM negocios`
         )
         .all() as Array<Record<string, any>>;
 

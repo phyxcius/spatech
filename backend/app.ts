@@ -115,7 +115,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.get('/api/public/directorio', publicLimiter, (_req, res) => {
     const negocios = db
       .prepare(`
-        SELECT id, codigo, rubro, nombre, descripcion, zona, lat, lng, en_linea, calificacion
+        SELECT id, codigo, rubro, nombre, descripcion, zona, lat, lng, en_linea, calificacion,
+               horario_apertura, horario_cierre, abierto_24h, metodos_pago_aceptados,
+               tarifa_minima_centavos, radio_cobertura_km
         FROM negocios
         WHERE activo = 1
         ORDER BY rubro ASC, calificacion DESC
@@ -842,6 +844,70 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  // Auto-registro de nuevo negocio multirubro en La Chuspa
+  app.post('/api/public/negocios/registro', authLimiter, (req, res, next) => {
+    try {
+      const { rubro, nombre, telefono, zona, descripcion, pin } = req.body || {};
+      if (!RUBROS.includes(rubro)) throw new HttpError(400, 'Rubro inválido');
+      if (typeof nombre !== 'string' || nombre.trim().length < 2) {
+        throw new HttpError(400, 'Nombre comercial obligatorio');
+      }
+      if (typeof telefono !== 'string' || telefono.trim().length < 6) {
+        throw new HttpError(400, 'Teléfono WhatsApp obligatorio');
+      }
+      const cleanPin = String(pin || '').trim();
+      if (!/^\d{4}$/.test(cleanPin)) {
+        throw new HttpError(400, 'Define un PIN numérico de 4 dígitos');
+      }
+
+      const codigo = generateCode(`NEG-${rubro.slice(0, 2)}`);
+      const { hash, salt } = hashPin(cleanPin);
+
+      const insertRes = db
+        .prepare(`
+          INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido)
+          VALUES (?, ?, ?, ?, ?, -13.5167, -71.9788, ?, 1, 1, 0, 0)
+        `)
+        .run(
+          codigo,
+          rubro,
+          nombre.trim(),
+          telefono.trim(),
+          typeof descripcion === 'string' && descripcion.trim()
+            ? descripcion.trim()
+            : `Negocio verificado en ${rubro.toLowerCase()} en Cusco`,
+          typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco'
+        );
+      const id = Number(insertRes.lastInsertRowid);
+      db.prepare('INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)').run(
+        id,
+        hash,
+        salt
+      );
+
+      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(id) as unknown as NegocioRow;
+      const token = createSessionToken({
+        role: 'NEGOCIO',
+        negocioId: negocio.id,
+        rubro: negocio.rubro,
+      });
+
+      res.status(201).json({
+        token,
+        negocio: {
+          ...negocio,
+          en_linea: negocio.en_linea === 1,
+          abierto_24h: negocio.abierto_24h === 1,
+          auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
+          alerta_voz_activa: negocio.alerta_voz_activa === 1,
+          saldo_libre: negocio.saldo - negocio.saldo_retenido,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // =========================================================================
   // 2. RUTAS DE NEGOCIO / PRESTADOR (Autenticación con PIN 4 dígitos + JWT)
   // =========================================================================
@@ -978,6 +1044,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         negocio: {
           ...negocio,
           en_linea: negocio.en_linea === 1,
+          abierto_24h: negocio.abierto_24h === 1,
+          auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
+          alerta_voz_activa: negocio.alerta_voz_activa === 1,
           saldo_libre: negocio.saldo - negocio.saldo_retenido,
         },
         regla_comision: regla,
@@ -998,6 +1067,150 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const enLinea = req.body?.en_linea ? 1 : 0;
       db.prepare('UPDATE negocios SET en_linea = ? WHERE id = ?').run(enLinea, negocioId);
       res.json({ ok: true, en_linea: enLinea === 1 });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/api/negocio/:negocioId/configuracion', requireBusinessAuth, (req: AuthedRequest, res, next) => {
+    try {
+      const negocioId = Number(req.params.negocioId);
+      const current = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as
+        | NegocioRow
+        | undefined;
+      if (!current) throw new HttpError(404, 'Negocio no encontrado');
+
+      const {
+        nombre,
+        telefono,
+        descripcion,
+        zona,
+        lat,
+        lng,
+        en_linea,
+        horario_apertura,
+        horario_cierre,
+        abierto_24h,
+        metodos_pago_aceptados,
+        auto_aceptar_pedidos,
+        alerta_voz_activa,
+        tarifa_minima_centavos,
+        radio_cobertura_km,
+      } = req.body || {};
+
+      const nextNombre =
+        typeof nombre === 'string' && nombre.trim().length >= 2 ? nombre.trim().slice(0, 120) : current.nombre;
+      const nextTel =
+        typeof telefono === 'string' && telefono.trim().length >= 6
+          ? telefono.trim().slice(0, 32)
+          : current.telefono;
+      const nextDesc =
+        typeof descripcion === 'string' ? descripcion.trim().slice(0, 500) : current.descripcion;
+      const nextZona =
+        typeof zona === 'string' && zona.trim().length >= 2 ? zona.trim().slice(0, 140) : current.zona;
+      const nextLat = typeof lat === 'number' && Number.isFinite(lat) ? lat : current.lat;
+      const nextLng = typeof lng === 'number' && Number.isFinite(lng) ? lng : current.lng;
+      const nextEnLinea = typeof en_linea === 'boolean' ? (en_linea ? 1 : 0) : current.en_linea;
+      const nextOpen =
+        typeof horario_apertura === 'string' && /^\d{2}:\d{2}$/.test(horario_apertura)
+          ? horario_apertura
+          : current.horario_apertura || '07:00';
+      const nextClose =
+        typeof horario_cierre === 'string' && /^\d{2}:\d{2}$/.test(horario_cierre)
+          ? horario_cierre
+          : current.horario_cierre || '22:30';
+      const next24h =
+        typeof abierto_24h === 'boolean' ? (abierto_24h ? 1 : 0) : current.abierto_24h ?? 0;
+      const nextMetodos =
+        typeof metodos_pago_aceptados === 'string' && metodos_pago_aceptados.trim()
+          ? metodos_pago_aceptados.trim().slice(0, 120)
+          : current.metodos_pago_aceptados || 'Yape,Plin,Efectivo,Tarjeta';
+      const nextAuto =
+        typeof auto_aceptar_pedidos === 'boolean'
+          ? auto_aceptar_pedidos
+            ? 1
+            : 0
+          : current.auto_aceptar_pedidos ?? 0;
+      const nextVoz =
+        typeof alerta_voz_activa === 'boolean'
+          ? alerta_voz_activa
+            ? 1
+            : 0
+          : current.alerta_voz_activa ?? 1;
+      const nextTarifaMin =
+        Number.isInteger(tarifa_minima_centavos) && tarifa_minima_centavos >= 100
+          ? Math.min(500000, tarifa_minima_centavos)
+          : current.tarifa_minima_centavos ?? 600;
+      const nextRadio =
+        typeof radio_cobertura_km === 'number' && radio_cobertura_km >= 1 && radio_cobertura_km <= 80
+          ? Number(radio_cobertura_km.toFixed(1))
+          : current.radio_cobertura_km ?? 8.0;
+
+      db.prepare(`
+        UPDATE negocios
+        SET nombre = ?, telefono = ?, descripcion = ?, zona = ?, lat = ?, lng = ?, en_linea = ?,
+            horario_apertura = ?, horario_cierre = ?, abierto_24h = ?, metodos_pago_aceptados = ?,
+            auto_aceptar_pedidos = ?, alerta_voz_activa = ?, tarifa_minima_centavos = ?, radio_cobertura_km = ?
+        WHERE id = ?
+      `).run(
+        nextNombre,
+        nextTel,
+        nextDesc,
+        nextZona,
+        nextLat,
+        nextLng,
+        nextEnLinea,
+        nextOpen,
+        nextClose,
+        next24h,
+        nextMetodos,
+        nextAuto,
+        nextVoz,
+        nextTarifaMin,
+        nextRadio,
+        negocioId
+      );
+
+      const updated = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as NegocioRow;
+      res.json({
+        ok: true,
+        negocio: {
+          ...updated,
+          en_linea: updated.en_linea === 1,
+          abierto_24h: updated.abierto_24h === 1,
+          auto_aceptar_pedidos: updated.auto_aceptar_pedidos === 1,
+          alerta_voz_activa: updated.alerta_voz_activa === 1,
+          saldo_libre: updated.saldo - updated.saldo_retenido,
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/api/negocio/:negocioId/pin', requireBusinessAuth, (req: AuthedRequest, res, next) => {
+    try {
+      const negocioId = Number(req.params.negocioId);
+      const pinActual = String(req.body?.pin_actual || '').trim();
+      const pinNuevo = String(req.body?.pin_nuevo || '').trim();
+      if (!/^\d{4}$/.test(pinActual) || !/^\d{4}$/.test(pinNuevo)) {
+        throw new HttpError(400, 'Ambos PIN deben tener exactamente 4 dígitos numéricos');
+      }
+      const cred = db
+        .prepare('SELECT pin_hash, pin_salt FROM seguridad_credenciales WHERE negocio_id = ?')
+        .get(negocioId) as { pin_hash: string; pin_salt: string } | undefined;
+      if (!cred || !verifyPin(pinActual, cred.pin_hash, cred.pin_salt)) {
+        throw new HttpError(401, 'El PIN actual es incorrecto');
+      }
+      const { hash, salt } = hashPin(pinNuevo);
+      db.prepare(
+        'UPDATE seguridad_credenciales SET pin_hash = ?, pin_salt = ?, intentos_fallidos = 0, bloqueado_hasta = NULL WHERE negocio_id = ?'
+      ).run(hash, salt, negocioId);
+      db.prepare(`
+        INSERT INTO seguridad_auditoria (actor_tipo, actor_id, accion, detalle, ip)
+        VALUES ('NEGOCIO', ?, 'CAMBIO_PIN', 'PIN actualizado desde panel de configuración', ?)
+      `).run(String(negocioId), req.ip || '');
+      res.json({ ok: true });
     } catch (err) {
       next(err);
     }
@@ -1355,7 +1568,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           .get(servicioId, negocioId, negocio.rubro);
         if (!item) throw new HttpError(404, 'Servicio no encontrado en este negocio');
 
-        const { stock, disponible, precio_centavos } = req.body || {};
+        const { nombre, descripcion, duracion_min, stock, disponible, precio_centavos } = req.body || {};
         if (stock !== undefined && (!Number.isInteger(stock) || stock < 0)) {
           throw new HttpError(400, 'Stock inválido');
         }
@@ -1364,11 +1577,17 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         }
         db.prepare(`
           UPDATE servicios_catalogo
-          SET stock = COALESCE(?, stock),
+          SET nombre = COALESCE(?, nombre),
+              descripcion = COALESCE(?, descripcion),
+              duracion_min = COALESCE(?, duracion_min),
+              stock = COALESCE(?, stock),
               disponible = COALESCE(?, disponible),
               precio_centavos = COALESCE(?, precio_centavos)
           WHERE id = ? AND negocio_id = ? AND categoria = ?
         `).run(
+          typeof nombre === 'string' && nombre.trim().length >= 2 ? nombre.trim() : null,
+          typeof descripcion === 'string' ? descripcion.trim() : null,
+          Number.isInteger(duracion_min) && duracion_min > 0 ? duracion_min : null,
           stock ?? null,
           disponible === undefined ? null : disponible ? 1 : 0,
           precio_centavos ?? null,
@@ -1384,6 +1603,209 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       }
     }
   );
+
+  app.delete(
+    '/api/negocio/:negocioId/servicios/:servicioId',
+    requireBusinessAuth,
+    (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const servicioId = Number(req.params.servicioId);
+        const used = db
+          .prepare("SELECT id FROM pedidos_ordenes WHERE servicio_id = ? AND estado IN ('PENDIENTE_CONFIRMACION','CONFIRMADO_PREPARACION')")
+          .get(servicioId);
+        if (used) {
+          throw new HttpError(409, 'Este servicio tiene pedidos en curso; desactívalo en lugar de eliminarlo');
+        }
+        db.prepare('DELETE FROM servicios_catalogo WHERE id = ? AND negocio_id = ?').run(
+          servicioId,
+          negocioId
+        );
+        res.json({ ok: true });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // Gestión completa de unidades / taxis del negocio de TRANSPORTE
+  app.post('/api/negocio/:negocioId/unidades', requireBusinessAuth, (req: AuthedRequest, res, next) => {
+    try {
+      const negocioId = Number(req.params.negocioId);
+      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as NegocioRow;
+      if (!negocio || negocio.rubro !== 'TRANSPORTE') {
+        throw new HttpError(400, 'Solo negocios de Transporte pueden registrar unidades');
+      }
+      const {
+        conductor_nombre,
+        placa,
+        modelo,
+        color,
+        tarifa_base_centavos,
+        tarifa_km_centavos,
+      } = req.body || {};
+      if (typeof conductor_nombre !== 'string' || conductor_nombre.trim().length < 2) {
+        throw new HttpError(400, 'Nombre del conductor obligatorio');
+      }
+      const cleanPlaca = String(placa || '').trim().toUpperCase();
+      if (cleanPlaca.length < 5) {
+        throw new HttpError(400, 'Placa vehicular válida obligatoria');
+      }
+      if (typeof modelo !== 'string' || modelo.trim().length < 2) {
+        throw new HttpError(400, 'Modelo de vehículo obligatorio');
+      }
+      const base = Number.isInteger(tarifa_base_centavos) ? tarifa_base_centavos : 600;
+      const km = Number.isInteger(tarifa_km_centavos) ? tarifa_km_centavos : 220;
+      if (base < 200 || km < 50) {
+        throw new HttpError(400, 'Tarifas inválidas');
+      }
+      const insertRes = db
+        .prepare(`
+          INSERT INTO unidades_conductores (
+            negocio_id, conductor_nombre, placa, modelo, color,
+            tarifa_base_centavos, tarifa_km_centavos, lat, lng, estado, certificada
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPONIBLE', 1)
+        `)
+        .run(
+          negocioId,
+          conductor_nombre.trim(),
+          cleanPlaca,
+          modelo.trim(),
+          typeof color === 'string' && color.trim() ? color.trim() : 'Plata',
+          base,
+          km,
+          negocio.lat,
+          negocio.lng
+        );
+      res.status(201).json({
+        unidad: db
+          .prepare('SELECT * FROM unidades_conductores WHERE id = ?')
+          .get(Number(insertRes.lastInsertRowid)),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.patch(
+    '/api/negocio/:negocioId/unidades/:unidadId',
+    requireBusinessAuth,
+    (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const unidadId = Number(req.params.unidadId);
+        const unit = db
+          .prepare('SELECT * FROM unidades_conductores WHERE id = ? AND negocio_id = ?')
+          .get(unidadId, negocioId);
+        if (!unit) throw new HttpError(404, 'Unidad no encontrada en este negocio');
+
+        const {
+          conductor_nombre,
+          modelo,
+          color,
+          tarifa_base_centavos,
+          tarifa_km_centavos,
+          estado,
+        } = req.body || {};
+
+        const validEstados = ['DISPONIBLE', 'OCUPADO', 'FUERA_SERVICIO'];
+        if (estado !== undefined && !validEstados.includes(String(estado))) {
+          throw new HttpError(400, 'Estado vehicular inválido');
+        }
+        if (tarifa_base_centavos !== undefined && (!Number.isInteger(tarifa_base_centavos) || tarifa_base_centavos < 200)) {
+          throw new HttpError(400, 'Tarifa base inválida');
+        }
+        if (tarifa_km_centavos !== undefined && (!Number.isInteger(tarifa_km_centavos) || tarifa_km_centavos < 50)) {
+          throw new HttpError(400, 'Tarifa por km inválida');
+        }
+
+        db.prepare(`
+          UPDATE unidades_conductores
+          SET conductor_nombre = COALESCE(?, conductor_nombre),
+              modelo = COALESCE(?, modelo),
+              color = COALESCE(?, color),
+              tarifa_base_centavos = COALESCE(?, tarifa_base_centavos),
+              tarifa_km_centavos = COALESCE(?, tarifa_km_centavos),
+              estado = COALESCE(?, estado)
+          WHERE id = ? AND negocio_id = ?
+        `).run(
+          typeof conductor_nombre === 'string' && conductor_nombre.trim() ? conductor_nombre.trim() : null,
+          typeof modelo === 'string' && modelo.trim() ? modelo.trim() : null,
+          typeof color === 'string' && color.trim() ? color.trim() : null,
+          tarifa_base_centavos ?? null,
+          tarifa_km_centavos ?? null,
+          estado ?? null,
+          unidadId,
+          negocioId
+        );
+
+        res.json({
+          unidad: db.prepare('SELECT * FROM unidades_conductores WHERE id = ?').get(unidadId),
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  app.delete(
+    '/api/negocio/:negocioId/unidades/:unidadId',
+    requireBusinessAuth,
+    (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const unidadId = Number(req.params.unidadId);
+        const active = db
+          .prepare("SELECT id FROM pedidos_ordenes WHERE unidad_id = ? AND estado IN ('PENDIENTE_CONFIRMACION','CONFIRMADO_PREPARACION')")
+          .get(unidadId);
+        if (active) {
+          throw new HttpError(409, 'La unidad tiene viajes activos; cámbiala a FUERA_SERVICIO');
+        }
+        db.prepare('DELETE FROM unidades_conductores WHERE id = ? AND negocio_id = ?').run(
+          unidadId,
+          negocioId
+        );
+        res.json({ ok: true });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  app.post('/api/negocio/:negocioId/divisas', requireBusinessAuth, (req: AuthedRequest, res, next) => {
+    try {
+      const negocioId = Number(req.params.negocioId);
+      const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as NegocioRow;
+      if (!negocio || negocio.rubro !== 'CASA_CAMBIO') {
+        throw new HttpError(400, 'Solo casas de cambio pueden registrar monedas');
+      }
+      const monedaOrigen = String(req.body?.moneda_origen || '').trim().toUpperCase();
+      const tasaCompra = Number(req.body?.tasa_compra);
+      const tasaVenta = Number(req.body?.tasa_venta);
+      if (monedaOrigen.length !== 3) throw new HttpError(400, 'Moneda debe ser código de 3 letras (ej. USD, EUR)');
+      if (!Number.isFinite(tasaCompra) || tasaCompra <= 0 || !Number.isFinite(tasaVenta) || tasaVenta <= 0) {
+        throw new HttpError(400, 'Tasas de compra y venta inválidas');
+      }
+      db.prepare(`
+        INSERT INTO agentes_cambio (negocio_id, moneda_origen, moneda_destino, tasa_compra, tasa_venta, disponible)
+        VALUES (?, ?, 'PEN', ?, ?, 1)
+        ON CONFLICT(negocio_id, moneda_origen, moneda_destino) DO UPDATE SET
+          tasa_compra = excluded.tasa_compra,
+          tasa_venta = excluded.tasa_venta,
+          disponible = 1,
+          updated_at = datetime('now')
+      `).run(negocioId, monedaOrigen, tasaCompra, tasaVenta);
+
+      res.status(201).json({
+        tasa: db
+          .prepare("SELECT * FROM agentes_cambio WHERE negocio_id = ? AND moneda_origen = ? AND moneda_destino = 'PEN'")
+          .get(negocioId, monedaOrigen),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
 
   // Ruta autenticada para actualizar tasas de cambio (Cierre de pendiente sección 13)
   app.patch(

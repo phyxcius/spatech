@@ -51,6 +51,14 @@ export interface NegocioRow {
   saldo: number;
   saldo_retenido: number;
   calificacion: number;
+  horario_apertura?: string;
+  horario_cierre?: string;
+  abierto_24h?: number;
+  metodos_pago_aceptados?: string;
+  auto_aceptar_pedidos?: number;
+  alerta_voz_activa?: number;
+  tarifa_minima_centavos?: number;
+  radio_cobertura_km?: number;
   created_at: string;
 }
 

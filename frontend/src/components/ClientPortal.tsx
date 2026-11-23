@@ -105,9 +105,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [gpsStatus, setGpsStatus] = useState<'default' | 'live' | 'denied'>('default');
   const [loading, setLoading] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
+  const [lastTranscript, setLastTranscript] = useState<string | null>(null);
   const [speakReplies, setSpeakReplies] = useState(true);
   const [replyText, setReplyText] = useState<string>(
-    'Presiona la esfera y dime qué necesitas en Cusco.'
+    'Presiona la esfera y dime qué necesitas: taxi, restaurante, botica, tour o market.'
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
@@ -155,7 +156,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   // Precarga silenciosa de unidades reales de transporte para el modo Taxi InDrive
   useEffect(() => {
-    apiFetch<{ opciones: ConciergeOpcion[] }>('/api/public/asistente', {
+    apiFetch<{ opciones?: ConciergeOpcion[] }>('/api/public/asistente', {
       method: 'POST',
       body: {
         query: 'taxi ejecutivo aeropuerto',
@@ -164,7 +165,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         lng: coords.lng,
       },
     })
-      .then((res) => setOpciones(res.opciones))
+      .then((res) => setOpciones(Array.isArray(res?.opciones) ? res.opciones : []))
       .catch(() => {});
   }, []);
 
@@ -178,14 +179,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   useEffect(() => {
     if (subTab === 'DIVISAS') {
-      apiFetch<{ tasas: DivisaRate[] }>('/api/public/divisas')
-        .then((res) => setDivisas(res.tasas))
+      apiFetch<{ tasas?: DivisaRate[] }>('/api/public/divisas')
+        .then((res) => setDivisas(Array.isArray(res?.tasas) ? res.tasas : []))
         .catch(() => {});
     } else if (subTab === 'BUTACAS') {
-      apiFetch<{ rutas: SeatRoute[] }>('/api/public/butacas')
+      apiFetch<{ rutas?: SeatRoute[] }>('/api/public/butacas')
         .then((res) => {
-          setRutasButacas(res.rutas);
-          if (res.rutas.length > 0) setSelectedSeatRoute(res.rutas[0]);
+          const rutas = Array.isArray(res?.rutas) ? res.rutas : [];
+          setRutasButacas(rutas);
+          if (rutas.length > 0) setSelectedSeatRoute(rutas[0]);
         })
         .catch(() => {});
     }
@@ -219,8 +221,16 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       }
     }
 
-    // 1. Detectar intención Market Abierto (leche, atún, arroz, market, compras)
+    // 1. Detectar intención Market Abierto, Divisas, Taxi o Multinegocio
     const intent = forcedCat ? (forcedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER') : detectIntentFromQuery(q);
+    if (intent === 'DIVISAS' || forcedCat === 'CASA_CAMBIO') {
+      setSubTab('DIVISAS');
+      const msg = 'Mostrando casas de cambio verificadas en Cusco para cotizar y bloquear tu tasa.';
+      setReplyText(msg);
+      if (!silent && speakReplies) speakSpanish(msg);
+      return;
+    }
+
     if (intent === 'MARKET') {
       const parsed = parseMarketQuery(q);
       setRequestedMarketItems(parsed);
@@ -257,7 +267,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             destino: destino || undefined,
           },
         });
-        setOpciones(res.opciones);
+        setOpciones(Array.isArray(res?.opciones) ? res.opciones : []);
         if (res.destino_sugerido && !destino) setDestino(res.destino_sugerido);
         const msg = 'Taxistas cercanos listos en el mapa. Propón tu tarifa o acepta la mejor oferta.';
         setReplyText(msg);
@@ -289,11 +299,16 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           destino: destino || undefined,
         },
       });
-      setActiveCategory(res.categoria);
-      setOpciones(res.opciones);
-      setReplyText(res.respuesta_voz);
+      const safeOpciones = Array.isArray(res?.opciones) ? res.opciones : [];
+      setActiveCategory(res.categoria || 'RESTAURANTE');
+      setOpciones(safeOpciones);
+      const top = safeOpciones[0];
+      const richVoice = top
+        ? `${res.respuesta_voz} Mejor opción: ${top.titulo} en ${top.negocio_nombre} por ${formatSoles(top.precio_centavos)}.`
+        : res.respuesta_voz;
+      setReplyText(richVoice);
       if (!silent && speakReplies) {
-        speakSpanish(res.respuesta_voz);
+        speakSpanish(richVoice);
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo consultar el catálogo');
@@ -309,14 +324,27 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     setTimeout(() => inputRef.current?.focus(), 120);
   }
 
-  function handleVoiceCapture() {
+  function runVoiceCommand(phrase: string, rubro?: Rubro) {
+    setLastTranscript(phrase);
+    setQuery(phrase);
+    setSphereExpanded(true);
+    setSelectedRubro(rubro ?? null);
+    void handleSearch(phrase, rubro);
+  }
+
+  function handleVoiceCapture(onFieldCaptured?: (text: string) => void) {
     const SpeechRec =
       (window as unknown as { SpeechRecognition?: any; webkitSpeechRecognition?: any })
         .SpeechRecognition ||
       (window as unknown as { webkitSpeechRecognition?: any }).webkitSpeechRecognition;
 
     if (!SpeechRec) {
-      setReplyText('Escribe tu pedido abajo: ej. "Quiero un taxi" o "Leche, atún y arroz".');
+      setReplyText(
+        'Dictado nativo no disponible en este navegador; usa los comandos rápidos o escribe tu pedido abajo.'
+      );
+      if (speakReplies) {
+        speakSpanish('Escribe o elige qué deseas pedir: taxi, restaurante, botica, tour o market.');
+      }
       return;
     }
     try {
@@ -325,13 +353,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       rec.interimResults = false;
       rec.maxAlternatives = 1;
       setVoiceActive(true);
-      setReplyText('Escuchando... dime si necesitas taxi, market o algún servicio.');
+      setReplyText('Escuchando... dime si necesitas taxi, restaurante, botica, tour o market.');
       rec.onresult = (event: any) => {
-        const transcript = event.results?.[0]?.[0]?.transcript || '';
+        const transcript = (event.results?.[0]?.[0]?.transcript || '').trim();
+        setVoiceActive(false);
+        if (!transcript) return;
+        if (onFieldCaptured) {
+          onFieldCaptured(transcript);
+          return;
+        }
+        setLastTranscript(transcript);
         setQuery(transcript);
         setSelectedRubro(null);
-        setVoiceActive(false);
-        handleSearch(transcript);
+        void handleSearch(transcript);
       };
       rec.onerror = () => setVoiceActive(false);
       rec.onend = () => setVoiceActive(false);
@@ -543,7 +577,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 }`}
               >
                 {voiceActive ? (
-                  <MicOff className={`${isCompactSphere ? 'w-6 h-6' : 'w-9 h-9'} text-white`} />
+                  <div className="flex items-center gap-1" aria-hidden="true">
+                    <span className="w-1.5 h-4 rounded-full bg-white animate-bounce" />
+                    <span className="w-1.5 h-7 rounded-full bg-white animate-pulse" />
+                    <span className="w-1.5 h-5 rounded-full bg-white animate-bounce" />
+                  </div>
                 ) : (
                   <Mic className={`${isCompactSphere ? 'w-6 h-6' : 'w-9 h-9'} text-white drop-shadow`} />
                 )}
@@ -566,7 +604,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     onClick={() => {
                       setConciergeMode('SPHERE_IDLE');
                       setSphereExpanded(false);
-                      setReplyText('Presiona la esfera y dime qué necesitas en Cusco.');
+                      setLastTranscript(null);
+                      setReplyText('Presiona la esfera y dime qué necesitas: taxi, restaurante, botica, tour o market.');
                     }}
                     className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-[#D4AF37]"
                   >
@@ -574,6 +613,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   </button>
                 )}
               </div>
+              {lastTranscript && (
+                <p className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400">
+                  Escuché: «{lastTranscript}»
+                </p>
+              )}
               <div className="flex items-center gap-2 justify-center">
                 <p
                   className={`${
@@ -613,12 +657,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder='Di o escribe: "Quiero un taxi" o "Leche, atún y arroz"'
+                  placeholder='Di o escribe: "Taxi al aeropuerto", "Ceviche", "Soroche", "Leche y atún"'
                   className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#121620] text-sm text-[#14171F] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]"
                 />
                 <button
                   type="button"
-                  onClick={handleVoiceCapture}
+                  onClick={() => handleVoiceCapture()}
                   aria-label="Dictar por voz"
                   className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
                     voiceActive ? 'bg-[#C81E5B] text-white' : 'text-[#6A717E] hover:text-[#D4AF37]'
@@ -637,17 +681,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </form>
           )}
 
-          {/* Botones directos principales bajo la esfera (Taxi InDrive / Markets Abiertos) */}
+          {/* Botones directos principales bajo la esfera (Taxi InDrive / Markets Abiertos + Otros Negocios) */}
           {!isCompactSphere && (
             <div className="w-full max-w-2xl space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => {
-                    setSphereExpanded(true);
-                    setQuery('Quiero un taxi al aeropuerto');
-                    handleSearch('Quiero un taxi al aeropuerto', 'TRANSPORTE');
-                  }}
+                  onClick={() => runVoiceCommand('Quiero un taxi al aeropuerto', 'TRANSPORTE')}
                   className="min-h-[58px] px-5 py-3 rounded-2xl border border-[#84CC16]/50 bg-[#84CC16]/15 hover:bg-[#84CC16]/25 text-left flex items-center justify-between gap-3 transition-colors"
                 >
                   <div className="flex items-center gap-3">
@@ -668,11 +708,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => {
-                    setSphereExpanded(true);
-                    setQuery('Comprar leche, atún y arroz en market abierto');
-                    handleSearch('Comprar leche, atún y arroz en market abierto');
-                  }}
+                  onClick={() => runVoiceCommand('Comprar leche, atún y arroz en market abierto')}
                   className="min-h-[58px] px-5 py-3 rounded-2xl border border-emerald-500/45 bg-emerald-500/12 hover:bg-emerald-500/20 text-left flex items-center justify-between gap-3 transition-colors"
                 >
                   <div className="flex items-center gap-3">
@@ -689,6 +725,50 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     </div>
                   </div>
                   <ShoppingBasket className="w-4 h-4 text-emerald-500 shrink-0" />
+                </button>
+              </div>
+
+              {/* Comandos de voz rápidos para Otros Negocios (Restaurantes, Botica, Tours, Hoteles, Divisas) */}
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => runVoiceCommand('Quiero pedir ceviche en restaurante', 'RESTAURANTE')}
+                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
+                >
+                  <Utensils className="w-3.5 h-3.5 text-[#D4AF37]" />
+                  <span>«Pedir Restaurante»</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runVoiceCommand('Necesito pastillas para el soroche en botica 24h', 'FARMACIA')}
+                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
+                >
+                  <Pill className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>«Botica 24h»</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runVoiceCommand('Quiero reservar tour privado a Machu Picchu', 'TURISMO')}
+                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>«Tours Cusco»</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runVoiceCommand('Reservar habitación de hotel oxigenada', 'HOTEL')}
+                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
+                >
+                  <Hotel className="w-3.5 h-3.5 text-sky-400" />
+                  <span>«Hoteles»</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runVoiceCommand('Quiero cambiar dólares en casa de cambio')}
+                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 text-[#D4AF37]" />
+                  <span>«Cambiar Dólares»</span>
                 </button>
               </div>
 
@@ -1463,14 +1543,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
                     Destino en Cusco
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={destino}
-                    onChange={(e) => setDestino(e.target.value)}
-                    placeholder="Ej: Aeropuerto Velasco Astete / Hotel Belmond"
-                    className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                  />
+                  <div className="relative flex items-center">
+                    <input
+                      type="text"
+                      required
+                      value={destino}
+                      onChange={(e) => setDestino(e.target.value)}
+                      placeholder="Ej: Aeropuerto Velasco Astete / Hotel Belmond"
+                      className="w-full min-h-[44px] pl-4 pr-11 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleVoiceCapture((txt) => setDestino(txt))}
+                      aria-label="Dictar destino por voz"
+                      className="absolute right-2 w-8 h-8 rounded-lg flex items-center justify-center text-[#6A717E] hover:text-[#D4AF37]"
+                    >
+                      <Mic className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1479,14 +1569,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
                     Nombre completo
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={clienteNombre}
-                    onChange={(e) => setClienteNombre(e.target.value)}
-                    placeholder="Camila Mendoza"
-                    className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                  />
+                  <div className="relative flex items-center">
+                    <input
+                      type="text"
+                      required
+                      value={clienteNombre}
+                      onChange={(e) => setClienteNombre(e.target.value)}
+                      placeholder="Camila Mendoza"
+                      className="w-full min-h-[44px] pl-4 pr-10 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleVoiceCapture((txt) => setClienteNombre(txt))}
+                      aria-label="Dictar nombre por voz"
+                      className="absolute right-2 w-7 h-7 rounded-lg flex items-center justify-center text-[#6A717E] hover:text-[#D4AF37]"
+                    >
+                      <Mic className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">

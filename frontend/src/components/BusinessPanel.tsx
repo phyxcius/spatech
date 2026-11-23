@@ -5,13 +5,15 @@ import {
   KeyRound,
   LogOut,
   Plus,
+  Power,
   RefreshCw,
   Send,
+  Settings,
   UserPlus,
   Wallet,
   X,
 } from 'lucide-react';
-import { apiFetch, ApiError, playLuxuryChime } from '../lib/api.ts';
+import { apiFetch, ApiError, playLuxuryChime, speakSpanish } from '../lib/api.ts';
 import {
   ESTADO_LABELS,
   formatSoles,
@@ -22,13 +24,14 @@ import {
   type PedidoNegocio,
   type Rubro,
 } from '../types.ts';
+import { BusinessConfigTab } from './BusinessConfigTab.tsx';
 import {
   ColectivoSeatControl,
   EmergencyDispatchCenter,
   PinKeypadCard,
 } from './DispatchAndRouteModules.tsx';
 
-type BizTab = 'NUEVOS' | 'EN_CURSO' | 'HISTORIAL' | 'REFERIDOS' | 'RUTAS_SOS' | 'GESTION';
+type BizTab = 'NUEVOS' | 'EN_CURSO' | 'HISTORIAL' | 'REFERIDOS' | 'RUTAS_SOS' | 'CONFIGURACION' | 'GESTION';
 
 interface NegocioSession {
   token: string;
@@ -44,8 +47,20 @@ interface ResumenData {
     codigo: string;
     rubro: Rubro;
     nombre: string;
+    telefono?: string;
+    descripcion?: string;
     zona: string;
+    lat?: number;
+    lng?: number;
     en_linea: boolean;
+    horario_apertura?: string;
+    horario_cierre?: string;
+    abierto_24h?: boolean | number;
+    metodos_pago_aceptados?: string;
+    auto_aceptar_pedidos?: boolean | number;
+    alerta_voz_activa?: boolean | number;
+    tarifa_minima_centavos?: number;
+    radio_cobertura_km?: number;
     saldo: number;
     saldo_retenido: number;
     saldo_libre: number;
@@ -109,10 +124,18 @@ const DEMO_ACCESS_GUIDE: Array<{ codigo: string; rubro: string; pin: string; not
 export const BusinessPanel: React.FC = () => {
   const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
   const [session, setSession] = useState<NegocioSession | null>(null);
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
   const [loginCodigo, setLoginCodigo] = useState('NEG-TX-01');
   const [loginPin, setLoginPin] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showDemoGuide, setShowDemoGuide] = useState(false);
+
+  // Registro de nuevo negocio multirubro
+  const [regRubro, setRegRubro] = useState<Rubro>('RESTAURANTE');
+  const [regNombre, setRegNombre] = useState('');
+  const [regTelefono, setRegTelefono] = useState('');
+  const [regZona, setRegZona] = useState('Centro Histórico, Cusco');
+  const [regPin, setRegPin] = useState('');
 
   const [tab, setTab] = useState<BizTab>('NUEVOS');
   const [resumen, setResumen] = useState<ResumenData | null>(null);
@@ -149,10 +172,19 @@ export const BusinessPanel: React.FC = () => {
   const [newServPrecioSoles, setNewServPrecioSoles] = useState('');
   const [newServDesc, setNewServDesc] = useState('');
 
+  async function refreshDirectorio() {
+    try {
+      const res = await apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio');
+      if (Array.isArray(res?.negocios)) {
+        setDirectorio(res.negocios);
+      }
+    } catch {
+      // keep existing directorio list
+    }
+  }
+
   useEffect(() => {
-    apiFetch<{ negocios: DirectorioNegocio[] }>('/api/public/directorio')
-      .then((res) => setDirectorio(res.negocios))
-      .catch(() => {});
+    void refreshDirectorio();
   }, []);
 
   useEffect(() => {
@@ -169,26 +201,49 @@ export const BusinessPanel: React.FC = () => {
         apiFetch<ResumenData>(`/api/negocio/${session.negocioId}/resumen`, {
           token: session.token,
         }),
-        apiFetch<{ pedidos: PedidoNegocio[] }>(`/api/negocio/${session.negocioId}/pedidos`, {
+        apiFetch<{ pedidos?: PedidoNegocio[] }>(`/api/negocio/${session.negocioId}/pedidos`, {
           token: session.token,
         }),
-        apiFetch<{ guias: any[] }>(`/api/negocio/${session.negocioId}/guias-disponibles`, {
+        apiFetch<{ guias?: any[] }>(`/api/negocio/${session.negocioId}/guias-disponibles`, {
           token: session.token,
         }),
       ]);
-      setResumen(resRes);
-      setPedidos(pedRes.pedidos);
-      setGuias(guiasRes.guias);
-      if (guiasRes.guias.length > 0 && !refGuiaKey) {
-        const g = guiasRes.guias[0];
+      if (resRes?.negocio) {
+        setResumen({
+          ...resRes,
+          movimientos: Array.isArray(resRes.movimientos) ? resRes.movimientos : [],
+          recargas: Array.isArray(resRes.recargas) ? resRes.recargas : [],
+          servicios: Array.isArray(resRes.servicios) ? resRes.servicios : [],
+          unidades: Array.isArray(resRes.unidades) ? resRes.unidades : [],
+          tasas: Array.isArray(resRes.tasas) ? resRes.tasas : [],
+        });
+      }
+      const nextPedidos = Array.isArray(pedRes?.pedidos) ? pedRes.pedidos : [];
+      const nextGuias = Array.isArray(guiasRes?.guias) ? guiasRes.guias : [];
+      setPedidos(nextPedidos);
+      setGuias(nextGuias);
+      if (nextGuias.length > 0 && !refGuiaKey) {
+        const g = nextGuias[0];
         setRefGuiaKey(`${g.negocio_id}:${g.servicio_id}`);
       }
 
-      const pendingCount = pedRes.pedidos.filter(
+      const pendingCount = nextPedidos.filter(
         (p) => p.estado === 'PENDIENTE_CONFIRMACION' && p.negocio_id === session.negocioId
       ).length;
       if (soundEnabled && pendingCount > prevPendingCountRef.current) {
         playLuxuryChime();
+        if (resRes.negocio.alerta_voz_activa !== false) {
+          const newest = nextPedidos.find(
+            (p) => p.estado === 'PENDIENTE_CONFIRMACION' && p.negocio_id === session.negocioId
+          );
+          if (newest) {
+            speakSpanish(
+              `Nuevo pedido para ${resRes.negocio.nombre}: ${newest.item_nombre}, por ${(
+                newest.monto_centavos / 100
+              ).toFixed(2)} soles.`
+            );
+          }
+        }
       }
       prevPendingCountRef.current = pendingCount;
     } catch (err) {
@@ -231,6 +286,70 @@ export const BusinessPanel: React.FC = () => {
       setActionMsg(null);
     } catch (err) {
       setLoginError(err instanceof Error ? err.message : 'No se pudo iniciar sesión');
+    }
+  }
+
+  async function handleRegisterBusiness(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError(null);
+    try {
+      const res = await apiFetch<{
+        token: string;
+        negocio: {
+          id: number;
+          codigo: string;
+          rubro: Rubro;
+          nombre: string;
+        };
+      }>('/api/public/negocios/registro', {
+        method: 'POST',
+        body: {
+          rubro: regRubro,
+          nombre: regNombre,
+          telefono: regTelefono,
+          zona: regZona,
+          pin: regPin,
+        },
+      });
+      setSession({
+        token: res.token,
+        negocioId: res.negocio.id,
+        nombre: res.negocio.nombre,
+        codigo: res.negocio.codigo,
+        rubro: res.negocio.rubro,
+      });
+      setTab('CONFIGURACION');
+      setActionMsg({
+        type: 'ok',
+        text: `¡Negocio registrado! Tu código de acceso es ${res.negocio.codigo}. Configura ahora tus horarios, tarifas y catálogo.`,
+      });
+      void refreshDirectorio();
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'No se pudo registrar el negocio');
+    }
+  }
+
+  async function handleToggleOnline() {
+    if (!session || !resumen) return;
+    try {
+      const nextOnline = !resumen.negocio.en_linea;
+      await apiFetch(`/api/negocio/${session.negocioId}/estado`, {
+        method: 'PATCH',
+        body: { en_linea: nextOnline },
+        token: session.token,
+      });
+      setActionMsg({
+        type: 'ok',
+        text: nextOnline
+          ? 'Tu negocio está EN LÍNEA recibiendo pedidos.'
+          : 'Tu negocio quedó PAUSADO temporalmente.',
+      });
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error cambiando estado',
+      });
     }
   }
 
@@ -428,12 +547,47 @@ export const BusinessPanel: React.FC = () => {
         <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 sm:p-8 space-y-6">
           <div className="space-y-1.5">
             <p className="text-xs uppercase tracking-[0.2em] text-[#9A7B2C] dark:text-[#D4AF37]">
-              Portal de Socios Prestadores
+              Portal Multinegocio La Chuspa
             </p>
-            <h1 className="font-display text-3xl font-semibold">Acceso al Panel del Negocio</h1>
+            <h1 className="font-display text-3xl font-semibold">
+              {authMode === 'LOGIN' ? 'Acceso al Panel del Negocio' : 'Registra y Configura tu Negocio'}
+            </h1>
             <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-              Sesión protegida con PIN de 4 dígitos (bloqueo automático tras 3 intentos fallidos).
+              {authMode === 'LOGIN'
+                ? 'Sesión protegida con PIN de 4 dígitos (bloqueo automático tras 3 intentos fallidos).'
+                : 'Crea tu cuenta de prestador (Taxi, Restaurante, Botica, Turismo, Hotel o Divisas) y configura tu panel.'}
             </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14] border border-black/10 dark:border-white/10">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('LOGIN');
+                setLoginError(null);
+              }}
+              className={`min-h-[40px] rounded-xl text-xs font-bold transition-colors ${
+                authMode === 'LOGIN'
+                  ? 'bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14]'
+                  : 'text-[#6A717E] dark:text-[#98A0AD]'
+              }`}
+            >
+              Ya tengo código
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('REGISTER');
+                setLoginError(null);
+              }}
+              className={`min-h-[40px] rounded-xl text-xs font-bold transition-colors ${
+                authMode === 'REGISTER'
+                  ? 'bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14]'
+                  : 'text-[#6A717E] dark:text-[#98A0AD]'
+              }`}
+            >
+              Crear Nuevo Negocio
+            </button>
           </div>
 
           {loginError && (
@@ -442,50 +596,131 @@ export const BusinessPanel: React.FC = () => {
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                Selecciona tu negocio
-              </label>
-              <select
-                value={loginCodigo}
-                onChange={(e) => setLoginCodigo(e.target.value)}
-                className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-              >
-                {directorio.map((b) => (
-                  <option key={b.id} value={b.codigo}>
-                    {b.codigo} · {b.nombre} ({RUBRO_LABELS[b.rubro]})
-                  </option>
-                ))}
-              </select>
-            </div>
+          {authMode === 'LOGIN' ? (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Selecciona tu negocio
+                </label>
+                <select
+                  value={loginCodigo}
+                  onChange={(e) => setLoginCodigo(e.target.value)}
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                >
+                  {(Array.isArray(directorio) && directorio.length > 0
+                    ? directorio
+                    : DEMO_ACCESS_GUIDE.map((d, idx) => ({
+                        id: idx + 1,
+                        codigo: d.codigo,
+                        nombre: d.nota,
+                        rubro: (d.codigo.startsWith('NEG-TX')
+                          ? 'TRANSPORTE'
+                          : d.codigo.startsWith('NEG-TU')
+                          ? 'TURISMO'
+                          : d.codigo.startsWith('NEG-RE')
+                          ? 'RESTAURANTE'
+                          : d.codigo.startsWith('NEG-FA')
+                          ? 'FARMACIA'
+                          : 'CASA_CAMBIO') as Rubro,
+                      }))
+                  ).map((b) => (
+                    <option key={b.id} value={b.codigo}>
+                      {b.codigo} · {b.nombre} ({RUBRO_LABELS[b.rubro]})
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div>
-              <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                PIN de 4 dígitos
-              </label>
-              <div className="relative">
-                <KeyRound className="w-4 h-4 text-[#8A8F99] absolute left-3.5 top-3.5" />
+              <div>
+                <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  PIN de 4 dígitos
+                </label>
+                <div className="relative">
+                  <KeyRound className="w-4 h-4 text-[#8A8F99] absolute left-3.5 top-3.5" />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={4}
+                    required
+                    value={loginPin}
+                    onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    placeholder="••••"
+                    className="w-full min-h-[48px] pl-10 pr-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-lg font-mono-tabular tracking-[0.35em]"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full min-h-[48px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold"
+              >
+                Ingresar al Panel
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleRegisterBusiness} className="space-y-3.5">
+              <div>
+                <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Rubro del negocio
+                </label>
+                <select
+                  value={regRubro}
+                  onChange={(e) => setRegRubro(e.target.value as Rubro)}
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                >
+                  {(['TRANSPORTE', 'RESTAURANTE', 'FARMACIA', 'TURISMO', 'HOTEL', 'CASA_CAMBIO'] as Rubro[]).map(
+                    (r) => (
+                      <option key={r} value={r}>
+                        {RUBRO_LABELS[r]}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+              <input
+                type="text"
+                required
+                value={regNombre}
+                onChange={(e) => setRegNombre(e.target.value)}
+                placeholder="Nombre comercial (ej. Taxis Imperiales Cusco)"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="tel"
+                  required
+                  value={regTelefono}
+                  onChange={(e) => setRegTelefono(e.target.value)}
+                  placeholder="WhatsApp (+51...)"
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                />
                 <input
                   type="password"
                   inputMode="numeric"
                   maxLength={4}
                   required
-                  value={loginPin}
-                  onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                  placeholder="••••"
-                  className="w-full min-h-[48px] pl-10 pr-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-lg font-mono-tabular tracking-[0.35em]"
+                  value={regPin}
+                  onChange={(e) => setRegPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  placeholder="PIN 4 dígitos"
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
                 />
               </div>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full min-h-[48px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold"
-            >
-              Ingresar al Panel
-            </button>
-          </form>
+              <input
+                type="text"
+                required
+                value={regZona}
+                onChange={(e) => setRegZona(e.target.value)}
+                placeholder="Dirección o zona en Cusco"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+              />
+              <button
+                type="submit"
+                className="w-full min-h-[48px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold"
+              >
+                Crear y Configurar Mi Panel
+              </button>
+            </form>
+          )}
 
           <div className="pt-3 border-t border-black/10 dark:border-white/10">
             <button
@@ -548,13 +783,27 @@ export const BusinessPanel: React.FC = () => {
             <h1 className="font-display text-3xl font-semibold">{session.nombre}</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {resumen && (
+              <button
+                type="button"
+                onClick={handleToggleOnline}
+                className={`min-h-[44px] px-3.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 ${
+                  resumen.negocio.en_linea
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                    : 'border-rose-500/40 bg-rose-500/15 text-rose-500'
+                }`}
+              >
+                <Power className="w-3.5 h-3.5" />
+                <span>{resumen.negocio.en_linea ? 'En Línea ●' : 'Pausado'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setSoundEnabled((v) => !v)}
               className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5"
             >
               <Bell className={`w-3.5 h-3.5 ${soundEnabled ? 'text-[#D4AF37]' : 'text-[#8A8F99]'}`} />
-              <span>{soundEnabled ? 'Alerta Sonora Activa' : 'Silenciado'}</span>
+              <span>{soundEnabled ? 'Voz & Timbre' : 'Silenciado'}</span>
             </button>
             <button
               type="button"
@@ -618,6 +867,7 @@ export const BusinessPanel: React.FC = () => {
               { id: 'HISTORIAL', label: `Historial (${historial.length})` },
               { id: 'REFERIDOS', label: `Reservas Referidas (${referidosPorMi.length})` },
               { id: 'RUTAS_SOS', label: 'Ruta Colectivo & Despacho' },
+              { id: 'CONFIGURACION', label: 'Configurar Mi Panel' },
               { id: 'GESTION', label: 'Catálogo y Movimientos' },
             ] as Array<{ id: BizTab; label: string }>
           ).map((t) => (
@@ -625,13 +875,14 @@ export const BusinessPanel: React.FC = () => {
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
+              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors flex items-center gap-1.5 ${
                 tab === t.id
                   ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37] dark:text-[#0B0E14] dark:border-[#D4AF37]'
                   : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#A3A9B5]'
               }`}
             >
-              {t.label}
+              {t.id === 'CONFIGURACION' && <Settings className="w-3.5 h-3.5" />}
+              <span>{t.label}</span>
             </button>
           ))}
         </div>
@@ -930,6 +1181,17 @@ export const BusinessPanel: React.FC = () => {
           <ColectivoSeatControl />
           <EmergencyDispatchCenter />
         </div>
+      )}
+
+      {/* TAB CONFIGURACIÓN COMPLETA DEL PANEL DEL NEGOCIO */}
+      {tab === 'CONFIGURACION' && resumen && (
+        <BusinessConfigTab
+          negocioId={session.negocioId}
+          token={session.token}
+          resumen={resumen}
+          onRefresh={() => loadWorkspace(true)}
+          onFeedback={(msg) => setActionMsg(msg)}
+        />
       )}
 
       {/* TAB GESTION */}

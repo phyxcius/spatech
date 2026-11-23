@@ -500,3 +500,108 @@ test('6. Producción sin secretos falla al arrancar, expiración automática lib
     server.close();
   }
 });
+
+test('7. Panel Multinegocio: auto-registro, configuración de horario/pagos/voz, flota de taxis, cambio de PIN y RBAC', async () => {
+  const { server, req } = await startTestServer();
+  try {
+    // Auto-registro de un nuevo negocio de transporte
+    const reg = await req('POST', '/api/public/negocios/registro', {
+      rubro: 'TRANSPORTE',
+      nombre: 'Taxis Imperiales Cusco',
+      telefono: '+51984777888',
+      zona: 'San Sebastián, Cusco',
+      pin: '4321',
+    });
+    assert.equal(reg.status, 201);
+    assert.ok(reg.data.token);
+    assert.equal(reg.data.negocio.rubro, 'TRANSPORTE');
+    const bizId = reg.data.negocio.id;
+    const bizToken = reg.data.token;
+    const bizCodigo = reg.data.negocio.codigo;
+
+    // Otro negocio NO puede configurar este panel -> 403
+    const loginOther = await req('POST', '/api/negocio/login', { codigo: 'NEG-TX-01', pin: '2468' });
+    const crossCfg = await req(
+      'PUT',
+      `/api/negocio/${bizId}/configuracion`,
+      { nombre: 'Hackeado' },
+      loginOther.data.token
+    );
+    assert.equal(crossCfg.status, 403);
+
+    // El negocio dueño configura horario 24h, pagos, tarifa mínima, radio y alerta de voz
+    const cfg = await req(
+      'PUT',
+      `/api/negocio/${bizId}/configuracion`,
+      {
+        nombre: 'Taxis Imperiales VIP',
+        zona: 'Av. De La Cultura 800, Cusco',
+        abierto_24h: true,
+        horario_apertura: '05:00',
+        horario_cierre: '23:30',
+        metodos_pago_aceptados: 'Yape,Plin,Efectivo',
+        auto_aceptar_pedidos: true,
+        alerta_voz_activa: true,
+        tarifa_minima_centavos: 800,
+        radio_cobertura_km: 15,
+      },
+      bizToken
+    );
+    assert.equal(cfg.status, 200);
+    assert.equal(cfg.data.negocio.nombre, 'Taxis Imperiales VIP');
+    assert.equal(cfg.data.negocio.abierto_24h, true);
+    assert.equal(cfg.data.negocio.metodos_pago_aceptados, 'Yape,Plin,Efectivo');
+    assert.equal(cfg.data.negocio.tarifa_minima_centavos, 800);
+    assert.equal(cfg.data.negocio.radio_cobertura_km, 15);
+
+    // Registra una unidad de taxi y actualiza su estado
+    const unitRes = await req(
+      'POST',
+      `/api/negocio/${bizId}/unidades`,
+      {
+        conductor_nombre: 'Mateo Quispe',
+        placa: 'X9Z-404',
+        modelo: 'Toyota Corolla Hybrid',
+        color: 'Negro',
+        tarifa_base_centavos: 800,
+        tarifa_km_centavos: 240,
+      },
+      bizToken
+    );
+    assert.equal(unitRes.status, 201);
+    const unitId = unitRes.data.unidad.id;
+
+    const unitPatch = await req(
+      'PATCH',
+      `/api/negocio/${bizId}/unidades/${unitId}`,
+      { estado: 'OCUPADO' },
+      bizToken
+    );
+    assert.equal(unitPatch.status, 200);
+    assert.equal(unitPatch.data.unidad.estado, 'OCUPADO');
+
+    // Rotación de PIN del panel
+    const pinFail = await req(
+      'PUT',
+      `/api/negocio/${bizId}/pin`,
+      { pin_actual: '0000', pin_nuevo: '8765' },
+      bizToken
+    );
+    assert.equal(pinFail.status, 401);
+
+    const pinOk = await req(
+      'PUT',
+      `/api/negocio/${bizId}/pin`,
+      { pin_actual: '4321', pin_nuevo: '8765' },
+      bizToken
+    );
+    assert.equal(pinOk.status, 200);
+
+    // Verifica que inicia sesión con el nuevo PIN
+    const relogin = await req('POST', '/api/negocio/login', { codigo: bizCodigo, pin: '8765' });
+    assert.equal(relogin.status, 200);
+  } finally {
+    server.close();
+  }
+});
+
