@@ -18,7 +18,7 @@ import {
   QUICK_MARKET_CATALOG_ITEMS,
   type MarketComparisonResult,
   type RequestedMarketItem,
-} from '../data/cuscoMarkets.ts';
+} from '../lib/cuscoMarkets.ts';
 import { speakSpanish } from '../lib/api.ts';
 import { type MetodoPago } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';

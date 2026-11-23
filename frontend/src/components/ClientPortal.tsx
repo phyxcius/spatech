@@ -25,7 +25,7 @@ import {
   detectIntentFromQuery,
   parseMarketQuery,
   type RequestedMarketItem,
-} from '../data/cuscoMarkets.ts';
+} from '../lib/cuscoMarkets.ts';
 import { apiFetch, speakSpanish, stopSpeaking } from '../lib/api.ts';
 import {
   formatSoles,

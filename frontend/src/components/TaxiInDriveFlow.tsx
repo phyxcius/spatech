@@ -12,7 +12,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { apiFetch, speakSpanish } from '../lib/api.ts';
-import { haversineKm } from '../data/cuscoMarkets.ts';
+import { haversineKm } from '../lib/cuscoMarkets.ts';
 import {
   formatSoles,
   type ConciergeOpcion,
