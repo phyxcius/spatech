@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createApp } from '../backend/app.ts';
 import { initDatabase, seedDatabase } from '../backend/db.ts';
 import { auditarLibroContable, expireStaleOrders } from '../backend/finance.ts';
-import { validateProductionEnv } from '../backend/security.ts';
+import { hashPin, validateProductionEnv } from '../backend/security.ts';
 
 async function startTestServer() {
   process.env.DISABLE_FIREBASE_SYNC = 'true';
@@ -799,6 +799,168 @@ test('9. Proxy HeyGen Interactive Avatar WebRTC: estado público seguro y valida
     server.close();
   }
 });
+
+test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electrónica con IGV al entregar', async () => {
+  const { db, server, req } = await startTestServer();
+  try {
+    const loginAdmin = await req('POST', '/api/admin/login', { pin: '998877' });
+    assert.equal(loginAdmin.status, 200);
+    const adminToken = loginAdmin.data.token;
+
+    const loginTx1 = await req('POST', '/api/negocio/login', { codigo: 'NEG-TX-01', pin: '2468' });
+    assert.equal(loginTx1.status, 200);
+    const tx1Id = loginTx1.data.negocio.id;
+    const tx1Token = loginTx1.data.token;
+
+    await req(
+      'POST',
+      '/api/admin/ajustes-saldo',
+      { negocio_id: tx1Id, delta_centavos: 10000, motivo: 'Saldo para test facturación' },
+      adminToken
+    );
+
+    const dir = await req('GET', '/api/public/directorio');
+    const unitTx1 = dir.data.unidades.find((u: any) => u.negocio_id === tx1Id);
+    assert.ok(unitTx1);
+
+    // 1) Pedido de taxi como EMPRESA con RUC (debe emitir FACTURA F001-... al entregar)
+    const rucLookup = await req('GET', '/api/public/consulta-documento?tipo=RUC&numero=20601234565');
+    assert.equal(rucLookup.status, 200);
+    assert.equal(rucLookup.data.valid, true);
+
+    const taxiRuc = await req('POST', '/api/public/taxi/pedir', {
+      unidad_id: unitTx1.id,
+      metodo_pago: 'Tarjeta',
+      cliente_nombre: 'INVERSIONES CUSCO SAC',
+      cliente_telefono: '+51984112233',
+      cliente_documento_tipo: 'RUC',
+      cliente_documento_numero: '20601234565',
+      cliente_documento_verificado: true,
+      cliente_direccion_fiscal: 'AV. EL SOL 450, CUSCO',
+      destino_texto: 'Aeropuerto Velasco Astete',
+    });
+    assert.equal(taxiRuc.status, 201);
+    const rucPedido = taxiRuc.data.pedido;
+    const rucPin = taxiRuc.data.cliente_pin;
+    assert.equal(rucPedido.cliente_documento_tipo, 'RUC');
+    assert.equal(rucPedido.cliente_documento_numero, '20601234565');
+    assert.equal(rucPedido.cliente_direccion_fiscal, 'AV. EL SOL 450, CUSCO');
+    assert.equal(rucPedido.comprobante_tipo, 'FACTURA');
+
+    // Aceptar pedido
+    const acceptRuc = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${rucPedido.id}/aceptar`,
+      {},
+      tx1Token
+    );
+    assert.equal(acceptRuc.status, 200);
+
+    // Antes de entregar, comprobante retorna 409
+    const preComp = await req('GET', `/api/public/pedidos/${rucPedido.codigo}/comprobante`);
+    assert.equal(preComp.status, 409);
+
+    // Entregar con PIN -> emite Factura F001-... con desglose IGV 18%
+    const deliverRuc = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${rucPedido.id}/entregar`,
+      { pin: rucPin },
+      tx1Token
+    );
+    assert.equal(deliverRuc.status, 200);
+    assert.ok(deliverRuc.data.comprobante);
+    assert.equal(deliverRuc.data.comprobante.tipo, 'FACTURA');
+    assert.equal(deliverRuc.data.comprobante.serie, 'F001');
+    assert.match(deliverRuc.data.comprobante.numero_completo, /^F001-\d{8}$/);
+    assert.equal(deliverRuc.data.comprobante.receptor.tipo_doc, 'RUC');
+    assert.equal(deliverRuc.data.comprobante.receptor.numero_doc, '20601234565');
+    assert.equal(deliverRuc.data.comprobante.receptor.direccion, 'AV. EL SOL 450, CUSCO');
+    assert.equal(
+      deliverRuc.data.comprobante.op_gravada_centavos + deliverRuc.data.comprobante.igv_centavos,
+      deliverRuc.data.comprobante.total_centavos
+    );
+
+    const postComp = await req('GET', `/api/public/pedidos/${rucPedido.codigo}/comprobante`);
+    assert.equal(postComp.status, 200);
+    assert.equal(
+      postComp.data.comprobante.numero_completo,
+      deliverRuc.data.comprobante.numero_completo
+    );
+
+    // 2) Pedido de Market como PERSONA NATURAL con DNI (debe emitir BOLETA B001-... al entregar)
+    const mktRes = await req('POST', '/api/public/market-pedidos', {
+      market_nombre: 'Supermercados Orión Cusco',
+      market_zona: 'Cusco Centro',
+      tipo_entrega: 'DELIVERY',
+      items_resumen: '1x Leche Evaporada Gloria, 1x Atún',
+      monto_centavos: 1180,
+      metodo_pago: 'Yape',
+      cliente_nombre: 'LUCÍA QUISPE CCORI',
+      cliente_telefono: '+51984334455',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
+    });
+    assert.equal(mktRes.status, 201);
+    const mktPedido = mktRes.data.pedido;
+    assert.equal(mktPedido.cliente_documento_tipo, 'DNI');
+    assert.equal(mktPedido.cliente_documento_numero, '44556677');
+    assert.equal(mktPedido.comprobante_tipo, 'BOLETA');
+
+    const mktNegId = mktPedido.negocio_id;
+    // Asegurar saldo en el negocio asignado al market para completar entrega
+    await req(
+      'POST',
+      '/api/admin/ajustes-saldo',
+      { negocio_id: mktNegId, delta_centavos: 5000, motivo: 'Saldo market boleta test' },
+      adminToken
+    );
+
+    const negRow = db
+      .prepare('SELECT codigo FROM negocios WHERE id = ?')
+      .get(mktNegId) as { codigo: string } | undefined;
+    assert.ok(negRow);
+    const { hash, salt } = hashPin('4455');
+    db.prepare('UPDATE seguridad_credenciales SET pin_hash = ?, pin_salt = ? WHERE negocio_id = ?').run(
+      hash,
+      salt,
+      mktNegId
+    );
+    const loginMkt = await req('POST', '/api/negocio/login', {
+      codigo: negRow.codigo,
+      pin: '4455',
+    });
+    assert.equal(loginMkt.status, 200);
+    const mktToken = loginMkt.data.token;
+
+    const accMkt = await req(
+      'POST',
+      `/api/negocio/${mktNegId}/pedidos/${mktPedido.id}/aceptar`,
+      {},
+      mktToken
+    );
+    assert.equal(accMkt.status, 200);
+
+    const delMkt = await req(
+      'POST',
+      `/api/negocio/${mktNegId}/pedidos/${mktPedido.id}/entregar`,
+      { pin: mktRes.data.cliente_pin },
+      mktToken
+    );
+    assert.equal(delMkt.status, 200);
+    assert.equal(delMkt.data.comprobante.tipo, 'BOLETA');
+    assert.equal(delMkt.data.comprobante.serie, 'B001');
+    assert.match(delMkt.data.comprobante.numero_completo, /^B001-\d{8}$/);
+    assert.equal(delMkt.data.comprobante.total_centavos, 1180);
+    assert.equal(delMkt.data.comprobante.op_gravada_centavos, 1000);
+    assert.equal(delMkt.data.comprobante.igv_centavos, 180);
+
+    assert.equal(auditarLibroContable(db).cuadra, true);
+  } finally {
+    server.close();
+  }
+});
+
 
 
 

@@ -99,6 +99,11 @@ export interface PedidoRow {
   cliente_documento_tipo?: 'DNI' | 'RUC' | null;
   cliente_documento_numero?: string | null;
   cliente_documento_verificado?: number;
+  cliente_direccion_fiscal?: string | null;
+  comprobante_tipo?: 'BOLETA' | 'FACTURA' | 'RECIBO' | null;
+  comprobante_serie?: string | null;
+  comprobante_numero?: string | null;
+  comprobante_emitido_at?: string | null;
   origen_texto: string | null;
   destino_texto: string | null;
   origen_lat: number | null;

@@ -1086,12 +1086,17 @@ export async function handleFirebaseRtdbRequest<T>(
   if (cleanPath === '/api/public/taxi/pedir' && method === 'POST') {
     const unidades = toArray(snap.unidades);
     const unit = unidades.find((u) => u.id === Number(payload.unidad_id)) || unidades[0];
+    const biz = toArray(snap.negocios).find((n) => n.id === unit.negocio_id);
     const codigo = `CH-${Math.floor(1000 + Math.random() * 9000)}`;
     const pin = String(Math.floor(1000 + Math.random() * 9000));
     const tel = String(payload.cliente_telefono || '+51984000000');
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
     const monto = unit.tarifa_base_centavos + unit.tarifa_km_centavos * 5;
     const comPlat = Math.round(monto * 0.03);
+    const docTipo =
+      payload.cliente_documento_tipo === 'RUC' || payload.cliente_documento_tipo === 'DNI'
+        ? payload.cliente_documento_tipo
+        : null;
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1099,6 +1104,9 @@ export async function handleFirebaseRtdbRequest<T>(
       negocio_id: unit.negocio_id,
       referido_negocio_id: null,
       negocio_nombre: unit.negocio_nombre,
+      emisor_ruc: biz?.documento_numero || '20601234565',
+      emisor_razon_social: biz?.razon_social || unit.negocio_nombre,
+      emisor_direccion: biz?.zona || 'Cusco, Perú',
       categoria: 'TRANSPORTE',
       item_nombre: `${unit.modelo} · ${unit.conductor_nombre}`,
       transcripcion: `Taxi VIP ${unit.modelo} (${unit.placa}) · ${payload.destino_texto || 'Centro Cusco'}`,
@@ -1108,6 +1116,11 @@ export async function handleFirebaseRtdbRequest<T>(
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
+      cliente_documento_tipo: docTipo,
+      cliente_documento_numero: payload.cliente_documento_numero || null,
+      cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
+      cliente_direccion_fiscal: payload.cliente_direccion_fiscal || null,
+      comprobante_tipo: docTipo === 'RUC' ? 'FACTURA' : 'BOLETA',
       origen_texto: String(payload.origen_texto || 'Plaza de Armas, Cusco'),
       destino_texto: String(payload.destino_texto || 'Aeropuerto Velasco Astete'),
       conductor_nombre: unit.conductor_nombre,
@@ -1128,11 +1141,16 @@ export async function handleFirebaseRtdbRequest<T>(
   if (cleanPath === '/api/public/pedidos' && method === 'POST') {
     const servicios = toArray(snap.servicios);
     const srv = servicios.find((s) => s.id === Number(payload.servicio_id)) || servicios[0];
+    const biz = toArray(snap.negocios).find((n) => n.id === srv.negocio_id);
     const codigo = `CH-${Math.floor(1000 + Math.random() * 9000)}`;
     const pin = String(Math.floor(1000 + Math.random() * 9000));
     const tel = String(payload.cliente_telefono || '+51984000000');
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
     const comPlat = Math.round(srv.precio_centavos * 0.03);
+    const docTipo =
+      payload.cliente_documento_tipo === 'RUC' || payload.cliente_documento_tipo === 'DNI'
+        ? payload.cliente_documento_tipo
+        : null;
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1141,6 +1159,9 @@ export async function handleFirebaseRtdbRequest<T>(
       referido_negocio_id: null,
       negocio_nombre: srv.negocio_nombre,
       negocio_zona: srv.zona,
+      emisor_ruc: biz?.documento_numero || '20601234565',
+      emisor_razon_social: biz?.razon_social || srv.negocio_nombre,
+      emisor_direccion: biz?.zona || srv.zona || 'Cusco, Perú',
       categoria: srv.categoria,
       item_nombre: srv.nombre,
       transcripcion: String(payload.transcripcion || srv.nombre),
@@ -1150,9 +1171,11 @@ export async function handleFirebaseRtdbRequest<T>(
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
-      cliente_documento_tipo: payload.cliente_documento_tipo || null,
+      cliente_documento_tipo: docTipo,
       cliente_documento_numero: payload.cliente_documento_numero || null,
       cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
+      cliente_direccion_fiscal: payload.cliente_direccion_fiscal || null,
+      comprobante_tipo: docTipo === 'RUC' ? 'FACTURA' : 'BOLETA',
       pin_salt: hashed.salt,
       pin_hash: hashed.hash,
       intentos_pin: 0,
@@ -1177,7 +1200,11 @@ export async function handleFirebaseRtdbRequest<T>(
     const monto = Number(payload.monto_centavos) || 1500;
     const comPlat = Math.round(monto * 0.03);
     const marketNombre = String(payload.market_nombre || 'Minimarket Cusco');
-    const resumen = String(payload.items_resumen || 'Canasta de productos');
+    const resumen = String(payload.items_resumen || payload.item_resumen || 'Canasta de productos');
+    const docTipo =
+      payload.cliente_documento_tipo === 'RUC' || payload.cliente_documento_tipo === 'DNI'
+        ? payload.cliente_documento_tipo
+        : null;
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1186,6 +1213,9 @@ export async function handleFirebaseRtdbRequest<T>(
       referido_negocio_id: null,
       negocio_nombre: targetBiz.nombre,
       negocio_zona: String(payload.market_zona || targetBiz.zona),
+      emisor_ruc: targetBiz.documento_numero || '20601234565',
+      emisor_razon_social: targetBiz.razon_social || targetBiz.nombre,
+      emisor_direccion: targetBiz.zona || 'Cusco, Perú',
       categoria: targetBiz.rubro,
       item_nombre: `${marketNombre} · ${resumen.slice(0, 70)}`,
       transcripcion: `[${payload.tipo_entrega === 'DELIVERY' ? 'DELIVERY' : 'RESERVA EN TIENDA'}] ${marketNombre}: ${resumen}`,
@@ -1195,9 +1225,11 @@ export async function handleFirebaseRtdbRequest<T>(
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Cliente Verificado'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
-      cliente_documento_tipo: payload.cliente_documento_tipo || null,
+      cliente_documento_tipo: docTipo,
       cliente_documento_numero: payload.cliente_documento_numero || null,
       cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
+      cliente_direccion_fiscal: payload.cliente_direccion_fiscal || null,
+      comprobante_tipo: docTipo === 'RUC' ? 'FACTURA' : 'BOLETA',
       destino_texto: String(payload.market_zona || 'Cusco'),
       pin_salt: hashed.salt,
       pin_hash: hashed.hash,
@@ -1211,7 +1243,9 @@ export async function handleFirebaseRtdbRequest<T>(
     return { pedido, cliente_pin: pin } as T;
   }
 
-  const orderMatch = cleanPath.match(/^\/api\/public\/pedidos\/([^/]+)(\/cancelar|\/resena)?$/);
+  const orderMatch = cleanPath.match(
+    /^\/api\/public\/pedidos\/([^/]+)(\/cancelar|\/resena|\/comprobante)?$/
+  );
   if (orderMatch) {
     const codigo = decodeURIComponent(orderMatch[1]);
     const action = orderMatch[2] || '';
@@ -1231,6 +1265,57 @@ export async function handleFirebaseRtdbRequest<T>(
         created_at: new Date().toISOString(),
       });
       return { ok: true } as T;
+    }
+    if (action === '/comprobante' && method === 'GET') {
+      if (pedido.estado !== 'ENTREGADO_PAGADO') {
+        throw new Error('El comprobante electrónico se emite al finalizar y liquidar el pedido.');
+      }
+      const biz = toArray(snap.negocios).find((n) => n.id === pedido.negocio_id);
+      const tipo =
+        pedido.comprobante_tipo ||
+        (pedido.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA');
+      const serie = pedido.comprobante_serie || (tipo === 'FACTURA' ? 'F001' : 'B001');
+      const numero =
+        pedido.comprobante_numero || String(pedido.id).slice(-8).padStart(8, '0');
+      const totalCentavos = Number(pedido.monto_centavos) || 0;
+      const opGravada = Math.round(totalCentavos / 1.18);
+      const igv = totalCentavos - opGravada;
+      return {
+        comprobante: {
+          tipo,
+          serie,
+          numero,
+          numero_completo: `${serie}-${numero}`,
+          emitido_at: pedido.comprobante_emitido_at || pedido.created_at,
+          pedido_codigo: pedido.codigo,
+          metodo_pago: pedido.metodo_pago,
+          moneda: 'PEN',
+          emisor: {
+            ruc: pedido.emisor_ruc || biz?.documento_numero || '20601234565',
+            razon_social: pedido.emisor_razon_social || biz?.razon_social || pedido.negocio_nombre || 'La Chuspa Cusco',
+            nombre_comercial: pedido.negocio_nombre || biz?.nombre || 'La Chuspa Cusco',
+            direccion: pedido.emisor_direccion || biz?.zona || 'Cusco, Perú',
+          },
+          receptor: {
+            tipo_doc: pedido.cliente_documento_tipo || 'DNI',
+            numero_doc: pedido.cliente_documento_numero || '00000000',
+            nombre: pedido.cliente_nombre,
+            direccion: pedido.cliente_direccion_fiscal || 'Cusco, Perú',
+          },
+          items: [
+            {
+              cantidad: 1,
+              descripcion: pedido.item_nombre,
+              detalle: pedido.transcripcion,
+              valor_unitario_centavos: opGravada,
+              total_centavos: totalCentavos,
+            },
+          ],
+          op_gravada_centavos: opGravada,
+          igv_centavos: igv,
+          total_centavos: totalCentavos,
+        },
+      } as T;
     }
     const { pin_hash: _ph, pin_salt: _ps, ...publicOrder } = pedido;
     const whatsappLogs = [
@@ -1680,11 +1765,33 @@ export async function handleFirebaseRtdbRequest<T>(
             created_at: new Date().toISOString(),
           });
         }
+        const compTipo = match.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA';
+        const compSerie = compTipo === 'FACTURA' ? 'F001' : 'B001';
+        const compNum = String(match.id).slice(-8).padStart(8, '0');
+        const emitidoAt = new Date().toISOString();
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
           estado: 'ENTREGADO_PAGADO',
           comision_retenida_centavos: 0,
+          comprobante_tipo: compTipo,
+          comprobante_serie: compSerie,
+          comprobante_numero: compNum,
+          comprobante_emitido_at: emitidoAt,
         });
-        return { ok: true, puntos_otorgados: 50 } as T;
+        return {
+          ok: true,
+          puntos_otorgados: 50,
+          pedido: {
+            ...match,
+            estado: 'ENTREGADO_PAGADO',
+            comprobante_tipo: compTipo,
+            comprobante_serie: compSerie,
+            comprobante_numero: compNum,
+            comprobante_emitido_at: emitidoAt,
+            emisor_ruc: biz.documento_numero || '20601234565',
+            emisor_razon_social: biz.razon_social || biz.nombre,
+            emisor_direccion: biz.zona,
+          },
+        } as T;
       }
 
       if (action === 'cancelar' && method === 'POST') {

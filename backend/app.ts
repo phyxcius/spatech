@@ -76,6 +76,99 @@ function generateCode(prefix: string): string {
   return `${prefix}-${num}`;
 }
 
+function parseClienteDocumentoInput(body: Record<string, any>): {
+  docTipo: 'DNI' | 'RUC' | null;
+  docNum: string | null;
+  docVerif: number;
+  docDireccionFiscal: string | null;
+  comprobanteTipo: 'BOLETA' | 'FACTURA';
+} {
+  const rawNum = String(body.cliente_documento_numero || '').trim();
+  const rawDir =
+    typeof body.cliente_direccion_fiscal === 'string' && body.cliente_direccion_fiscal.trim()
+      ? body.cliente_direccion_fiscal.trim().slice(0, 220)
+      : null;
+
+  if (!rawNum) {
+    return {
+      docTipo: null,
+      docNum: null,
+      docVerif: 0,
+      docDireccionFiscal: rawDir,
+      comprobanteTipo: 'BOLETA',
+    };
+  }
+
+  const t = String(body.cliente_documento_tipo || (rawNum.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+  if (t === 'DNI' && isValidDni(rawNum)) {
+    return {
+      docTipo: 'DNI',
+      docNum: rawNum,
+      docVerif: body.cliente_documento_verificado ? 1 : 0,
+      docDireccionFiscal: rawDir,
+      comprobanteTipo: 'BOLETA',
+    };
+  }
+  if (t === 'RUC' && isValidRuc(rawNum)) {
+    return {
+      docTipo: 'RUC',
+      docNum: rawNum,
+      docVerif: body.cliente_documento_verificado ? 1 : 0,
+      docDireccionFiscal: rawDir,
+      comprobanteTipo: 'FACTURA',
+    };
+  }
+  throw new HttpError(400, 'El DNI/RUC del cliente no tiene formato válido');
+}
+
+function buildComprobantePayload(row: PedidoRow & {
+  negocio_nombre?: string;
+  emisor_ruc?: string | null;
+  emisor_razon_social?: string | null;
+  emisor_direccion?: string | null;
+}) {
+  const tipo = row.comprobante_tipo || (row.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA');
+  const serie = row.comprobante_serie || (tipo === 'FACTURA' ? 'F001' : 'B001');
+  const numero = row.comprobante_numero || String(row.id).padStart(8, '0');
+  const totalCentavos = Number(row.monto_centavos) || 0;
+  const opGravadaCentavos = Math.round(totalCentavos / 1.18);
+  const igvCentavos = totalCentavos - opGravadaCentavos;
+  return {
+    tipo,
+    serie,
+    numero,
+    numero_completo: `${serie}-${numero}`,
+    emitido_at: row.comprobante_emitido_at || row.updated_at || row.created_at,
+    pedido_codigo: row.codigo,
+    metodo_pago: row.metodo_pago,
+    moneda: 'PEN',
+    emisor: {
+      ruc: row.emisor_ruc || '20601234565',
+      razon_social: row.emisor_razon_social || row.negocio_nombre || 'La Chuspa Cusco Partner',
+      nombre_comercial: row.negocio_nombre || row.emisor_razon_social || 'La Chuspa Cusco',
+      direccion: row.emisor_direccion || 'Cusco, Perú',
+    },
+    receptor: {
+      tipo_doc: row.cliente_documento_tipo || 'DNI',
+      numero_doc: row.cliente_documento_numero || '00000000',
+      nombre: row.cliente_nombre,
+      direccion: row.cliente_direccion_fiscal || 'Cusco, Perú',
+    },
+    items: [
+      {
+        cantidad: 1,
+        descripcion: row.item_nombre,
+        detalle: row.transcripcion,
+        valor_unitario_centavos: opGravadaCentavos,
+        total_centavos: totalCentavos,
+      },
+    ],
+    op_gravada_centavos: opGravadaCentavos,
+    igv_centavos: igvCentavos,
+    total_centavos: totalCentavos,
+  };
+}
+
 export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }) {
   const { db, skipRateLimit = false } = options;
   const app = express();
@@ -421,35 +514,74 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       let source: 'RENIEC' | 'SUNAT' | 'VALIDACION_LOCAL' = 'VALIDACION_LOCAL';
 
       if (process.env.NODE_ENV !== 'test') {
-        try {
-          const endpoint =
-            tipo === 'DNI'
-              ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
-              : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
-          const upstream = await fetch(endpoint, {
-            headers: { Accept: 'application/json' },
-            signal: AbortSignal.timeout(4500),
-          });
-          if (upstream.ok) {
-            const data = (await upstream.json()) as Record<string, any>;
-            if (tipo === 'DNI') {
-              const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
-                .filter(Boolean)
-                .join(' ')
-                .trim();
-              nombreCompleto = String(data.nombre || joined || '').trim();
-              if (nombreCompleto) source = 'RENIEC';
-            } else {
-              razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
-              nombreCompleto = razonSocial || '';
-              estado = data.estado ? String(data.estado) : null;
-              condicion = data.condicion ? String(data.condicion) : null;
-              direccion = data.direccion ? String(data.direccion) : null;
-              if (nombreCompleto) source = 'SUNAT';
+        const apisperuToken = (process.env.PERU_DNI_RUC_TOKEN || '').trim();
+        if (apisperuToken) {
+          try {
+            const apisperuEndpoint =
+              tipo === 'DNI'
+                ? `https://dniruc.apisperu.com/api/v1/dni/${encodeURIComponent(numero)}?token=${encodeURIComponent(apisperuToken)}`
+                : `https://dniruc.apisperu.com/api/v1/ruc/${encodeURIComponent(numero)}?token=${encodeURIComponent(apisperuToken)}`;
+            const apRes = await fetch(apisperuEndpoint, {
+              headers: { Accept: 'application/json' },
+              signal: AbortSignal.timeout(5500),
+            });
+            if (apRes.ok) {
+              const apData = (await apRes.json()) as Record<string, any>;
+              if (apData && apData.success !== false) {
+                if (tipo === 'DNI') {
+                  const joined = [apData.nombres, apData.apellidoPaterno, apData.apellidoMaterno]
+                    .filter(Boolean)
+                    .join(' ')
+                    .trim();
+                  nombreCompleto = String(joined || apData.nombre || '').trim();
+                  if (nombreCompleto) source = 'RENIEC';
+                } else {
+                  razonSocial =
+                    String(apData.razonSocial || apData.nombreComercial || apData.nombre || '').trim() || null;
+                  nombreCompleto = razonSocial || '';
+                  estado = apData.estado ? String(apData.estado) : null;
+                  condicion = apData.condicion ? String(apData.condicion) : null;
+                  direccion = apData.direccion ? String(apData.direccion) : null;
+                  if (nombreCompleto) source = 'SUNAT';
+                }
+              }
             }
+          } catch {
+            // Fall through to secondary provider / local validation
           }
-        } catch {
-          // Fallback to validated local format below when offline / upstream unavailable
+        }
+
+        if (!nombreCompleto) {
+          try {
+            const endpoint =
+              tipo === 'DNI'
+                ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
+                : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
+            const upstream = await fetch(endpoint, {
+              headers: { Accept: 'application/json' },
+              signal: AbortSignal.timeout(4500),
+            });
+            if (upstream.ok) {
+              const data = (await upstream.json()) as Record<string, any>;
+              if (tipo === 'DNI') {
+                const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim();
+                nombreCompleto = String(data.nombre || joined || '').trim();
+                if (nombreCompleto) source = 'RENIEC';
+              } else {
+                razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
+                nombreCompleto = razonSocial || '';
+                estado = data.estado ? String(data.estado) : null;
+                condicion = data.condicion ? String(data.condicion) : null;
+                direccion = data.direccion ? String(data.direccion) : null;
+                if (nombreCompleto) source = 'SUNAT';
+              }
+            }
+          } catch {
+            // Fallback to validated local format below when offline / upstream unavailable
+          }
         }
       }
 
@@ -603,24 +735,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         throw new HttpError(400, 'Teléfono WhatsApp obligatorio');
       }
 
-      let docTipo: 'DNI' | 'RUC' | null = null;
-      let docNum: string | null = null;
-      let docVerif = 0;
-      if (cliente_documento_numero) {
-        const cleanDoc = String(cliente_documento_numero).trim();
-        const t = String(cliente_documento_tipo || (cleanDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-        if (t === 'DNI' && isValidDni(cleanDoc)) {
-          docTipo = 'DNI';
-          docNum = cleanDoc;
-          docVerif = cliente_documento_verificado ? 1 : 0;
-        } else if (t === 'RUC' && isValidRuc(cleanDoc)) {
-          docTipo = 'RUC';
-          docNum = cleanDoc;
-          docVerif = cliente_documento_verificado ? 1 : 0;
-        } else {
-          throw new HttpError(400, 'El DNI/RUC del cliente no tiene formato válido');
-        }
-      }
+      const { docTipo, docNum, docVerif, docDireccionFiscal, comprobanteTipo } =
+        parseClienteDocumentoInput(req.body || {});
 
       const negocio = db
         .prepare('SELECT * FROM negocios WHERE id = ? AND activo = 1')
@@ -681,9 +797,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             servicio_id, unidad_id, item_nombre, transcripcion, monto_centavos,
             metodo_pago, estado, cliente_nombre, cliente_telefono,
             cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
+            cliente_direccion_fiscal, comprobante_tipo,
             eta_min, fecha_hora_reserva, pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+2 hours'))
+          VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+2 hours'))
         `)
         .run(
           codigo,
@@ -700,6 +817,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           docTipo,
           docNum,
           docVerif,
+          docDireccionFiscal,
+          comprobanteTipo,
           item.duracion_min,
           typeof fecha_hora_reserva === 'string' ? fecha_hora_reserva.trim() : null,
           hash,
@@ -760,24 +879,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         throw new HttpError(400, 'Monto del pedido inválido');
       }
 
-      let docTipo: 'DNI' | 'RUC' | null = null;
-      let docNum: string | null = null;
-      let docVerif = 0;
-      if (cliente_documento_numero) {
-        const cleanDoc = String(cliente_documento_numero).trim();
-        const t = String(cliente_documento_tipo || (cleanDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-        if (t === 'DNI' && isValidDni(cleanDoc)) {
-          docTipo = 'DNI';
-          docNum = cleanDoc;
-          docVerif = cliente_documento_verificado ? 1 : 0;
-        } else if (t === 'RUC' && isValidRuc(cleanDoc)) {
-          docTipo = 'RUC';
-          docNum = cleanDoc;
-          docVerif = cliente_documento_verificado ? 1 : 0;
-        } else {
-          throw new HttpError(400, 'DNI/RUC inválido');
-        }
-      }
+      const { docTipo, docNum, docVerif, docDireccionFiscal, comprobanteTipo } =
+        parseClienteDocumentoInput(req.body || {});
 
       // Asignar a un negocio activo de minimarket/restaurante/farmacia en red para que el panel multinegocio lo reciba en vivo
       const targetBiz =
@@ -795,9 +898,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const pin = generateOrderPin();
       const { hash, salt } = hashPin(pin);
       const codigo = generateCode('MKT-CUSCO');
+      const rawResumen = items_resumen || req.body?.item_resumen;
       const resumenClean =
-        typeof items_resumen === 'string' && items_resumen.trim()
-          ? items_resumen.trim().slice(0, 320)
+        typeof rawResumen === 'string' && rawResumen.trim()
+          ? rawResumen.trim().slice(0, 320)
           : `Canasta Market ${market_nombre.trim()}`;
 
       const insertRes = db
@@ -807,9 +911,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             servicio_id, unidad_id, item_nombre, transcripcion, monto_centavos,
             metodo_pago, estado, cliente_nombre, cliente_telefono,
             cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
+            cliente_direccion_fiscal, comprobante_tipo,
             destino_texto, eta_min, pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, 20, ?, ?, NULL, datetime('now', '+2 hours'))
+          VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, 20, ?, ?, NULL, datetime('now', '+2 hours'))
         `)
         .run(
           codigo,
@@ -826,6 +931,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           docTipo,
           docNum,
           docVerif,
+          docDireccionFiscal,
+          comprobanteTipo,
           String(market_zona || 'Cusco'),
           hash,
           salt
@@ -956,16 +1063,21 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         ? origen_texto.trim()
         : 'Ubicación GPS actual';
 
+      const { docTipo, docNum, docVerif, docDireccionFiscal, comprobanteTipo } =
+        parseClienteDocumentoInput(req.body || {});
+
       const insertRes = db
         .prepare(`
           INSERT INTO pedidos_ordenes (
             codigo, negocio_id, referido_negocio_id, promotor_codigo, categoria,
             servicio_id, unidad_id, item_nombre, transcripcion, monto_centavos,
             metodo_pago, estado, cliente_nombre, cliente_telefono,
+            cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
+            cliente_direccion_fiscal, comprobante_tipo,
             origen_texto, destino_texto, origen_lat, origen_lng, distancia_km, eta_min,
             pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, ?, 'TRANSPORTE', NULL, ?, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+45 minutes'))
+          VALUES (?, ?, NULL, ?, 'TRANSPORTE', NULL, ?, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+45 minutes'))
         `)
         .run(
           codigo,
@@ -978,6 +1090,11 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           metodo_pago,
           cliente_nombre.trim(),
           cliente_telefono.trim(),
+          docTipo,
+          docNum,
+          docVerif,
+          docDireccionFiscal,
+          comprobanteTipo,
           origenClean,
           destinoClean,
           oLat,
@@ -1015,6 +1132,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const row = db
         .prepare(`
           SELECT p.*, n.nombre AS negocio_nombre, n.zona AS negocio_zona, n.lat AS negocio_lat, n.lng AS negocio_lng,
+                 n.documento_numero AS emisor_ruc, COALESCE(n.razon_social, n.nombre) AS emisor_razon_social, n.zona AS emisor_direccion,
                  u.conductor_nombre, u.placa, u.modelo, u.lat AS unidad_lat, u.lng AS unidad_lng
           FROM pedidos_ordenes p
           JOIN negocios n ON n.id = p.negocio_id
@@ -1047,6 +1165,40 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         resena: resena || null,
         puntos_cliente: puntos?.puntos ?? 0,
       });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/public/pedidos/:codigo/comprobante', publicLimiter, (req, res, next) => {
+    try {
+      const codigo = String(req.params.codigo || '').trim().toUpperCase();
+      const row = db
+        .prepare(`
+          SELECT p.*, n.nombre AS negocio_nombre, n.documento_numero AS emisor_ruc,
+                 COALESCE(n.razon_social, n.nombre) AS emisor_razon_social, n.zona AS emisor_direccion
+          FROM pedidos_ordenes p
+          JOIN negocios n ON n.id = p.negocio_id
+          WHERE p.codigo = ?
+        `)
+        .get(codigo) as unknown as
+        | (PedidoRow & {
+            negocio_nombre: string;
+            emisor_ruc: string | null;
+            emisor_razon_social: string | null;
+            emisor_direccion: string | null;
+          })
+        | undefined;
+
+      if (!row) throw new HttpError(404, 'Pedido no encontrado');
+      if (row.estado !== 'ENTREGADO_PAGADO') {
+        throw new HttpError(
+          409,
+          'El comprobante electrónico se emite al finalizar y liquidar el pedido'
+        );
+      }
+
+      res.json({ comprobante: buildComprobantePayload(row) });
     } catch (err) {
       next(err);
     }
@@ -1898,8 +2050,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         // ESTRICTA SEPARACIÓN POR CATEGORÍA: Solo pedidos de su propio rubro y negocio
         rows = db
           .prepare(`
-            SELECT p.*, ref.nombre AS referidor_nombre
+            SELECT p.*, ref.nombre AS referidor_nombre,
+                   prov.documento_numero AS emisor_ruc,
+                   COALESCE(prov.razon_social, prov.nombre) AS emisor_razon_social,
+                   prov.zona AS emisor_direccion
             FROM pedidos_ordenes p
+            JOIN negocios prov ON prov.id = p.negocio_id
             LEFT JOIN negocios ref ON ref.id = p.referido_negocio_id
             WHERE p.negocio_id = ? AND p.categoria = ?
             ORDER BY p.id DESC
@@ -1908,7 +2064,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       } else if (rol === 'REFERIDOR') {
         rows = db
           .prepare(`
-            SELECT p.*, prov.nombre AS prestador_nombre
+            SELECT p.*, prov.nombre AS prestador_nombre,
+                   prov.documento_numero AS emisor_ruc,
+                   COALESCE(prov.razon_social, prov.nombre) AS emisor_razon_social,
+                   prov.zona AS emisor_direccion
             FROM pedidos_ordenes p
             JOIN negocios prov ON prov.id = p.negocio_id
             WHERE p.referido_negocio_id = ?
@@ -1918,7 +2077,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       } else {
         rows = db
           .prepare(`
-            SELECT p.*, prov.nombre AS prestador_nombre, ref.nombre AS referidor_nombre
+            SELECT p.*, prov.nombre AS prestador_nombre, ref.nombre AS referidor_nombre,
+                   prov.documento_numero AS emisor_ruc,
+                   COALESCE(prov.razon_social, prov.nombre) AS emisor_razon_social,
+                   prov.zona AS emisor_direccion
             FROM pedidos_ordenes p
             JOIN negocios prov ON prov.id = p.negocio_id
             LEFT JOIN negocios ref ON ref.id = p.referido_negocio_id
@@ -1996,12 +2158,29 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         const pedidoId = Number(req.params.pedidoId);
         const { pin } = req.body || {};
         const result = validarPinYEntregar(db, pedidoId, negocioId, String(pin || ''));
+        const issuer = db
+          .prepare(
+            'SELECT nombre AS negocio_nombre, documento_numero AS emisor_ruc, COALESCE(razon_social, nombre) AS emisor_razon_social, zona AS emisor_direccion FROM negocios WHERE id = ?'
+          )
+          .get(result.pedido.negocio_id) as
+          | {
+              negocio_nombre: string;
+              emisor_ruc: string | null;
+              emisor_razon_social: string | null;
+              emisor_direccion: string | null;
+            }
+          | undefined;
+        const enriched = {
+          ...result.pedido,
+          negocio_nombre: issuer?.negocio_nombre,
+          emisor_ruc: issuer?.emisor_ruc || null,
+          emisor_razon_social: issuer?.emisor_razon_social || null,
+          emisor_direccion: issuer?.emisor_direccion || null,
+        };
         res.json({
-          pedido: sanitizeOrderForBusiness(
-            result.pedido as unknown as Record<string, unknown>,
-            negocioId
-          ),
+          pedido: sanitizeOrderForBusiness(enriched as unknown as Record<string, unknown>, negocioId),
           puntos_otorgados: result.puntosGanados,
+          comprobante: buildComprobantePayload(enriched),
         });
       } catch (err) {
         next(err);

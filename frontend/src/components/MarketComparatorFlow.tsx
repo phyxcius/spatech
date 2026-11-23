@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   BadgeCheck,
   CheckCircle2,
@@ -25,7 +25,11 @@ import {
   formatPeruLookupError,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
-import { type MetodoPago, type PedidoPublico } from '../types.ts';
+import {
+  type MetodoPago,
+  type PedidoPublico,
+  type SharedCustomerDoc,
+} from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 
 interface MarketComparatorFlowProps {
@@ -36,6 +40,8 @@ interface MarketComparatorFlowProps {
   requestedItems: RequestedMarketItem[];
   onChangeItems: (items: RequestedMarketItem[]) => void;
   speakEnabled: boolean;
+  customerDoc?: SharedCustomerDoc | null;
+  onCustomerDocVerified?: (doc: SharedCustomerDoc) => void;
   onOrderCreated?: (pedido: PedidoPublico, pin: string) => void;
 }
 
@@ -51,6 +57,8 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   requestedItems,
   onChangeItems,
   speakEnabled,
+  customerDoc,
+  onCustomerDocVerified,
   onOrderCreated,
 }) => {
   const [onlyOpen, setOnlyOpen] = useState(true);
@@ -64,11 +72,27 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     result: MarketComparisonResult;
     mode: 'COMPRA' | 'RESERVA';
   } | null>(null);
-  const [clienteNombre, setClienteNombre] = useState('');
+  const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
+  const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState(
+    customerDoc?.direccionFiscal || ''
+  );
   const [clienteTelefono, setClienteTelefono] = useState('');
-  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>('DNI');
-  const [docNumero, setDocNumero] = useState('');
-  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>(customerDoc?.tipo || 'DNI');
+  const [docNumero, setDocNumero] = useState(customerDoc?.numero || '');
+  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(
+    customerDoc?.verificado
+      ? {
+          valid: true,
+          validado: true,
+          tipo: customerDoc.tipo,
+          numero: customerDoc.numero,
+          nombre_completo: customerDoc.nombre,
+          direccion: customerDoc.direccionFiscal,
+          source: customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
+          fuente: customerDoc.fuente || (customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+        }
+      : null
+  );
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docLookupError, setDocLookupError] = useState<string | null>(null);
   const [submittingCheckout, setSubmittingCheckout] = useState(false);
@@ -84,6 +108,25 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     itemsCount: number;
     documentoResumen?: string;
   } | null>(null);
+
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setDocTipo(customerDoc.tipo);
+      setDocNumero(customerDoc.numero);
+      if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      if (customerDoc.direccionFiscal) setClienteDireccionFiscal(customerDoc.direccionFiscal);
+      setDocVerificado({
+        valid: true,
+        validado: true,
+        tipo: customerDoc.tipo,
+        numero: customerDoc.numero,
+        nombre_completo: customerDoc.nombre,
+        direccion: customerDoc.direccionFiscal,
+        source: customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
+        fuente: customerDoc.fuente || (customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+      });
+    }
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo]);
 
   const comparisons = useMemo(() => {
     const list = computeMarketComparisons(requestedItems, userLat, userLng, !onlyOpen);
@@ -148,6 +191,17 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
       if (res.nombre_completo) {
         setClienteNombre(res.nombre_completo);
       }
+      if (res.direccion) {
+        setClienteDireccionFiscal(res.direccion);
+      }
+      onCustomerDocVerified?.({
+        tipo: res.tipo,
+        numero: res.numero,
+        nombre: res.nombre_completo,
+        direccionFiscal: res.direccion,
+        verificado: true,
+        fuente: res.fuente || res.source,
+      });
     } catch (err) {
       setDocVerificado(null);
       setDocLookupError(formatPeruLookupError(err));
@@ -162,7 +216,11 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     setCheckoutError(null);
 
     const cleanDoc = docNumero.replace(/\D/g, '');
-    if (!docVerificado?.validado) {
+    let activeVerif = docVerificado;
+    let activeNombre = clienteNombre.trim();
+    let activeDireccion = clienteDireccionFiscal.trim();
+
+    if (!activeVerif?.validado) {
       if (!cleanDoc) {
         setCheckoutError('Valida tu DNI (RENIEC) o RUC (SUNAT) antes de enviar tu pedido al minimarket.');
         return;
@@ -172,10 +230,24 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         const res = await apiFetch<PeruDocumentLookupResult>(
           `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}`
         );
+        activeVerif = res;
         setDocVerificado(res);
-        if (res.nombre_completo && !clienteNombre.trim()) {
+        if (res.nombre_completo && !activeNombre) {
+          activeNombre = res.nombre_completo;
           setClienteNombre(res.nombre_completo);
         }
+        if (res.direccion && !activeDireccion) {
+          activeDireccion = res.direccion;
+          setClienteDireccionFiscal(res.direccion);
+        }
+        onCustomerDocVerified?.({
+          tipo: res.tipo,
+          numero: res.numero,
+          nombre: activeNombre || res.nombre_completo,
+          direccionFiscal: activeDireccion || res.direccion,
+          verificado: true,
+          fuente: res.fuente || res.source,
+        });
       } catch (err) {
         setDocLookupLoading(false);
         setCheckoutError(formatPeruLookupError(err));
@@ -199,14 +271,16 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
           method: 'POST',
           body: {
             market_nombre: checkoutTarget.result.market.nombre,
-            item_resumen: resumen || 'Canasta de productos',
+            market_zona: checkoutTarget.result.market.direccion,
+            items_resumen: resumen || 'Canasta de productos',
             monto_centavos: checkoutTarget.result.totalCentavos,
             metodo_pago: metodoPago,
-            cliente_nombre: clienteNombre,
+            cliente_nombre: activeNombre || clienteNombre,
             cliente_telefono: clienteTelefono,
-            cliente_documento_tipo: docVerificado?.tipo || docTipo,
-            cliente_documento_numero: docVerificado?.numero || cleanDoc,
+            cliente_documento_tipo: activeVerif?.tipo || docTipo,
+            cliente_documento_numero: activeVerif?.numero || cleanDoc,
             cliente_documento_verificado: true,
+            cliente_direccion_fiscal: activeDireccion || undefined,
             tipo_entrega: checkoutTarget.mode === 'COMPRA' ? 'DELIVERY' : 'RESERVA',
           },
         }
@@ -702,6 +776,10 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             </div>
 
             <div className="space-y-2.5">
+              <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                Comprobante a emitir al finalizar:{' '}
+                <strong>{docTipo === 'RUC' ? 'Factura Electrónica (RUC)' : 'Boleta Electrónica (DNI)'}</strong>
+              </p>
               <input
                 required
                 type="text"
@@ -710,6 +788,15 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                 placeholder="Titular / Razón social (autocompletado al validar)"
                 className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
+              {docTipo === 'RUC' && (
+                <input
+                  type="text"
+                  value={clienteDireccionFiscal}
+                  onChange={(e) => setClienteDireccionFiscal(e.target.value)}
+                  placeholder="Dirección fiscal para Factura (autocompletada)"
+                  className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+                />
+              )}
               <input
                 required
                 type="tel"

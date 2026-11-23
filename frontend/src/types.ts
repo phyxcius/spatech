@@ -141,6 +141,14 @@ export interface PedidoPublico {
   cliente_documento_tipo?: 'DNI' | 'RUC' | null;
   cliente_documento_numero?: string | null;
   cliente_documento_verificado?: number;
+  cliente_direccion_fiscal?: string | null;
+  comprobante_tipo?: 'BOLETA' | 'FACTURA' | 'RECIBO' | null;
+  comprobante_serie?: string | null;
+  comprobante_numero?: string | null;
+  comprobante_emitido_at?: string | null;
+  emisor_ruc?: string | null;
+  emisor_razon_social?: string | null;
+  emisor_direccion?: string | null;
   origen_texto?: string | null;
   destino_texto?: string | null;
   distancia_km?: number | null;
@@ -170,6 +178,14 @@ export interface PedidoNegocio {
   cliente_documento_tipo?: 'DNI' | 'RUC' | null;
   cliente_documento_numero?: string | null;
   cliente_documento_verificado?: number;
+  cliente_direccion_fiscal?: string | null;
+  comprobante_tipo?: 'BOLETA' | 'FACTURA' | 'RECIBO' | null;
+  comprobante_serie?: string | null;
+  comprobante_numero?: string | null;
+  comprobante_emitido_at?: string | null;
+  emisor_ruc?: string | null;
+  emisor_razon_social?: string | null;
+  emisor_direccion?: string | null;
   origen_texto?: string | null;
   destino_texto?: string | null;
   eta_min?: number | null;
@@ -209,6 +225,48 @@ export const ESTADO_LABELS: Record<EstadoPedido, string> = {
   ENTREGADO_PAGADO: 'Entregado y liquidado',
   CANCELADO: 'Cancelado',
 };
+
+export interface SharedCustomerDoc {
+  tipo: 'DNI' | 'RUC';
+  numero: string;
+  nombre: string;
+  direccionFiscal?: string;
+  verificado: boolean;
+  fuente?: string;
+}
+
+export interface ComprobanteElectronico {
+  tipo: 'BOLETA' | 'FACTURA' | 'RECIBO';
+  serie: string;
+  numero: string;
+  numero_completo: string;
+  emitido_at: string;
+  pedido_codigo: string;
+  metodo_pago: string;
+  moneda: string;
+  emisor: {
+    ruc: string;
+    razon_social: string;
+    nombre_comercial: string;
+    direccion: string;
+  };
+  receptor: {
+    tipo_doc: 'DNI' | 'RUC';
+    numero_doc: string;
+    nombre: string;
+    direccion: string;
+  };
+  items: Array<{
+    cantidad: number;
+    descripcion: string;
+    detalle?: string;
+    valor_unitario_centavos: number;
+    total_centavos: number;
+  }>;
+  op_gravada_centavos: number;
+  igv_centavos: number;
+  total_centavos: number;
+}
 
 export function formatSoles(centavos: number): string {
   const val = (centavos || 0) / 100;

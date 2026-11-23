@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  BadgeCheck,
   CheckCircle2,
   KeyRound,
   MessageSquare,
+  Printer,
   RefreshCw,
   Search,
   ShieldCheck,
@@ -16,10 +18,15 @@ import {
   ESTADO_LABELS,
   formatSoles,
   RUBRO_LABELS,
+  type ComprobanteElectronico,
   type PedidoPublico,
   type WhatsAppLog,
 } from '../types.ts';
 import { PinKeypadCard } from './DispatchAndRouteModules.tsx';
+import {
+  buildComprobanteFromOrder,
+  ElectronicInvoiceModal,
+} from './ElectronicInvoiceModal.tsx';
 
 interface OrderTrackingProps {
   initialCodigo: string | null;
@@ -43,6 +50,8 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
   const [showRiderPreview, setShowRiderPreview] = useState(false);
   const [riderPinInput, setRiderPinInput] = useState('');
   const [riderFeedback, setRiderFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [invoiceData, setInvoiceData] = useState<ComprobanteElectronico | null>(null);
+  const [loadingInvoice, setLoadingInvoice] = useState(false);
 
   const prevEstadoRef = useRef<string | null>(null);
 
@@ -233,6 +242,14 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                         {formatSoles(pedido.monto_centavos)}
                       </span>
                     </p>
+                    {pedido.cliente_documento_numero && (
+                      <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-mono-tabular font-semibold text-emerald-700 dark:text-emerald-300">
+                        <BadgeCheck className="w-3.5 h-3.5" />
+                        Titular: {pedido.cliente_nombre} · {pedido.cliente_documento_tipo || 'DNI'}{' '}
+                        {pedido.cliente_documento_numero} (
+                        {pedido.cliente_documento_tipo === 'RUC' ? 'Factura' : 'Boleta'})
+                      </p>
+                    )}
                   </div>
 
                   <button
@@ -403,17 +420,46 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                   </div>
                 )}
 
-                {/* Reseña verificada al completar */}
+                {/* Reseña verificada y Comprobante Electrónico al completar */}
                 {pedido.estado === 'ENTREGADO_PAGADO' && (
                   <div className="pt-4 border-t border-black/10 dark:border-white/10 space-y-3">
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                       <span className="flex items-center gap-1.5 text-[#1FA855] font-semibold">
                         <CheckCircle2 className="w-4 h-4" />
                         Servicio concretado
                       </span>
-                      <span className="font-mono-tabular text-[#D4AF37]">
-                        Puntos acumulados: {puntos} pts
-                      </span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono-tabular text-[#D4AF37]">
+                          Puntos acumulados: {puntos} pts
+                        </span>
+                        <button
+                          type="button"
+                          disabled={loadingInvoice}
+                          onClick={async () => {
+                            setLoadingInvoice(true);
+                            try {
+                              const r = await apiFetch<{ comprobante: ComprobanteElectronico }>(
+                                `/api/public/pedidos/${encodeURIComponent(pedido.codigo)}/comprobante`
+                              );
+                              setInvoiceData(r.comprobante);
+                            } catch {
+                              setInvoiceData(buildComprobanteFromOrder(pedido));
+                            } finally {
+                              setLoadingInvoice(false);
+                            }
+                          }}
+                          className="min-h-[38px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>
+                            {loadingInvoice
+                              ? 'Generando...'
+                              : pedido.cliente_documento_tipo === 'RUC'
+                              ? 'Ver / Imprimir Factura'
+                              : 'Ver / Imprimir Boleta'}
+                          </span>
+                        </button>
+                      </div>
                     </div>
                     {hasReview ? (
                       <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
@@ -504,6 +550,13 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
           </div>
         )}
       </section>
+
+      {invoiceData && (
+        <ElectronicInvoiceModal
+          comprobante={invoiceData}
+          onClose={() => setInvoiceData(null)}
+        />
+      )}
     </div>
   );
 };

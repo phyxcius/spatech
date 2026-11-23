@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { BellRing, CheckCircle2, ShieldAlert, Sparkles, Timer, X } from 'lucide-react';
+import { AlertTriangle, BellRing, CheckCircle2, ShieldAlert, Sparkles, Timer, X } from 'lucide-react';
 import { playLuxuryChime, speakSpanish } from '../lib/api.ts';
 import {
   subscribeCenterNotifications,
@@ -32,6 +32,7 @@ export const GlowingNotificationCardHost: React.FC = () => {
   if (!current) return null;
 
   const isEmergency = current.tone === 'emergency';
+  const isWarning = current.tone === 'warning';
 
   return (
     <div
@@ -47,6 +48,8 @@ export const GlowingNotificationCardHost: React.FC = () => {
           style={{
             background: isEmergency
               ? 'conic-gradient(from 0deg, #EF4444, #F97316, #FACC15, #EC4899, #EF4444)'
+              : isWarning
+              ? 'conic-gradient(from 0deg, #F59E0B, #4285F4, #EC4899, #FBBF24, #4285F4, #F59E0B)'
               : 'conic-gradient(from 0deg, #4285F4, #A855F7, #EC4899, #F59E0B, #10B981, #4285F4)',
           }}
         />
@@ -58,6 +61,8 @@ export const GlowingNotificationCardHost: React.FC = () => {
           style={{
             background: isEmergency
               ? 'linear-gradient(120deg, #EF4444, #F59E0B, #EC4899)'
+              : isWarning
+              ? 'linear-gradient(120deg, #F59E0B, #4285F4, #EC4899)'
               : 'linear-gradient(120deg, #4285F4, #A855F7, #EC4899, #10B981)',
           }}
         />
@@ -70,6 +75,8 @@ export const GlowingNotificationCardHost: React.FC = () => {
                 className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
                   isEmergency
                     ? 'bg-red-500/20 text-red-400 border border-red-500/40'
+                    : isWarning
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-400/45'
                     : current.tone === 'success'
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
                     : current.tone === 'ai'
@@ -79,6 +86,8 @@ export const GlowingNotificationCardHost: React.FC = () => {
               >
                 {isEmergency ? (
                   <ShieldAlert className="w-5 h-5" />
+                ) : isWarning ? (
+                  <AlertTriangle className="w-5 h-5" />
                 ) : current.tone === 'success' ? (
                   <CheckCircle2 className="w-5 h-5" />
                 ) : current.tone === 'ai' ? (

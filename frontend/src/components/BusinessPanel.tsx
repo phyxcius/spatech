@@ -7,6 +7,7 @@ import {
   LogOut,
   Plus,
   Power,
+  Printer,
   RefreshCw,
   Send,
   Settings,
@@ -27,6 +28,7 @@ import {
   formatSoles,
   RUBRO_LABELS,
   SALE_MODALITIES,
+  type ComprobanteElectronico,
   type DirectorioNegocio,
   type MetodoPago,
   type MetodoRecarga,
@@ -39,6 +41,7 @@ import {
   EmergencyDispatchCenter,
   PinKeypadCard,
 } from './DispatchAndRouteModules.tsx';
+import { ElectronicInvoiceModal } from './ElectronicInvoiceModal.tsx';
 
 type BizTab = 'NUEVOS' | 'EN_CURSO' | 'HISTORIAL' | 'REFERIDOS' | 'RUTAS_SOS' | 'CONFIGURACION' | 'GESTION';
 
@@ -165,6 +168,10 @@ export const BusinessPanel: React.FC = () => {
   const [pedidos, setPedidos] = useState<PedidoNegocio[]>([]);
   const [pinInputs, setPinInputs] = useState<Record<number, string>>({});
   const [actionMsg, setActionMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [invoiceModal, setInvoiceModal] = useState<{
+    order?: PedidoNegocio;
+    comprobante?: ComprobanteElectronico;
+  } | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const seenPendingIdsRef = useRef<Set<number>>(new Set());
   const seededOrdersRef = useRef(false);
@@ -487,7 +494,11 @@ export const BusinessPanel: React.FC = () => {
     if (!session) return;
     setActionMsg(null);
     try {
-      const res = await apiFetch<{ puntos_otorgados: number }>(
+      const res = await apiFetch<{
+        puntos_otorgados: number;
+        pedido?: PedidoNegocio;
+        comprobante?: ComprobanteElectronico;
+      }>(
         `/api/negocio/${session.negocioId}/pedidos/${pedidoId}/entregar`,
         {
           method: 'POST',
@@ -497,9 +508,12 @@ export const BusinessPanel: React.FC = () => {
       );
       setActionMsg({
         type: 'ok',
-        text: `PIN validado. Servicio completado y liquidado (+${res.puntos_otorgados} pts al cliente).`,
+        text: `PIN validado. Servicio completado y liquidado (+${res.puntos_otorgados} pts al cliente). Comprobante listo para imprimir.`,
       });
       setPinInputs((prev) => ({ ...prev, [pedidoId]: '' }));
+      if (res.comprobante || res.pedido) {
+        setInvoiceModal({ order: res.pedido, comprobante: res.comprobante });
+      }
       await loadWorkspace(true);
     } catch (err) {
       setActionMsg({
@@ -1224,16 +1238,26 @@ export const BusinessPanel: React.FC = () => {
             <thead className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
               <tr>
                 <th className="py-3.5 px-4 font-medium">Código</th>
+                <th className="py-3.5 px-4 font-medium">Cliente / Doc.</th>
                 <th className="py-3.5 px-4 font-medium">Servicio</th>
                 <th className="py-3.5 px-4 font-medium">Estado</th>
                 <th className="py-3.5 px-4 font-medium text-right">Monto</th>
                 <th className="py-3.5 px-4 font-medium text-right">Comisión</th>
+                <th className="py-3.5 px-4 font-medium text-right">Comprobante</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-black/8 dark:divide-white/8">
               {historial.map((p) => (
                 <tr key={p.id}>
                   <td className="py-3 px-4 font-mono-tabular">{p.codigo}</td>
+                  <td className="py-3 px-4">
+                    <div className="font-medium">{p.cliente_nombre}</div>
+                    {p.cliente_documento_numero && (
+                      <div className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400">
+                        {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
+                      </div>
+                    )}
+                  </td>
                   <td className="py-3 px-4">{p.item_nombre}</td>
                   <td className="py-3 px-4">{ESTADO_LABELS[p.estado]}</td>
                   <td className="py-3 px-4 font-mono-tabular text-right">
@@ -1241,6 +1265,22 @@ export const BusinessPanel: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 font-mono-tabular text-right">
                     {formatSoles(p.comision_retenida_centavos)}
+                  </td>
+                  <td className="py-3 px-4 text-right">
+                    {p.estado === 'ENTREGADO_PAGADO' ? (
+                      <button
+                        type="button"
+                        onClick={() => setInvoiceModal({ order: p })}
+                        className="min-h-[36px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        <span>
+                          {p.cliente_documento_tipo === 'RUC' ? 'Factura' : 'Boleta / Recibo'}
+                        </span>
+                      </button>
+                    ) : (
+                      <span className="text-[11px] text-[#8A8F99]">—</span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1603,6 +1643,14 @@ export const BusinessPanel: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+      {/* MODAL COMPROBANTE ELECTRÓNICO (BOLETA / FACTURA) */}
+      {invoiceModal && (
+        <ElectronicInvoiceModal
+          order={invoiceModal.order}
+          comprobante={invoiceModal.comprobante}
+          onClose={() => setInvoiceModal(null)}
+        />
       )}
     </div>
   );

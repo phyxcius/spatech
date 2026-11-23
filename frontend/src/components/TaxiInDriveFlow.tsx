@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  BadgeCheck,
   CheckCircle2,
   Clock,
-  MapPin,
   Minus,
   Navigation,
   Plus,
+  Receipt,
   ShieldCheck,
   Sparkles,
   Star,
@@ -15,10 +16,15 @@ import { apiFetch, speakSpanish } from '../lib/api.ts';
 import { haversineKm } from '../lib/cuscoMarkets.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
+import {
   formatSoles,
   type ConciergeOpcion,
   type MetodoPago,
   type PedidoPublico,
+  type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 
@@ -31,6 +37,8 @@ interface TaxiInDriveFlowProps {
   initialOfferSoles?: number;
   driverCatalog: ConciergeOpcion[];
   speakEnabled: boolean;
+  customerDoc?: SharedCustomerDoc | null;
+  onCustomerDocVerified?: (doc: SharedCustomerDoc) => void;
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
 }
 
@@ -130,6 +138,8 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   initialOfferSoles,
   driverCatalog,
   speakEnabled,
+  customerDoc,
+  onCustomerDocVerified,
   onOrderCreated,
 }) => {
   const [destinoText, setDestinoText] = useState(
@@ -147,12 +157,52 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     driver: DriverBidCard;
     finalCentavos: number;
   } | null>(null);
-  const [clienteNombre, setClienteNombre] = useState('');
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>(customerDoc?.tipo || 'DNI');
+  const [docNumero, setDocNumero] = useState(customerDoc?.numero || '');
+  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(
+    customerDoc?.verificado
+      ? {
+          valid: true,
+          validado: true,
+          tipo: customerDoc.tipo,
+          numero: customerDoc.numero,
+          nombre_completo: customerDoc.nombre,
+          direccion: customerDoc.direccionFiscal,
+          source: 'RENIEC',
+          fuente: customerDoc.fuente || 'RENIEC',
+        }
+      : null
+  );
+  const [docLookupLoading, setDocLookupLoading] = useState(false);
+  const [docLookupError, setDocLookupError] = useState<string | null>(null);
+  const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
+  const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState(
+    customerDoc?.direccionFiscal || ''
+  );
   const [clienteTelefono, setClienteTelefono] = useState('');
   const [promotorCodigo, setPromotorCodigo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [osrmRoute, setOsrmRoute] = useState<{ km: number; etaMin: number } | null>(null);
+
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setDocTipo(customerDoc.tipo);
+      setDocNumero(customerDoc.numero);
+      if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      if (customerDoc.direccionFiscal) setClienteDireccionFiscal(customerDoc.direccionFiscal);
+      setDocVerificado({
+        valid: true,
+        validado: true,
+        tipo: customerDoc.tipo,
+        numero: customerDoc.numero,
+        nombre_completo: customerDoc.nombre,
+        direccion: customerDoc.direccionFiscal,
+        source: customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
+        fuente: customerDoc.fuente || (customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+      });
+    }
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo]);
 
   useEffect(() => {
     if (!gpsLive) {
@@ -289,11 +339,84 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     }
   }
 
+  async function handleVerifyTaxiDoc() {
+    const clean = docNumero.replace(/\D/g, '');
+    setDocLookupError(null);
+    if (!clean) {
+      setDocLookupError('Ingresa tu DNI (8 dígitos) o RUC (11 dígitos).');
+      return;
+    }
+    setDocLookupLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      setDocVerificado(res);
+      if (res.nombre_completo) setClienteNombre(res.nombre_completo);
+      if (res.direccion) setClienteDireccionFiscal(res.direccion);
+      onCustomerDocVerified?.({
+        tipo: res.tipo,
+        numero: res.numero,
+        nombre: res.nombre_completo,
+        direccionFiscal: res.direccion,
+        verificado: true,
+        fuente: res.fuente || res.source,
+      });
+    } catch (err) {
+      setDocVerificado(null);
+      setDocLookupError(formatPeruLookupError(err));
+    } finally {
+      setDocLookupLoading(false);
+    }
+  }
+
   async function handleDispatchTaxi(e: React.FormEvent) {
     e.preventDefault();
     if (!confirmDriver) return;
-    setSubmitting(true);
     setErrorMsg(null);
+
+    const cleanDoc = docNumero.replace(/\D/g, '');
+    let activeVerif = docVerificado;
+    let activeNombre = clienteNombre.trim();
+    let activeDireccion = clienteDireccionFiscal.trim();
+
+    if (!activeVerif?.validado) {
+      if (!cleanDoc) {
+        setErrorMsg('Ingresa y valida tu DNI (Boleta) o RUC (Factura Electrónica) antes de pedir el taxi.');
+        return;
+      }
+      setDocLookupLoading(true);
+      try {
+        const res = await apiFetch<PeruDocumentLookupResult>(
+          `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}`
+        );
+        activeVerif = res;
+        setDocVerificado(res);
+        if (res.nombre_completo && !activeNombre) {
+          activeNombre = res.nombre_completo;
+          setClienteNombre(res.nombre_completo);
+        }
+        if (res.direccion && !activeDireccion) {
+          activeDireccion = res.direccion;
+          setClienteDireccionFiscal(res.direccion);
+        }
+        onCustomerDocVerified?.({
+          tipo: res.tipo,
+          numero: res.numero,
+          nombre: activeNombre || res.nombre_completo,
+          direccionFiscal: activeDireccion || res.direccion,
+          verificado: true,
+          fuente: res.fuente || res.source,
+        });
+      } catch (err) {
+        setDocLookupLoading(false);
+        setErrorMsg(formatPeruLookupError(err));
+        return;
+      }
+      setDocLookupLoading(false);
+    }
+
+    setSubmitting(true);
     const t0 = performance.now();
     try {
       const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
@@ -303,8 +426,12 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           body: {
             unidad_id: confirmDriver.driver.unidad_id,
             metodo_pago: metodoPago,
-            cliente_nombre: clienteNombre,
+            cliente_nombre: activeNombre || clienteNombre,
             cliente_telefono: clienteTelefono,
+            cliente_documento_tipo: activeVerif?.tipo || docTipo,
+            cliente_documento_numero: activeVerif?.numero || cleanDoc,
+            cliente_documento_verificado: Boolean(activeVerif?.validado),
+            cliente_direccion_fiscal: activeDireccion || undefined,
             origen_texto: gpsLive ? 'Mi ubicación GPS Cusco' : 'Plaza de Armas, Cusco',
             destino_texto: `${destinoText} (Oferta acordada ${formatSoles(confirmDriver.finalCentavos)})`,
             origen_lat: userLat,
@@ -319,7 +446,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
       emitCenterNotification({
         title: `Taxi Confirmado · ${res.pedido.codigo}`,
         message: `${confirmDriver.driver.conductor_nombre} (${confirmDriver.driver.placa}) en camino rumbo a ${destinoText}. PIN de abordaje: ${res.cliente_pin}`,
-        badge: 'TAXI EN RUTA',
+        badge: docTipo === 'RUC' ? 'FACTURA ELECTRÓNICA' : 'BOLETA ELECTRÓNICA',
         tone: 'success',
         responseTimeMs: latency,
         speakText: speakEnabled
@@ -698,81 +825,141 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           aria-modal="true"
           className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
         >
-          <form
-            onSubmit={handleDispatchTaxi}
-            className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400">
-                  Confirmar Conductor InDrive
-                </p>
-                <h3 className="font-display text-2xl font-semibold text-[#14171F] dark:text-white">
-                  {confirmDriver.driver.conductor_nombre} · {confirmDriver.driver.placa}
-                </h3>
-                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                  {confirmDriver.driver.modelo} · Llega en {confirmDriver.driver.etaMin} min rumbo a{' '}
-                  {destinoText}
-                </p>
+            <form
+              onSubmit={handleDispatchTaxi}
+              className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400">
+                    Confirmar Conductor InDrive
+                  </p>
+                  <h3 className="font-display text-2xl font-semibold text-[#14171F] dark:text-white">
+                    {confirmDriver.driver.conductor_nombre} · {confirmDriver.driver.placa}
+                  </h3>
+                  <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                    {confirmDriver.driver.modelo} · Llega en {confirmDriver.driver.etaMin} min rumbo a{' '}
+                    {destinoText}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="font-mono-tabular text-xl font-black text-emerald-600 dark:text-emerald-400">
+                    {formatSoles(confirmDriver.finalCentavos)}
+                  </p>
+                  <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">{metodoPago}</p>
+                </div>
               </div>
-              <div className="text-right shrink-0">
-                <p className="font-mono-tabular text-xl font-black text-emerald-600 dark:text-emerald-400">
-                  {formatSoles(confirmDriver.finalCentavos)}
-                </p>
-                <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">{metodoPago}</p>
+
+              {errorMsg && (
+                <div className="rounded-xl border border-[#C81E5B]/40 bg-[#C81E5B]/10 p-3 text-xs text-[#C81E5B]">
+                  {errorMsg}
+                </div>
+              )}
+
+              {/* Verificación DNI (Boleta) / RUC (Factura) RENIEC / SUNAT */}
+              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                    <Receipt className="w-3.5 h-3.5" />
+                    {docTipo === 'RUC' ? 'Factura (Empresa RUC)' : 'Boleta (Persona DNI)'}
+                  </span>
+                  {docVerificado?.validado && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <select
+                    value={docTipo}
+                    onChange={(e) => {
+                      setDocTipo(e.target.value as 'DNI' | 'RUC');
+                      setDocVerificado(null);
+                      setDocLookupError(null);
+                    }}
+                    className="min-h-[42px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-bold"
+                  >
+                    <option value="DNI">DNI (RENIEC)</option>
+                    <option value="RUC">RUC (SUNAT)</option>
+                  </select>
+                  <input
+                    required
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={docTipo === 'DNI' ? 8 : 11}
+                    value={docNumero}
+                    onChange={(e) => {
+                      setDocNumero(e.target.value.replace(/\D/g, ''));
+                      setDocVerificado(null);
+                    }}
+                    placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+                    className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleVerifyTaxiDoc}
+                    disabled={docLookupLoading}
+                    className="min-h-[42px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                  >
+                    {docLookupLoading ? 'Validando...' : 'Validar'}
+                  </button>
+                </div>
+                {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
               </div>
-            </div>
 
-            {errorMsg && (
-              <div className="rounded-xl border border-[#C81E5B]/40 bg-[#C81E5B]/10 p-3 text-xs text-[#C81E5B]">
-                {errorMsg}
+              <div className="space-y-2.5">
+                <input
+                  required
+                  type="text"
+                  value={clienteNombre}
+                  onChange={(e) => setClienteNombre(e.target.value)}
+                  placeholder={docTipo === 'RUC' ? 'Razón Social (autocompletado)' : 'Nombre completo (autocompletado)'}
+                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                />
+                {docTipo === 'RUC' && (
+                  <input
+                    type="text"
+                    value={clienteDireccionFiscal}
+                    onChange={(e) => setClienteDireccionFiscal(e.target.value)}
+                    placeholder="Dirección fiscal para Factura (autocompletada)"
+                    className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+                  />
+                )}
+                <input
+                  required
+                  type="tel"
+                  value={clienteTelefono}
+                  onChange={(e) => setClienteTelefono(e.target.value)}
+                  placeholder="WhatsApp (+51 9...)"
+                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                />
+                <input
+                  type="text"
+                  value={promotorCodigo}
+                  onChange={(e) => setPromotorCodigo(e.target.value)}
+                  placeholder="Código referido (opcional)"
+                  className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs uppercase font-mono-tabular"
+                />
               </div>
-            )}
 
-            <div className="space-y-3">
-              <input
-                required
-                type="text"
-                value={clienteNombre}
-                onChange={(e) => setClienteNombre(e.target.value)}
-                placeholder="Tu nombre completo"
-                className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-              />
-              <input
-                required
-                type="tel"
-                value={clienteTelefono}
-                onChange={(e) => setClienteTelefono(e.target.value)}
-                placeholder="WhatsApp (+51 9...)"
-                className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-              />
-              <input
-                type="text"
-                value={promotorCodigo}
-                onChange={(e) => setPromotorCodigo(e.target.value)}
-                placeholder="Código referido (opcional)"
-                className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-              />
-            </div>
-
-            <div className="flex gap-2.5 pt-2">
-              <button
-                type="button"
-                onClick={() => setConfirmDriver(null)}
-                className="flex-1 min-h-[46px] rounded-2xl border border-black/15 dark:border-white/15 text-xs font-semibold"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={submitting}
-                className="flex-[2] min-h-[46px] rounded-2xl bg-[#B6F02B] text-[#0B0E14] text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60"
-              >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>{submitting ? 'Enviando...' : 'Pedir Taxi y Ver PIN'}</span>
-              </button>
-            </div>
-          </form>
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDriver(null)}
+                  className="flex-1 min-h-[46px] rounded-2xl border border-black/15 dark:border-white/15 text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting || docLookupLoading}
+                  className="flex-[2] min-h-[46px] rounded-2xl bg-[#B6F02B] text-[#0B0E14] text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>{submitting ? 'Enviando...' : 'Pedir Taxi y Ver PIN'}</span>
+                </button>
+              </div>
+            </form>
         </div>
       )}
     </section>

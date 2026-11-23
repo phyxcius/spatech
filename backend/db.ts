@@ -353,6 +353,11 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['cliente_documento_tipo', 'TEXT'],
     ['cliente_documento_numero', 'TEXT'],
     ['cliente_documento_verificado', 'INTEGER NOT NULL DEFAULT 0'],
+    ['cliente_direccion_fiscal', 'TEXT'],
+    ['comprobante_tipo', 'TEXT'],
+    ['comprobante_serie', 'TEXT'],
+    ['comprobante_numero', 'TEXT'],
+    ['comprobante_emitido_at', 'TEXT'],
   ]);
 
   ensureCols('alertas_emergencias', [

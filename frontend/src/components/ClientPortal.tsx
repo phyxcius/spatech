@@ -1,9 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowLeftRight,
   BadgeCheck,
+  Building2,
   CarFront,
   Compass,
+  FileText,
   Hotel,
   MapPin,
   Mic,
@@ -41,6 +44,7 @@ import {
   type MetodoPago,
   type PedidoPublico,
   type Rubro,
+  type SharedCustomerDoc,
 } from '../types.ts';
 import {
   EmergencyDispatchCenter,
@@ -138,6 +142,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [clienteTelefono, setClienteTelefono] = useState('');
   const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>('DNI');
   const [docNumero, setDocNumero] = useState('');
+  const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState('');
   const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docLookupError, setDocLookupError] = useState<string | null>(null);
@@ -173,6 +178,62 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [sosOpen, setSosOpen] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
+  const docAlertCooldownRef = useRef<number>(0);
+
+  const isDocValid = Boolean(docVerificado && (docVerificado.valid || docVerificado.validado));
+
+  const sharedCustomerDoc = useMemo<SharedCustomerDoc | null>(() => {
+    if (!isDocValid || !docVerificado) return null;
+    return {
+      tipo: docVerificado.tipo,
+      numero: docVerificado.numero,
+      nombre: docVerificado.nombre_completo || clienteNombre,
+      direccionFiscal: clienteDireccionFiscal || docVerificado.direccion || '',
+      verificado: true,
+      fuente: docVerificado.fuente || docVerificado.source,
+    };
+  }, [isDocValid, docVerificado, clienteNombre, clienteDireccionFiscal]);
+
+  function handleSharedDocSynced(synced: SharedCustomerDoc) {
+    setDocTipo(synced.tipo);
+    setDocNumero(synced.numero);
+    if (synced.nombre) setClienteNombre(synced.nombre);
+    if (synced.direccionFiscal) setClienteDireccionFiscal(synced.direccionFiscal);
+    setDocLookupError(null);
+    setDocVerificado({
+      valid: synced.verificado,
+      validado: synced.verificado,
+      tipo: synced.tipo,
+      numero: synced.numero,
+      nombre_completo: synced.nombre,
+      direccion: synced.direccionFiscal,
+      source: synced.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
+      fuente: synced.fuente || (synced.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+    });
+  }
+
+  function notifyDocumentAlertIfNeeded(tipoPedidoLabel: string, allowSpeak = true) {
+    if (isDocValid) return;
+    const now = Date.now();
+    if (now - docAlertCooldownRef.current < 450) return;
+    docAlertCooldownRef.current = now;
+    emitCenterNotification({
+      id: `alerta-dni-ruc-${now}`,
+      badge: 'ALERTA RENIEC / SUNAT · COMPROBANTE',
+      title: 'Ingresa tu DNI o RUC para emitir tu pedido',
+      subtitle: `${tipoPedidoLabel} · Boleta (DNI) o Factura Electrónica (RUC)`,
+      detail:
+        'Para registrar el pedido a tu nombre ingresa tu DNI (8 dígitos, sincronizado con RENIEC). Si solicitas como empresa para Factura Electrónica, ingresa tu RUC (11 dígitos, SUNAT).',
+      tone: 'warning',
+      meta: 'RENIEC · SUNAT',
+      speakText:
+        allowSpeak && speakReplies
+          ? 'Alerta: ingresa tu DNI para boleta a tu nombre, o tu RUC si es empresa y deseas factura electrónica.'
+          : undefined,
+    });
+    setTimeout(() => docInputRef.current?.focus(), 140);
+  }
 
   // Precarga silenciosa de unidades reales de transporte para el modo Taxi InDrive
   useEffect(() => {
@@ -210,6 +271,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       setQuery(externalPromptSignal.query);
       setSphereExpanded(true);
       void handleSearch(externalPromptSignal.query, externalPromptSignal.categoria, true);
+      if (!isDocValid) {
+        notifyDocumentAlertIfNeeded('Solicitud al Agente', false);
+      }
     }
   }, [externalPromptSignal?.seq]);
 
@@ -289,8 +353,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           detail: msg,
           tone: 'ai',
           responseMs: ms,
-          speakText: speakReplies ? msg : undefined,
+          speakText: speakReplies && isDocValid ? msg : undefined,
         });
+        notifyDocumentAlertIfNeeded('Cambio de Divisas');
       }
       return;
     }
@@ -312,8 +377,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           detail: msg,
           tone: 'ai',
           responseMs: ms,
-          speakText: speakReplies ? msg : undefined,
+          speakText: speakReplies && isDocValid ? msg : undefined,
         });
+        notifyDocumentAlertIfNeeded('Compra / Reserva en Market');
       }
       return;
     }
@@ -364,13 +430,17 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             detail: msg,
             tone: 'ai',
             responseMs: ms,
-            speakText: speakReplies ? msg : undefined,
+            speakText: speakReplies && isDocValid ? msg : undefined,
           });
+          notifyDocumentAlertIfNeeded('Servicio de Taxi');
         }
       } catch {
         const ms = Math.max(1, Math.round(performance.now() - t0));
         setLastResponseMs(ms);
         setReplyText('Mapa de taxistas listo en Cusco. Propón tu tarifa estilo InDrive.');
+        if (!silent) {
+          notifyDocumentAlertIfNeeded('Servicio de Taxi');
+        }
       } finally {
         setLoading(false);
       }
@@ -416,8 +486,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           detail: richVoice,
           tone: 'ai',
           responseMs: ms,
-          speakText: speakReplies ? richVoice : undefined,
+          speakText: speakReplies && isDocValid ? richVoice : undefined,
         });
+        notifyDocumentAlertIfNeeded(RUBRO_LABELS[res.categoria || 'RESTAURANTE']);
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo consultar el catálogo');
@@ -484,27 +555,36 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     }
   }
 
-  async function handleVerifyCustomerDoc() {
-    const clean = docNumero.replace(/\D/g, '');
+  async function handleVerifyCustomerDoc(
+    overrideTipo?: 'DNI' | 'RUC',
+    overrideNumero?: string
+  ): Promise<PeruDocumentLookupResult | null> {
+    const clean = (overrideNumero ?? docNumero).replace(/\D/g, '');
+    const tipoUse: 'DNI' | 'RUC' =
+      overrideTipo || (clean.length === 11 ? 'RUC' : clean.length === 8 ? 'DNI' : docTipo);
+    if (tipoUse !== docTipo) setDocTipo(tipoUse);
     setDocLookupError(null);
     if (!clean) {
       setDocLookupError('Ingresa tu DNI (8 dígitos) o RUC (11 dígitos).');
-      return;
+      return null;
     }
     setDocLookupLoading(true);
     try {
       const res = await apiFetch<PeruDocumentLookupResult>(
-        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+        `/api/public/consulta-documento?tipo=${tipoUse}&numero=${encodeURIComponent(clean)}`
       );
       setDocVerificado(res);
-      if (res.nombre_completo && !clienteNombre.trim()) {
-        setClienteNombre(res.nombre_completo);
-      } else if (res.nombre_completo) {
+      if (res.nombre_completo) {
         setClienteNombre(res.nombre_completo);
       }
+      if (res.direccion) {
+        setClienteDireccionFiscal(res.direccion);
+      }
+      return res;
     } catch (err) {
       setDocVerificado(null);
       setDocLookupError(formatPeruLookupError(err));
+      return null;
     } finally {
       setDocLookupLoading(false);
     }
@@ -513,8 +593,27 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   async function handleConfirmOrder(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedOption) return;
-    setSubmittingOrder(true);
     setSheetError(null);
+
+    let activeDoc = isDocValid ? docVerificado : null;
+    if (!activeDoc) {
+      const clean = docNumero.replace(/\D/g, '');
+      if (clean.length === 8 || clean.length === 11) {
+        activeDoc = await handleVerifyCustomerDoc(clean.length === 11 ? 'RUC' : 'DNI', clean);
+      }
+    }
+
+    if (!activeDoc || !(activeDoc.valid || activeDoc.validado)) {
+      setSheetError(
+        'Ingresa y valida tu DNI (8 dígitos, Boleta a tu nombre) o tu RUC (11 dígitos, Factura Electrónica).'
+      );
+      return;
+    }
+
+    const finalNombre = (clienteNombre || activeDoc.nombre_completo || '').trim();
+    const finalDirFiscal = (clienteDireccionFiscal || activeDoc.direccion || '').trim();
+
+    setSubmittingOrder(true);
     const t0 = performance.now();
     try {
       if (selectedOption.tipo === 'TAXI' && selectedOption.unidad_id) {
@@ -525,8 +624,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             body: {
               unidad_id: selectedOption.unidad_id,
               metodo_pago: metodoPago,
-              cliente_nombre: clienteNombre,
+              cliente_nombre: finalNombre,
               cliente_telefono: clienteTelefono,
+              cliente_documento_tipo: activeDoc.tipo,
+              cliente_documento_numero: activeDoc.numero,
+              cliente_documento_verificado: true,
+              cliente_direccion_fiscal: finalDirFiscal || undefined,
               origen_texto: gpsStatus === 'live' ? 'Mi ubicación GPS' : 'Plaza de Armas, Cusco',
               destino_texto: destino || 'Aeropuerto Velasco Astete',
               origen_lat: coords.lat,
@@ -541,7 +644,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           id: `order-confirm-${res.pedido.codigo}`,
           title: `Taxi Confirmado · ${res.pedido.codigo}`,
           subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
-          detail: `Conductor asignado en ruta. Entrega tu PIN de seguridad al finalizar.`,
+          detail: `Conductor en ruta. ${activeDoc.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'} a nombre de ${finalNombre} (${activeDoc.tipo} ${activeDoc.numero}) al finalizar.`,
           tone: 'success',
           responseMs: ms,
           speakText: speakReplies
@@ -559,11 +662,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               servicio_id: selectedOption.servicio_id,
               categoria: selectedOption.categoria,
               metodo_pago: metodoPago,
-              cliente_nombre: clienteNombre,
+              cliente_nombre: finalNombre,
               cliente_telefono: clienteTelefono,
-              cliente_documento_tipo: docVerificado?.validado ? docVerificado.tipo : undefined,
-              cliente_documento_numero: docVerificado?.validado ? docVerificado.numero : undefined,
-              cliente_documento_verificado: Boolean(docVerificado?.validado),
+              cliente_documento_tipo: activeDoc.tipo,
+              cliente_documento_numero: activeDoc.numero,
+              cliente_documento_verificado: true,
+              cliente_direccion_fiscal: finalDirFiscal || undefined,
               transcripcion: query || selectedOption.titulo,
               promotor_codigo: promotorCodigo || undefined,
             },
@@ -575,7 +679,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           id: `order-confirm-${res.pedido.codigo}`,
           title: `Pedido Enviado · ${res.pedido.codigo}`,
           subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
-          detail: `${selectedOption.titulo} enviado en tiempo real al panel del negocio.`,
+          detail: `${selectedOption.titulo} enviado al panel del negocio (${activeDoc.tipo} ${activeDoc.numero} · ${activeDoc.tipo === 'RUC' ? 'Factura' : 'Boleta'}).`,
           tone: 'success',
           responseMs: ms,
           speakText: speakReplies
@@ -955,13 +1059,122 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           )}
         </div>
 
+        {/* Barra de Identidad RENIEC (DNI) / SUNAT (RUC) sincronizada con los negocios */}
+        <div
+          className={`mt-5 rounded-2xl border p-3.5 sm:p-4 transition-colors ${
+            isDocValid
+              ? 'border-emerald-500/40 bg-emerald-500/8'
+              : 'border-amber-500/45 bg-amber-500/10'
+          }`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              {isDocValid ? (
+                <BadgeCheck className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              )}
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-[#14171F] dark:text-white">
+                    {isDocValid && docVerificado
+                      ? `Titular Verificado (${docVerificado.tipo} ${docVerificado.numero})`
+                      : 'Ingresa tu DNI o RUC para emitir tu pedido y comprobante'}
+                  </span>
+                  <span
+                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      docTipo === 'RUC'
+                        ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30'
+                        : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                    }`}
+                  >
+                    <FileText className="w-3 h-3" />
+                    {docTipo === 'RUC' ? 'Factura Electrónica' : 'Boleta de Venta'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5] mt-0.5">
+                  {isDocValid && docVerificado
+                    ? `${docVerificado.nombre_completo}${clienteDireccionFiscal ? ` · ${clienteDireccionFiscal}` : ''} · Sincronizado con el panel del negocio (${docVerificado.fuente || docVerificado.source}).`
+                    : 'Persona natural: DNI (8 dígitos RENIEC). Empresa: RUC (11 dígitos SUNAT para Factura Electrónica al finalizar).'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex rounded-xl border border-black/15 dark:border-white/15 overflow-hidden bg-white dark:bg-[#121620]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDocTipo('DNI');
+                    setDocVerificado(null);
+                    setDocLookupError(null);
+                  }}
+                  className={`min-h-[38px] px-3 text-xs font-bold transition-colors ${
+                    docTipo === 'DNI'
+                      ? 'bg-[#14213D] text-white dark:bg-[#D4AF37] dark:text-[#0B0E14]'
+                      : 'text-[#555B66] dark:text-[#98A0AD]'
+                  }`}
+                >
+                  DNI (Boleta)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDocTipo('RUC');
+                    setDocVerificado(null);
+                    setDocLookupError(null);
+                  }}
+                  className={`min-h-[38px] px-3 text-xs font-bold flex items-center gap-1 transition-colors ${
+                    docTipo === 'RUC'
+                      ? 'bg-[#14213D] text-white dark:bg-[#D4AF37] dark:text-[#0B0E14]'
+                      : 'text-[#555B66] dark:text-[#98A0AD]'
+                  }`}
+                >
+                  <Building2 className="w-3.5 h-3.5" /> RUC (Factura)
+                </button>
+              </div>
+
+              <input
+                ref={docInputRef}
+                type="text"
+                inputMode="numeric"
+                maxLength={11}
+                value={docNumero}
+                onChange={(e) => {
+                  const digits = e.target.value.replace(/\D/g, '');
+                  setDocNumero(digits);
+                  if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                  else if (digits.length === 8 && docTipo !== 'DNI') setDocTipo('DNI');
+                  setDocVerificado(null);
+                  setDocLookupError(null);
+                }}
+                placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+                className="w-40 sm:w-44 min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular text-[#14171F] dark:text-white"
+              />
+
+              <button
+                type="button"
+                onClick={() => void handleVerifyCustomerDoc()}
+                disabled={docLookupLoading}
+                className="min-h-[38px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+              >
+                {docLookupLoading ? 'Validando...' : 'Validar RENIEC/SUNAT'}
+              </button>
+            </div>
+          </div>
+          {docLookupError && (
+            <p className="text-[11px] font-medium text-[#C81E5B] mt-2">{docLookupError}</p>
+          )}
+        </div>
+
         {/* Barra de acceso rápido a los módulos complementarios */}
-        <div className="mt-5 pt-4 border-t border-black/8 dark:border-white/8 flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="mt-4 pt-4 border-t border-black/8 dark:border-white/8 flex items-center gap-2 overflow-x-auto pb-1">
           <button
             type="button"
             onClick={() => {
               setSubTab('CONCIERGE');
               handleSearch('Quiero un taxi al aeropuerto', 'TRANSPORTE', true);
+              notifyDocumentAlertIfNeeded('Taxi InDrive', false);
             }}
             className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
               subTab === 'CONCIERGE' && conciergeMode === 'TAXI_INDRIVE'
@@ -978,6 +1191,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             onClick={() => {
               setSubTab('CONCIERGE');
               handleSearch('leche, atún y arroz', undefined, true);
+              notifyDocumentAlertIfNeeded('Markets Abiertos', false);
             }}
             className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
               subTab === 'CONCIERGE' && conciergeMode === 'MARKET_MAP'
@@ -1041,6 +1255,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           initialDestination={destino}
           driverCatalog={opciones}
           speakEnabled={speakReplies}
+          customerDoc={sharedCustomerDoc}
+          onCustomerDocVerified={handleSharedDocSynced}
           onOrderCreated={onOrderCreated}
         />
       )}
@@ -1057,6 +1273,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           requestedItems={requestedMarketItems}
           onChangeItems={setRequestedMarketItems}
           speakEnabled={speakReplies}
+          customerDoc={sharedCustomerDoc}
+          onCustomerDocVerified={handleSharedDocSynced}
           onOrderCreated={onOrderCreated}
         />
       )}
@@ -1153,6 +1371,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                         } else {
                           setSheetError(null);
                           setSelectedOption(op);
+                          if (!isDocValid) {
+                            notifyDocumentAlertIfNeeded(op.titulo, false);
+                          }
                         }
                       }}
                       className="min-h-[44px] px-5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
@@ -1699,14 +1920,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               )}
 
               {/* Validación DNI / RUC sincronizada con RENIEC / SUNAT */}
-              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2">
-                <div className="flex items-center justify-between">
+              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-                    Documento Cliente (RENIEC / SUNAT)
+                    Documento Cliente (RENIEC / SUNAT) *
                   </span>
-                  {docVerificado?.validado && (
+                  {isDocValid && docVerificado ? (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado
+                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} ·{' '}
+                      {docVerificado.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                      Requerido para emitir recibo
                     </span>
                   )}
                 </div>
@@ -1720,37 +1946,55 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     }}
                     className="min-h-[40px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
                   >
-                    <option value="DNI">DNI (8)</option>
-                    <option value="RUC">RUC (11)</option>
+                    <option value="DNI">DNI (8 · Boleta)</option>
+                    <option value="RUC">RUC (11 · Factura)</option>
                   </select>
                   <input
                     type="text"
+                    required
                     inputMode="numeric"
                     maxLength={docTipo === 'DNI' ? 8 : 11}
                     value={docNumero}
                     onChange={(e) => {
-                      setDocNumero(e.target.value.replace(/\D/g, ''));
+                      const digits = e.target.value.replace(/\D/g, '');
+                      setDocNumero(digits);
+                      if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
                       setDocVerificado(null);
+                      setDocLookupError(null);
                     }}
                     placeholder={docTipo === 'DNI' ? 'Ej: 44556677' : 'Ej: 20601234561'}
                     className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
                   />
                   <button
                     type="button"
-                    onClick={handleVerifyCustomerDoc}
+                    onClick={() => void handleVerifyCustomerDoc()}
                     disabled={docLookupLoading}
                     className="min-h-[40px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
                   >
                     {docLookupLoading ? 'Validando...' : 'Validar'}
                   </button>
                 </div>
+                {isDocValid && docVerificado && (
+                  <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    ✓ {docVerificado.nombre_completo} · Fuente: {docVerificado.fuente || docVerificado.source}
+                  </p>
+                )}
+                {docTipo === 'RUC' && (
+                  <input
+                    type="text"
+                    value={clienteDireccionFiscal}
+                    onChange={(e) => setClienteDireccionFiscal(e.target.value)}
+                    placeholder="Dirección fiscal SUNAT (se completa automáticamente)"
+                    className="w-full min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
+                  />
+                )}
                 {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                    Nombre completo
+                    {docTipo === 'RUC' ? 'Razón Social' : 'Nombre completo'}
                   </label>
                   <div className="relative flex items-center">
                     <input
