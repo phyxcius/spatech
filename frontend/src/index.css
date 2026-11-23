@@ -35,3 +35,37 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+.cusco-leaflet-pin {
+  background: transparent !important;
+  border: none !important;
+}
+
+.leaflet-container {
+  font-family: var(--font-sans) !important;
+  z-index: 1;
+}
+
+.dark .cusco-osm-tiles .leaflet-tile-pane {
+  filter: brightness(0.92) contrast(1.04) saturate(0.92);
+}
+
+@keyframes chuspa-pulse-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.75;
+  }
+  70% {
+    transform: scale(1.26);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.26);
+    opacity: 0;
+  }
+}
+
+.chuspa-sphere-ring {
+  animation: chuspa-pulse-ring 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+

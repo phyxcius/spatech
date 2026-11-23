@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  CarFront,
   Compass,
   Hotel,
   MapPin,
@@ -13,12 +14,18 @@ import {
   Siren,
   Sparkles,
   Sprout,
+  Store,
   Ticket,
   Utensils,
   Volume2,
   Wrench,
   X,
 } from 'lucide-react';
+import {
+  detectIntentFromQuery,
+  parseMarketQuery,
+  type RequestedMarketItem,
+} from '../data/cuscoMarkets.ts';
 import { apiFetch, speakSpanish, stopSpeaking } from '../lib/api.ts';
 import {
   formatSoles,
@@ -29,14 +36,16 @@ import {
   type Rubro,
 } from '../types.ts';
 import {
+  EmergencyDispatchCenter,
+  SosActiveModalCard,
+} from './DispatchAndRouteModules.tsx';
+import { MarketComparatorFlow } from './MarketComparatorFlow.tsx';
+import {
   BodegaMinimarketModule,
   CampoDirectoModule,
   OficiosModule,
 } from './MarketplaceModules.tsx';
-import {
-  EmergencyDispatchCenter,
-  SosActiveModalCard,
-} from './DispatchAndRouteModules.tsx';
+import { TaxiInDriveFlow } from './TaxiInDriveFlow.tsx';
 
 interface ClientPortalProps {
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
@@ -51,6 +60,8 @@ type ClientTab =
   | 'OFICIOS'
   | 'CAMPO'
   | 'DESPACHO';
+
+type ConciergeMode = 'SPHERE_IDLE' | 'TAXI_INDRIVE' | 'MARKET_MAP' | 'CATALOG';
 
 interface DivisaRate {
   id: number;
@@ -81,6 +92,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   openAssistantSignal,
 }) => {
   const [subTab, setSubTab] = useState<ClientTab>('CONCIERGE');
+  const [conciergeMode, setConciergeMode] = useState<ConciergeMode>('SPHERE_IDLE');
+  const [sphereExpanded, setSphereExpanded] = useState(false);
+
   const [query, setQuery] = useState('');
   const [selectedRubro, setSelectedRubro] = useState<Rubro | null>(null);
   const [destino, setDestino] = useState('');
@@ -93,13 +107,16 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [voiceActive, setVoiceActive] = useState(false);
   const [speakReplies, setSpeakReplies] = useState(true);
   const [replyText, setReplyText] = useState<string>(
-    'Solicita un traslado ejecutivo, guía privado, mesa gourmet o botica 24h en Cusco.'
+    'Presiona la esfera y dime qué necesitas en Cusco.'
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
+  const [requestedMarketItems, setRequestedMarketItems] = useState<RequestedMarketItem[]>(() =>
+    parseMarketQuery('leche, atún y arroz')
+  );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Hoja de confirmación
+  // Hoja de confirmación para servicios generales
   const [selectedOption, setSelectedOption] = useState<ConciergeOpcion | null>(null);
   const [clienteNombre, setClienteNombre] = useState('');
   const [clienteTelefono, setClienteTelefono] = useState('');
@@ -136,13 +153,25 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Precarga silenciosa de unidades reales de transporte para el modo Taxi InDrive
   useEffect(() => {
-    handleSearch('taxi ejecutivo aeropuerto', 'TRANSPORTE', true);
+    apiFetch<{ opciones: ConciergeOpcion[] }>('/api/public/asistente', {
+      method: 'POST',
+      body: {
+        query: 'taxi ejecutivo aeropuerto',
+        categoria: 'TRANSPORTE',
+        lat: coords.lat,
+        lng: coords.lng,
+      },
+    })
+      .then((res) => setOpciones(res.opciones))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     if (openAssistantSignal > 0) {
       setSubTab('CONCIERGE');
+      setSphereExpanded(true);
       setTimeout(() => inputRef.current?.focus(), 80);
     }
   }, [openAssistantSignal]);
@@ -179,6 +208,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   async function handleSearch(customQuery?: string, forcedCat?: Rubro, silent = false) {
     const q = (customQuery ?? query).trim();
+    setSubTab('CONCIERGE');
+    setErrorMsg(null);
+
     if (!silent && speakReplies && typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
         window.speechSynthesis.resume();
@@ -186,14 +218,66 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         // ignore
       }
     }
+
+    // 1. Detectar intención Market Abierto (leche, atún, arroz, market, compras)
+    const intent = forcedCat ? (forcedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER') : detectIntentFromQuery(q);
+    if (intent === 'MARKET') {
+      const parsed = parseMarketQuery(q);
+      setRequestedMarketItems(parsed);
+      setConciergeMode('MARKET_MAP');
+      const itemsText = parsed.map((p) => p.label.split(' ')[0]).join(', ');
+      const msg = `Mostrando markets abiertos en Cusco con ${itemsText} para comparar precios.`;
+      setReplyText(msg);
+      if (!silent && speakReplies) speakSpanish(msg);
+      return;
+    }
+
+    // 2. Detectar intención Taxi InDrive / Geolocalización
+    if (intent === 'TAXI' || forcedCat === 'TRANSPORTE') {
+      setConciergeMode('TAXI_INDRIVE');
+      setActiveCategory('TRANSPORTE');
+      if (q.toLowerCase().includes('aeropuerto')) setDestino('Aeropuerto Velasco Astete');
+      else if (q.toLowerCase().includes('real plaza')) setDestino('Real Plaza Cusco');
+      else if (q.toLowerCase().includes('terminal')) setDestino('Terminal Terrestre Cusco');
+
+      setLoading(true);
+      try {
+        const res = await apiFetch<{
+          categoria: Rubro;
+          respuesta_voz: string;
+          destino_sugerido?: string;
+          opciones: ConciergeOpcion[];
+        }>('/api/public/asistente', {
+          method: 'POST',
+          body: {
+            query: q || 'taxi cusco',
+            categoria: 'TRANSPORTE',
+            lat: coords.lat,
+            lng: coords.lng,
+            destino: destino || undefined,
+          },
+        });
+        setOpciones(res.opciones);
+        if (res.destino_sugerido && !destino) setDestino(res.destino_sugerido);
+        const msg = 'Taxistas cercanos listos en el mapa. Propón tu tarifa o acepta la mejor oferta.';
+        setReplyText(msg);
+        if (!silent && speakReplies) speakSpanish(msg);
+      } catch {
+        setReplyText('Mapa de taxistas listo en Cusco. Propón tu tarifa estilo InDrive.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // 3. Otras categorías del concierge (Gastronomía, Botica, Turismo, Hoteles)
+    setConciergeMode('CATALOG');
     setLoading(true);
-    setErrorMsg(null);
     try {
       const res = await apiFetch<{
         categoria: Rubro;
         respuesta_voz: string;
         destino_sugerido?: string;
-        ai_error?: string | null;
         opciones: ConciergeOpcion[];
       }>('/api/public/asistente', {
         method: 'POST',
@@ -208,9 +292,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       setActiveCategory(res.categoria);
       setOpciones(res.opciones);
       setReplyText(res.respuesta_voz);
-      if (res.destino_sugerido && !destino) {
-        setDestino(res.destino_sugerido);
-      }
       if (!silent && speakReplies) {
         speakSpanish(res.respuesta_voz);
       }
@@ -221,6 +302,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     }
   }
 
+  function handleSpherePress() {
+    setSubTab('CONCIERGE');
+    setSphereExpanded(true);
+    handleVoiceCapture();
+    setTimeout(() => inputRef.current?.focus(), 120);
+  }
+
   function handleVoiceCapture() {
     const SpeechRec =
       (window as unknown as { SpeechRecognition?: any; webkitSpeechRecognition?: any })
@@ -228,24 +316,29 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       (window as unknown as { webkitSpeechRecognition?: any }).webkitSpeechRecognition;
 
     if (!SpeechRec) {
-      setErrorMsg('Tu navegador no soporta dictado de voz; escribe tu pedido en el buscador.');
+      setReplyText('Escribe tu pedido abajo: ej. "Quiero un taxi" o "Leche, atún y arroz".');
       return;
     }
-    const rec = new SpeechRec();
-    rec.lang = 'es-PE';
-    rec.interimResults = false;
-    rec.maxAlternatives = 1;
-    setVoiceActive(true);
-    rec.onresult = (event: any) => {
-      const transcript = event.results?.[0]?.[0]?.transcript || '';
-      setQuery(transcript);
-      setSelectedRubro(null);
+    try {
+      const rec = new SpeechRec();
+      rec.lang = 'es-PE';
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      setVoiceActive(true);
+      setReplyText('Escuchando... dime si necesitas taxi, market o algún servicio.');
+      rec.onresult = (event: any) => {
+        const transcript = event.results?.[0]?.[0]?.transcript || '';
+        setQuery(transcript);
+        setSelectedRubro(null);
+        setVoiceActive(false);
+        handleSearch(transcript);
+      };
+      rec.onerror = () => setVoiceActive(false);
+      rec.onend = () => setVoiceActive(false);
+      rec.start();
+    } catch {
       setVoiceActive(false);
-      handleSearch(transcript);
-    };
-    rec.onerror = () => setVoiceActive(false);
-    rec.onend = () => setVoiceActive(false);
-    rec.start();
+    }
   }
 
   async function handleConfirmOrder(e: React.FormEvent) {
@@ -375,58 +468,143 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     }
   }
 
-  const shortcutItems: Array<{ label: string; rubro?: Rubro; tab?: ClientTab; icon: React.ReactNode; prompt?: string }> = [
-    { label: 'Taxi GPS', rubro: 'TRANSPORTE', icon: <Compass className="w-4 h-4" />, prompt: 'Quiero un taxi ejecutivo al aeropuerto' },
+  const secondaryModules: Array<{
+    label: string;
+    rubro?: Rubro;
+    tab?: ClientTab;
+    icon: React.ReactNode;
+    prompt?: string;
+  }> = [
     { label: 'Gastronomía', rubro: 'RESTAURANTE', icon: <Utensils className="w-4 h-4" />, prompt: 'Ceviche gourmet y lomo saltado' },
     { label: 'Botica 24h', rubro: 'FARMACIA', icon: <Pill className="w-4 h-4" />, prompt: 'Kit soroche oxígeno y pastillas' },
     { label: 'Tours Privados', rubro: 'TURISMO', icon: <Sparkles className="w-4 h-4" />, prompt: 'Guía privado Machu Picchu o Valle Sagrado' },
     { label: 'Hoteles', rubro: 'HOTEL', icon: <Hotel className="w-4 h-4" />, prompt: 'Suite oxigenada o spa andino' },
-    { label: 'Divisas', tab: 'DIVISAS', icon: <ArrowLeftRight className="w-4 h-4" /> },
     { label: 'Butacas VIP', tab: 'BUTACAS', icon: <Ticket className="w-4 h-4" /> },
+    { label: 'Divisas', tab: 'DIVISAS', icon: <ArrowLeftRight className="w-4 h-4" /> },
     { label: 'Bodega & Vivero', tab: 'BODEGA', icon: <ShoppingBasket className="w-4 h-4" /> },
     { label: 'Oficios', tab: 'OFICIOS', icon: <Wrench className="w-4 h-4" /> },
     { label: 'Campo B2B', tab: 'CAMPO', icon: <Sprout className="w-4 h-4" /> },
     { label: 'Central SOS', tab: 'DESPACHO', icon: <Siren className="w-4 h-4" /> },
   ];
 
+  const isCompactSphere = subTab === 'CONCIERGE' && conciergeMode !== 'SPHERE_IDLE';
+
   return (
-    <div className="space-y-8 pb-24 md:pb-12">
-      {/* Hero Editorial Concierge */}
-      <section className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 sm:p-10">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-          <div className="lg:col-span-8 flex flex-col justify-between space-y-6">
-            <div className="space-y-3">
-              <p className="text-xs tracking-[0.2em] uppercase text-[#9A7B2C] dark:text-[#D4AF37] font-medium">
-                Cusco, Perú · Concierge Privado Multinegocio
-              </p>
-              <h1 className="font-display text-3xl sm:text-5xl font-semibold tracking-tight text-balance leading-[1.08] text-[#14171F] dark:text-[#F4F1EA]">
-                Movilidad ejecutiva, alta cocina y experiencias curadas en un solo gesto.
-              </h1>
-              <div className="flex items-start gap-3 max-w-2xl">
-                <p className="text-sm sm:text-base text-[#555B66] dark:text-[#A3A9B5] leading-relaxed flex-1">
+    <div className="space-y-6 pb-24 md:pb-12">
+      {/* ==================================================================== */}
+      {/* ESFERA INTERACTIVA "LA CHUSPA" (NÚCLEO DEL AGENTE)                   */}
+      {/* ==================================================================== */}
+      <section
+        className={`rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#0D1117] transition-all shadow-xl ${
+          isCompactSphere ? 'p-4 sm:p-5' : 'p-6 sm:p-10'
+        }`}
+      >
+        <div
+          className={`flex ${
+            isCompactSphere
+              ? 'flex-col lg:flex-row lg:items-center justify-between gap-4'
+              : 'flex-col items-center text-center gap-6'
+          }`}
+        >
+          {/* La Esfera Interactiva */}
+          <div
+            className={`flex items-center gap-4 ${
+              isCompactSphere ? 'flex-row' : 'flex-col'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={handleSpherePress}
+              aria-label="Presionar esfera La Chuspa para pedir"
+              className={`relative group flex items-center justify-center rounded-full focus:outline-none focus-visible:ring-4 focus-visible:ring-[#D4AF37]/50 transition-transform active:scale-95 ${
+                isCompactSphere ? 'w-16 h-16 shrink-0' : 'w-32 h-32 sm:w-36 sm:h-36'
+              }`}
+            >
+              {/* Anillo acústico pulsante */}
+              <span
+                aria-hidden="true"
+                className={`absolute inset-0 rounded-full chuspa-sphere-ring ${
+                  voiceActive
+                    ? 'bg-[#C81E5B]/45'
+                    : 'bg-[#D4AF37]/30'
+                }`}
+              />
+              {/* Halo orbital */}
+              <span
+                aria-hidden="true"
+                className="absolute -inset-2 rounded-full border border-[#D4AF37]/30 border-dashed"
+              />
+              {/* Núcleo esférico 3D */}
+              <span
+                className={`relative w-full h-full rounded-full flex flex-col items-center justify-center shadow-[0_0_45px_rgba(212,175,55,0.38)] border border-white/25 transition-all ${
+                  voiceActive
+                    ? 'bg-gradient-to-br from-[#C81E5B] via-[#881337] to-[#0B0E14]'
+                    : 'bg-gradient-to-br from-[#F4D06F] via-[#B8860B] to-[#14213D] group-hover:scale-105'
+                }`}
+              >
+                {voiceActive ? (
+                  <MicOff className={`${isCompactSphere ? 'w-6 h-6' : 'w-9 h-9'} text-white`} />
+                ) : (
+                  <Mic className={`${isCompactSphere ? 'w-6 h-6' : 'w-9 h-9'} text-white drop-shadow`} />
+                )}
+                {!isCompactSphere && (
+                  <span className="mt-1.5 text-[10px] font-extrabold uppercase tracking-[0.22em] text-white/95">
+                    {voiceActive ? 'Escuchando' : 'La Chuspa'}
+                  </span>
+                )}
+              </span>
+            </button>
+
+            <div className={isCompactSphere ? 'text-left' : 'space-y-1 max-w-xl'}>
+              <div className="flex items-center gap-2 justify-center sm:justify-start">
+                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
+                  Esfera La Chuspa · Cusco
+                </p>
+                {conciergeMode !== 'SPHERE_IDLE' && subTab === 'CONCIERGE' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConciergeMode('SPHERE_IDLE');
+                      setSphereExpanded(false);
+                      setReplyText('Presiona la esfera y dime qué necesitas en Cusco.');
+                    }}
+                    className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-[#D4AF37]"
+                  >
+                    Volver a esfera
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 justify-center">
+                <p
+                  className={`${
+                    isCompactSphere ? 'text-xs sm:text-sm' : 'text-sm sm:text-base'
+                  } text-[#14171F] dark:text-[#F4F1EA] font-medium`}
+                >
                   {replyText}
                 </p>
                 <button
                   type="button"
                   onClick={() => speakSpanish(replyText)}
-                  title="Escuchar respuesta con voz"
-                  aria-label="Escuchar respuesta con voz"
-                  className="min-h-[36px] min-w-[36px] shrink-0 rounded-xl border border-[#D4AF37]/35 bg-[#D4AF37]/10 text-[#9A7B2C] dark:text-[#E5C158] flex items-center justify-center hover:bg-[#D4AF37]/20 transition-colors"
+                  aria-label="Escuchar voz"
+                  className="w-8 h-8 rounded-full border border-[#D4AF37]/40 bg-[#D4AF37]/10 text-[#9A7B2C] dark:text-[#E5C158] flex items-center justify-center shrink-0"
                 >
-                  <Volume2 className="w-4 h-4" />
+                  <Volume2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
+          </div>
 
-            {/* Buscador protagonista con voz y texto */}
+          {/* Buscador activado al presionar la esfera (o siempre visible en modo compacto) */}
+          {(sphereExpanded || isCompactSphere) && (
             <form
               onSubmit={(e) => {
                 e.preventDefault();
-                setSubTab('CONCIERGE');
                 setSelectedRubro(null);
                 handleSearch();
               }}
-              className="flex flex-col sm:flex-row gap-3"
+              className={`flex flex-col sm:flex-row gap-2.5 ${
+                isCompactSphere ? 'w-full lg:max-w-xl' : 'w-full max-w-2xl'
+              }`}
             >
               <div className="relative flex-1 flex items-center">
                 <Search className="w-4 h-4 text-[#8A8F99] absolute left-4 pointer-events-none" />
@@ -435,18 +613,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   type="text"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Ej: Taxi al Aeropuerto, kit para el soroche, tour Valle Sagrado..."
-                  className="w-full min-h-[48px] pl-11 pr-14 rounded-2xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm text-[#14171F] dark:text-[#F4F1EA] placeholder:text-[#7B8290] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]"
+                  placeholder='Di o escribe: "Quiero un taxi" o "Leche, atún y arroz"'
+                  className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#121620] text-sm text-[#14171F] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]"
                 />
                 <button
                   type="button"
                   onClick={handleVoiceCapture}
-                  title="Pedir por voz"
-                  aria-label="Pedir por voz"
-                  className={`absolute right-2 min-h-[40px] min-w-[40px] rounded-xl flex items-center justify-center transition-colors ${
-                    voiceActive
-                      ? 'bg-[#C81E5B] text-white'
-                      : 'text-[#6A717E] hover:text-[#D4AF37] hover:bg-black/5 dark:hover:bg-white/5'
+                  aria-label="Dictar por voz"
+                  className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
+                    voiceActive ? 'bg-[#C81E5B] text-white' : 'text-[#6A717E] hover:text-[#D4AF37]'
                   }`}
                 >
                   {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
@@ -455,118 +630,183 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               <button
                 type="submit"
                 disabled={loading}
-                className="min-h-[48px] px-7 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity disabled:opacity-60"
+                className="min-h-[46px] px-6 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-bold whitespace-nowrap shrink-0"
               >
-                {loading ? 'Consultando...' : 'Consultar'}
+                {loading ? 'Buscando...' : 'Pedir ahora'}
               </button>
             </form>
+          )}
 
-            {/* Atajos y controles secundarios */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap items-center gap-2">
-                {shortcutItems.map((sc) => {
-                  const isActive =
-                    (sc.tab && subTab === sc.tab) ||
-                    (!sc.tab && subTab === 'CONCIERGE' && activeCategory === sc.rubro);
-                  return (
-                    <button
-                      key={sc.label}
-                      type="button"
-                      onClick={() => {
-                        if (sc.tab) {
-                          setSubTab(sc.tab);
-                        } else if (sc.rubro) {
-                          setSubTab('CONCIERGE');
-                          setSelectedRubro(sc.rubro);
-                          setQuery(sc.prompt || '');
-                          handleSearch(sc.prompt || '', sc.rubro);
-                        }
-                      }}
-                      className={`min-h-[44px] px-3.5 py-2 rounded-xl text-xs font-medium flex items-center gap-2 whitespace-nowrap shrink-0 border transition-colors ${
-                        isActive
-                          ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37]/15 dark:text-[#E5C158] dark:border-[#D4AF37]/50'
-                          : 'bg-transparent border-black/10 dark:border-white/10 text-[#4A505C] dark:text-[#B4BAC4] hover:border-[#D4AF37]/40'
-                      }`}
-                    >
-                      {sc.icon}
-                      <span>{sc.label}</span>
-                    </button>
-                  );
-                })}
+          {/* Botones directos principales bajo la esfera (Taxi InDrive / Markets Abiertos) */}
+          {!isCompactSphere && (
+            <div className="w-full max-w-2xl space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSphereExpanded(true);
+                    setQuery('Quiero un taxi al aeropuerto');
+                    handleSearch('Quiero un taxi al aeropuerto', 'TRANSPORTE');
+                  }}
+                  className="min-h-[58px] px-5 py-3 rounded-2xl border border-[#84CC16]/50 bg-[#84CC16]/15 hover:bg-[#84CC16]/25 text-left flex items-center justify-between gap-3 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-[#B6F02B] text-[#0B0E14] flex items-center justify-center shrink-0">
+                      <CarFront className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-[#14171F] dark:text-white">
+                        Quiero un Taxi
+                      </p>
+                      <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
+                        Mapa con taxistas y precios estilo InDrive
+                      </p>
+                    </div>
+                  </div>
+                  <Compass className="w-4 h-4 text-[#84CC16] shrink-0" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSphereExpanded(true);
+                    setQuery('Comprar leche, atún y arroz en market abierto');
+                    handleSearch('Comprar leche, atún y arroz en market abierto');
+                  }}
+                  className="min-h-[58px] px-5 py-3 rounded-2xl border border-emerald-500/45 bg-emerald-500/12 hover:bg-emerald-500/20 text-left flex items-center justify-between gap-3 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                      <Store className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-[#14171F] dark:text-white">
+                        Markets Abiertos
+                      </p>
+                      <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
+                        Compara leche, atún y productos en mapa
+                      </p>
+                    </div>
+                  </div>
+                  <ShoppingBasket className="w-4 h-4 text-emerald-500 shrink-0" />
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* Barra compacta GPS / Voz / SOS */}
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSphereExpanded(true);
+                    setTimeout(() => inputRef.current?.focus(), 60);
+                  }}
+                  className="min-h-[38px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs font-medium text-[#555B66] dark:text-[#A3A9B5] hover:border-[#D4AF37]"
+                >
+                  Escribir otro pedido
+                </button>
                 <button
                   type="button"
                   onClick={requestGps}
-                  className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs font-medium text-[#4A505C] dark:text-[#B4BAC4] flex items-center gap-1.5 whitespace-nowrap shrink-0 hover:border-[#D4AF37]/40"
+                  className="min-h-[38px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs font-medium flex items-center gap-1.5"
                 >
                   <MapPin className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>{gpsStatus === 'live' ? 'GPS Activo' : 'Usar mi GPS'}</span>
+                  <span>{gpsStatus === 'live' ? 'GPS Activo' : 'Activar mi GPS'}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     const next = !speakReplies;
                     setSpeakReplies(next);
-                    if (next) {
-                      speakSpanish(replyText);
-                    } else {
-                      stopSpeaking();
-                    }
+                    if (next) speakSpanish(replyText);
+                    else stopSpeaking();
                   }}
-                  className={`min-h-[44px] px-3.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                  className={`min-h-[38px] px-3.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 ${
                     speakReplies
-                      ? 'border-[#D4AF37] text-[#9A7B2C] dark:text-[#E5C158]'
-                      : 'border-black/10 dark:border-white/10 text-[#4A505C] dark:text-[#B4BAC4]'
+                      ? 'border-[#D4AF37]/60 text-[#9A7B2C] dark:text-[#E5C158]'
+                      : 'border-black/10 dark:border-white/10'
                   }`}
                 >
                   <Volume2 className="w-3.5 h-3.5" />
-                  <span>{speakReplies ? 'Voz Activa' : 'Voz'}</span>
+                  <span>{speakReplies ? 'Voz Activa' : 'Voz Silenciada'}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setSosOpen(true)}
-                  className="min-h-[44px] px-3.5 rounded-xl border border-[#C81E5B]/40 text-xs font-medium text-[#C81E5B] flex items-center gap-1.5 whitespace-nowrap shrink-0 hover:bg-[#C81E5B]/10"
+                  className="min-h-[38px] px-3.5 rounded-xl border border-[#C81E5B]/45 text-xs font-semibold text-[#C81E5B] flex items-center gap-1.5 hover:bg-[#C81E5B]/10"
                 >
                   <ShieldAlert className="w-3.5 h-3.5" />
-                  <span>SOS</span>
+                  <span>Emergencia SOS</span>
                 </button>
               </div>
             </div>
-          </div>
+          )}
+        </div>
 
-          {/* Radar Topográfico Cusco / Resumen de Categoría */}
-          <div className="lg:col-span-4 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-5 flex flex-col justify-between">
-            <div className="flex items-center justify-between text-xs text-[#6A717E] dark:text-[#98A0AD]">
-              <span>Centro Histórico · Cusco</span>
-              <span className="font-mono-tabular">
-                {coords.lat.toFixed(3)}, {coords.lng.toFixed(3)}
-              </span>
-            </div>
-            <svg viewBox="0 0 280 150" className="w-full h-36 my-3" aria-hidden="true">
-              <defs>
-                <radialGradient id="cuscoRadar" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stopColor="#D4AF37" stopOpacity="0.22" />
-                  <stop offset="100%" stopColor="#D4AF37" stopOpacity="0" />
-                </radialGradient>
-              </defs>
-              <circle cx="140" cy="75" r="64" fill="url(#cuscoRadar)" />
-              <circle cx="140" cy="75" r="56" fill="none" stroke="currentColor" strokeOpacity="0.12" strokeDasharray="3 4" />
-              <circle cx="140" cy="75" r="34" fill="none" stroke="currentColor" strokeOpacity="0.18" />
-              <path d="M24 115 Q90 85 140 75 T258 38" fill="none" stroke="#D4AF37" strokeWidth="1.5" strokeOpacity="0.7" />
-              <circle cx="140" cy="75" r="5" fill="#D4AF37" />
-              <circle cx="96" cy="58" r="3.5" fill="#C81E5B" />
-              <circle cx="192" cy="92" r="3.5" fill="#D4AF37" fillOpacity="0.8" />
-              <circle cx="172" cy="46" r="3.5" fill="#D4AF37" fillOpacity="0.6" />
-            </svg>
-            <div className="text-xs text-[#555B66] dark:text-[#A3A9B5] flex items-center justify-between border-t border-black/10 dark:border-white/10 pt-3">
-              <span>Categoría activa</span>
-              <span className="font-medium text-[#14171F] dark:text-[#F4F1EA]">
-                {RUBRO_LABELS[activeCategory]}
-              </span>
-            </div>
-          </div>
+        {/* Barra de acceso rápido a los módulos complementarios */}
+        <div className="mt-5 pt-4 border-t border-black/8 dark:border-white/8 flex items-center gap-2 overflow-x-auto pb-1">
+          <button
+            type="button"
+            onClick={() => {
+              setSubTab('CONCIERGE');
+              handleSearch('Quiero un taxi al aeropuerto', 'TRANSPORTE', true);
+            }}
+            className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
+              subTab === 'CONCIERGE' && conciergeMode === 'TAXI_INDRIVE'
+                ? 'border-[#84CC16] bg-[#84CC16]/15 text-[#14171F] dark:text-[#C2F238]'
+                : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD]'
+            }`}
+          >
+            <CarFront className="w-3.5 h-3.5" />
+            <span>Taxi InDrive</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSubTab('CONCIERGE');
+              handleSearch('leche, atún y arroz', undefined, true);
+            }}
+            className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
+              subTab === 'CONCIERGE' && conciergeMode === 'MARKET_MAP'
+                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD]'
+            }`}
+          >
+            <Store className="w-3.5 h-3.5" />
+            <span>Markets Abiertos</span>
+          </button>
+
+          {secondaryModules.map((sc) => {
+            const active =
+              (sc.tab && subTab === sc.tab) ||
+              (!sc.tab &&
+                subTab === 'CONCIERGE' &&
+                conciergeMode === 'CATALOG' &&
+                activeCategory === sc.rubro);
+            return (
+              <button
+                key={sc.label}
+                type="button"
+                onClick={() => {
+                  if (sc.tab) {
+                    setSubTab(sc.tab);
+                  } else if (sc.rubro) {
+                    setSelectedRubro(sc.rubro);
+                    setQuery(sc.prompt || '');
+                    handleSearch(sc.prompt || '', sc.rubro);
+                  }
+                }}
+                className={`min-h-[38px] px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 border transition-colors ${
+                  active
+                    ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37]/20 dark:text-[#E5C158] dark:border-[#D4AF37]/50'
+                    : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD] hover:border-[#D4AF37]/40'
+                }`}
+              >
+                {sc.icon}
+                <span>{sc.label}</span>
+              </button>
+            );
+          })}
         </div>
       </section>
 
@@ -576,29 +816,49 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         </div>
       )}
 
-      {/* SUBVISTA: CONCIERGE & COMPARADOR */}
-      {subTab === 'CONCIERGE' && (
+      {/* ==================================================================== */}
+      {/* MODO 1: TAXI POR GEOLOCALIZACIÓN (INDRIVE / FACILITO)                */}
+      {/* ==================================================================== */}
+      {subTab === 'CONCIERGE' && conciergeMode === 'TAXI_INDRIVE' && (
+        <TaxiInDriveFlow
+          userLat={coords.lat}
+          userLng={coords.lng}
+          gpsLive={gpsStatus === 'live'}
+          onRequestGps={requestGps}
+          initialDestination={destino}
+          driverCatalog={opciones}
+          speakEnabled={speakReplies}
+          onOrderCreated={onOrderCreated}
+        />
+      )}
+
+      {/* ==================================================================== */}
+      {/* MODO 2: MARKETS ABIERTOS EN MAPA + COMPARADOR DE PRODUCTOS           */}
+      {/* ==================================================================== */}
+      {subTab === 'CONCIERGE' && conciergeMode === 'MARKET_MAP' && (
+        <MarketComparatorFlow
+          userLat={coords.lat}
+          userLng={coords.lng}
+          gpsLive={gpsStatus === 'live'}
+          onRequestGps={requestGps}
+          requestedItems={requestedMarketItems}
+          onChangeItems={setRequestedMarketItems}
+          speakEnabled={speakReplies}
+        />
+      )}
+
+      {/* ==================================================================== */}
+      {/* MODO 3: CATÁLOGO CONCIERGE GENERAL (RESTAURANTE, BOTICA, TOUR, ETC.) */}
+      {/* ==================================================================== */}
+      {subTab === 'CONCIERGE' && conciergeMode === 'CATALOG' && (
         <section className="space-y-5">
-          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
-            <div>
-              <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
-                {RUBRO_LABELS[activeCategory]}
-              </h2>
-              <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
-                Comparador en tiempo real · Cada solicitud se enruta únicamente a prestadores verificados de este rubro
-              </p>
-            </div>
-            {activeCategory === 'TRANSPORTE' && (
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={destino}
-                  onChange={(e) => setDestino(e.target.value)}
-                  placeholder="Destino (ej. Aeropuerto, Ollantaytambo)"
-                  className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs sm:text-sm text-[#14171F] dark:text-[#F4F1EA] w-full sm:w-72"
-                />
-              </div>
-            )}
+          <div>
+            <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
+              {RUBRO_LABELS[activeCategory]}
+            </h2>
+            <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
+              Comparador en tiempo real · Prestadores verificados en Cusco
+            </p>
           </div>
 
           {opciones.length === 0 ? (
@@ -865,7 +1125,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               </div>
             </div>
 
-            {/* Comparador Tour Montaña de 7 Colores */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <button
                 type="button"
@@ -926,7 +1185,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               </button>
             </div>
 
-            {/* Selector de rutas */}
             <div className="flex flex-wrap gap-2.5">
               {allRoutes.map((r) => (
                 <button
@@ -967,7 +1225,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             )}
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              {/* Plano Espacial de Cabina Van Turística / Sprinter */}
               <div className="lg:col-span-6 rounded-3xl border border-white/10 p-5 bg-[#07090E] space-y-4">
                 <div className="flex items-center justify-between text-xs text-slate-400">
                   <span>{activeRoute.unidad}</span>
@@ -978,7 +1235,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
                 {activeRoute.id === 999 ? (
                   <div className="max-w-xs mx-auto space-y-2.5 border border-white/10 rounded-3xl p-4 bg-[#0D1117]">
-                    {/* Fila Chofer + Copiloto #1 */}
                     <div className="grid grid-cols-4 gap-2 pb-2.5 border-b border-white/10">
                       <div className="col-span-2 h-12 rounded-xl bg-slate-800/80 border border-slate-700 flex items-center justify-center text-[11px] font-bold text-slate-400">
                         🧑‍✈️ Chofer
@@ -1009,7 +1265,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       })}
                     </div>
 
-                    {/* Filas 2..4 (Ventana | PASILLO | Medio + Ventana) */}
                     {[
                       [2, 3, 4],
                       [5, 6, 7],
@@ -1064,7 +1319,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       </div>
                     ))}
 
-                    {/* Fila trasera de 4 asientos (11-14) */}
                     <div className="grid grid-cols-4 gap-2 pt-2 border-t border-white/10">
                       {[11, 12, 13, 14].map((num) => {
                         const occupied = activeRoute.asientos_ocupados.includes(num);
@@ -1161,19 +1415,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         );
       })()}
 
-      {/* SUBVISTA: BODEGA & MINIMARKET CON ZOOM HD Y CANASTA DINÁMICA */}
       {subTab === 'BODEGA' && <BodegaMinimarketModule />}
-
-      {/* SUBVISTA: OFICIOS & TÉCNICOS VERIFICADOS */}
       {subTab === 'OFICIOS' && <OficiosModule />}
-
-      {/* SUBVISTA: CAMPO DIRECTO B2B (PREVENTA MAYORISTA) */}
       {subTab === 'CAMPO' && <CampoDirectoModule />}
-
-      {/* SUBVISTA: PANEL DE DESPACHO UNIFICADO (CENTRAL DE EMERGENCIAS CUSCO) */}
       {subTab === 'DESPACHO' && <EmergencyDispatchCenter />}
 
-      {/* HOJA DE CONFIRMACIÓN DE PEDIDO (Confirmar / Cancelar / Cerrar) */}
+      {/* HOJA DE CONFIRMACIÓN DE PEDIDO */}
       {selectedOption && (
         <div
           role="dialog"
@@ -1312,7 +1559,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         </div>
       )}
 
-      {/* MODAL EMERGENCIA CHUSPA SOS ACTIVO */}
       {sosOpen && (
         <SosActiveModalCard
           onClose={() => setSosOpen(false)}

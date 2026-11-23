@@ -1,0 +1,600 @@
+import React, { useMemo, useState } from 'react';
+import {
+  BadgeCheck,
+  CheckCircle2,
+  Clock,
+  List,
+  Map as MapIcon,
+  Minus,
+  Plus,
+  ShoppingBasket,
+  Sparkles,
+  Star,
+  Store,
+  Trash2,
+} from 'lucide-react';
+import {
+  computeMarketComparisons,
+  QUICK_MARKET_CATALOG_ITEMS,
+  type MarketComparisonResult,
+  type RequestedMarketItem,
+} from '../data/cuscoMarkets.ts';
+import { speakSpanish } from '../lib/api.ts';
+import { type MetodoPago } from '../types.ts';
+import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
+
+interface MarketComparatorFlowProps {
+  userLat: number;
+  userLng: number;
+  gpsLive: boolean;
+  onRequestGps: () => void;
+  requestedItems: RequestedMarketItem[];
+  onChangeItems: (items: RequestedMarketItem[]) => void;
+  speakEnabled: boolean;
+}
+
+function fmtSoles(centavos: number): string {
+  return `S/ ${(centavos / 100).toFixed(2)}`;
+}
+
+export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
+  userLat,
+  userLng,
+  gpsLive,
+  onRequestGps,
+  requestedItems,
+  onChangeItems,
+  speakEnabled,
+}) => {
+  const [onlyOpen, setOnlyOpen] = useState(true);
+  const [sortBy, setSortBy] = useState<'PRICE' | 'DISTANCE'>('PRICE');
+  const [mobileView, setMobileView] = useState<'MAP' | 'LIST'>('MAP');
+  const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
+  const [addSku, setAddSku] = useState<string>('aceite');
+
+  // Checkout / Reserva Modal
+  const [checkoutTarget, setCheckoutTarget] = useState<{
+    result: MarketComparisonResult;
+    mode: 'COMPRA' | 'RESERVA';
+  } | null>(null);
+  const [clienteNombre, setClienteNombre] = useState('');
+  const [clienteTelefono, setClienteTelefono] = useState('');
+  const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
+  const [orderReceipt, setOrderReceipt] = useState<{
+    codigo: string;
+    pin: string;
+    marketName: string;
+    direccion: string;
+    totalCentavos: number;
+    mode: 'COMPRA' | 'RESERVA';
+    itemsCount: number;
+  } | null>(null);
+
+  const comparisons = useMemo(() => {
+    const list = computeMarketComparisons(requestedItems, userLat, userLng, !onlyOpen);
+    if (sortBy === 'DISTANCE') {
+      return [...list].sort((a, b) => a.distanciaKm - b.distanciaKm);
+    }
+    return list;
+  }, [requestedItems, userLat, userLng, onlyOpen, sortBy]);
+
+  const activeResult =
+    comparisons.find((c) => c.market.id === selectedMarketId) || comparisons[0] || null;
+
+  const mapPins: GeoMapPin[] = useMemo(
+    () =>
+      comparisons.map((c) => ({
+        id: c.market.id,
+        lat: c.market.lat,
+        lng: c.market.lng,
+        priceText: c.market.abiertoAhora ? fmtSoles(c.totalCentavos) : 'Cerrado',
+        sublabel: c.market.nombre.replace('Bodega & Minimarket ', '').replace('Market ', ''),
+        tier: !c.market.abiertoAhora ? 'closed' : c.priceTier,
+        kind: 'MARKET',
+        isOpen: c.market.abiertoAhora,
+      })),
+    [comparisons]
+  );
+
+  function updateQty(sku: string, delta: number) {
+    onChangeItems(
+      requestedItems
+        .map((it) =>
+          it.sku === sku ? { ...it, cantidad: Math.max(0, Math.min(12, it.cantidad + delta)) } : it
+        )
+        .filter((it) => it.cantidad > 0)
+    );
+  }
+
+  function addProductToCompare() {
+    const existing = requestedItems.find((i) => i.sku === addSku);
+    if (existing) {
+      updateQty(addSku, 1);
+      return;
+    }
+    const meta = QUICK_MARKET_CATALOG_ITEMS.find((q) => q.sku === addSku);
+    if (!meta) return;
+    onChangeItems([...requestedItems, { sku: meta.sku, label: meta.label, cantidad: 1 }]);
+  }
+
+  function handleConfirmPurchase(e: React.FormEvent) {
+    e.preventDefault();
+    if (!checkoutTarget) return;
+    const pin = String(Math.floor(1000 + Math.random() * 9000));
+    const codigo = `${checkoutTarget.mode === 'COMPRA' ? 'MKT' : 'RES'}-${Math.floor(
+      1000 + Math.random() * 9000
+    )}`;
+    const count = checkoutTarget.result.items.reduce(
+      (acc, i) => acc + (i.matched ? i.cantidad : 0),
+      0
+    );
+
+    const receipt = {
+      codigo,
+      pin,
+      marketName: checkoutTarget.result.market.nombre,
+      direccion: checkoutTarget.result.market.direccion,
+      totalCentavos: checkoutTarget.result.totalCentavos,
+      mode: checkoutTarget.mode,
+      itemsCount: count,
+    };
+    setOrderReceipt(receipt);
+    setCheckoutTarget(null);
+    if (speakEnabled) {
+      speakSpanish(
+        `${
+          checkoutTarget.mode === 'COMPRA' ? 'Compra confirmada' : 'Reserva generada'
+        } en ${receipt.marketName} por ${fmtSoles(receipt.totalCentavos)}. Tu PIN de entrega es ${pin
+          .split('')
+          .join(' ')}.`
+      );
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      {/* Canasta de productos solicitados + Filtros de Comparador */}
+      <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 shadow-lg space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-emerald-600 dark:text-emerald-400">
+              Comparador Facilito · Solo Markets Abiertos en Cusco
+            </p>
+            <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
+              Compara tu lista en markets abiertos por geolocalización
+            </h2>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="min-h-[38px] px-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 text-xs font-semibold flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={onlyOpen}
+                onChange={(e) => setOnlyOpen(e.target.checked)}
+                className="accent-emerald-600"
+              />
+              <span>Solo abiertos ahora ({comparisons.filter((c) => c.market.abiertoAhora).length})</span>
+            </label>
+
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as 'PRICE' | 'DISTANCE')}
+              className="min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-semibold"
+            >
+              <option value="PRICE">Ordenar: Menor Precio Total</option>
+              <option value="DISTANCE">Ordenar: Más Cercano</option>
+            </select>
+
+            <button
+              type="button"
+              onClick={() => setMobileView((v) => (v === 'MAP' ? 'LIST' : 'MAP'))}
+              className="lg:hidden min-h-[38px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold flex items-center gap-1.5"
+            >
+              {mobileView === 'MAP' ? (
+                <>
+                  <List className="w-3.5 h-3.5" /> Lista
+                </>
+              ) : (
+                <>
+                  <MapIcon className="w-3.5 h-3.5" /> Mapa
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Productos que el cliente pidió + Agregar otro producto */}
+        <div className="flex flex-wrap items-center gap-2">
+          {requestedItems.map((it) => (
+            <div
+              key={it.sku}
+              className="min-h-[40px] pl-3 pr-1.5 py-1 rounded-2xl border border-[#D4AF37]/40 bg-[#D4AF37]/10 flex items-center gap-2 text-xs font-semibold"
+            >
+              <span className="text-[#14171F] dark:text-[#F4F1EA]">{it.label}</span>
+              <div className="flex items-center gap-1 bg-white dark:bg-[#0B0E14] rounded-xl px-1 py-0.5 border border-black/10 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={() => updateQty(it.sku, -1)}
+                  className="w-6 h-6 flex items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/10"
+                >
+                  {it.cantidad <= 1 ? (
+                    <Trash2 className="w-3 h-3 text-[#C81E5B]" />
+                  ) : (
+                    <Minus className="w-3 h-3" />
+                  )}
+                </button>
+                <span className="font-mono-tabular w-5 text-center">{it.cantidad}</span>
+                <button
+                  type="button"
+                  onClick={() => updateQty(it.sku, 1)}
+                  className="w-6 h-6 flex items-center justify-center rounded-lg hover:bg-black/5 dark:hover:bg-white/10"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <div className="flex items-center gap-1.5">
+            <select
+              value={addSku}
+              onChange={(e) => setAddSku(e.target.value)}
+              className="min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+            >
+              {QUICK_MARKET_CATALOG_ITEMS.map((item) => (
+                <option key={item.sku} value={item.sku}>
+                  + {item.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={addProductToCompare}
+              className="min-h-[40px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold"
+            >
+              Añadir
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Confirmación reciente de Compra / Reserva PIN */}
+      {orderReceipt && (
+        <div className="rounded-3xl border-2 border-emerald-500/60 bg-emerald-500/10 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xl">
+          <div className="space-y-1">
+            <p className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4" />
+              {orderReceipt.mode === 'COMPRA'
+                ? 'Compra Confirmada · Preparando Pedido'
+                : 'Reserva Generada · Stock Apartado 60 min'}
+            </p>
+            <h3 className="font-display text-2xl font-semibold text-[#14171F] dark:text-white">
+              {orderReceipt.marketName} ({orderReceipt.codigo})
+            </h3>
+            <p className="text-xs text-[#555B66] dark:text-[#A3A9B5]">
+              {orderReceipt.direccion} · {orderReceipt.itemsCount} productos · Total:{' '}
+              <strong className="font-mono-tabular">{fmtSoles(orderReceipt.totalCentavos)}</strong>
+            </p>
+          </div>
+          <div className="bg-[#0B0E14] text-white border border-emerald-500/40 rounded-2xl px-5 py-3 text-center shrink-0">
+            <p className="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">
+              PIN de Entrega / Retiro
+            </p>
+            <p className="font-mono-tabular text-2xl font-black tracking-[0.25em] text-[#D4AF37]">
+              {orderReceipt.pin}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Mapa Geolocalizado + Lista Comparativa de Markets Abiertos */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        <div className={`lg:col-span-7 space-y-4 ${mobileView === 'LIST' ? 'hidden lg:block' : ''}`}>
+          <CuscoGeoMap
+            mode="MARKET"
+            userLat={userLat}
+            userLng={userLng}
+            pins={mapPins}
+            selectedPinId={activeResult?.market.id ?? null}
+            onSelectPin={(id) => setSelectedMarketId(id)}
+            onRequestGps={onRequestGps}
+            gpsLive={gpsLive}
+          />
+
+          {/* Detalle del Market Seleccionado en el Mapa */}
+          {activeResult && (
+            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${
+                        activeResult.market.abiertoAhora
+                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                          : 'bg-slate-500/15 text-slate-500'
+                      }`}
+                    >
+                      {activeResult.market.abiertoAhora ? '● Abierto ahora' : 'Cerrado'} ·{' '}
+                      {activeResult.market.horario}
+                    </span>
+                    <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                      {activeResult.distanciaKm.toFixed(1)} km · ~{activeResult.etaMin} min
+                    </span>
+                  </div>
+                  <h3 className="font-display text-2xl font-semibold text-[#14171F] dark:text-white flex items-center gap-2">
+                    <Store className="w-5 h-5 text-[#D4AF37]" />
+                    {activeResult.market.nombre}
+                  </h3>
+                  <p className="text-xs text-[#555B66] dark:text-[#A3A9B5]">
+                    {activeResult.market.direccion} · ★ {activeResult.market.calificacion.toFixed(2)}
+                  </p>
+                </div>
+
+                <div className="text-left sm:text-right shrink-0">
+                  <p className="text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
+                    Total de tu lista
+                  </p>
+                  <p className="font-mono-tabular text-2xl font-black text-emerald-600 dark:text-emerald-400">
+                    {fmtSoles(activeResult.totalCentavos)}
+                  </p>
+                  {activeResult.ahorroVsCaroCentavos > 0 && (
+                    <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                      Ahorras {fmtSoles(activeResult.ahorroVsCaroCentavos)} frente al más caro
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Desglose producto por producto solicitado */}
+              <div className="divide-y divide-black/8 dark:divide-white/8 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14]">
+                {activeResult.items.map((item) => (
+                  <div
+                    key={item.sku}
+                    className="px-4 py-2.5 flex items-center justify-between gap-3 text-xs sm:text-sm"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-semibold text-[#14171F] dark:text-white truncate">
+                        {item.cantidad}×{' '}
+                        {item.matched ? item.matched.nombre : `${item.requestedLabel} (Sin stock)`}
+                      </p>
+                      {item.matched && (
+                        <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                          {item.matched.marca} · {item.matched.presentacion} ·{' '}
+                          {fmtSoles(item.matched.precioCentavos)} c/u
+                        </p>
+                      )}
+                    </div>
+                    <span className="font-mono-tabular font-bold shrink-0 text-[#14171F] dark:text-white">
+                      {item.matched ? fmtSoles(item.subtotalCentavos) : '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Botones Compra directa o Reserva */}
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                <button
+                  type="button"
+                  disabled={!activeResult.market.abiertoAhora || activeResult.totalCentavos === 0}
+                  onClick={() => setCheckoutTarget({ result: activeResult, mode: 'COMPRA' })}
+                  className="flex-1 min-h-[46px] px-5 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <ShoppingBasket className="w-4 h-4" />
+                  <span>Comprar Ahora ({fmtSoles(activeResult.totalCentavos)})</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!activeResult.market.abiertoAhora || activeResult.totalCentavos === 0}
+                  onClick={() => setCheckoutTarget({ result: activeResult, mode: 'RESERVA' })}
+                  className="flex-1 min-h-[46px] px-5 rounded-2xl border border-[#D4AF37]/60 bg-[#D4AF37]/10 text-[#9A7B2C] dark:text-[#E5C158] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Clock className="w-4 h-4" />
+                  <span>Reservar Canasta (Recojo)</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Columna derecha: Ranking comparativo de Markets Abiertos */}
+        <div
+          className={`lg:col-span-5 space-y-3 ${
+            mobileView === 'MAP' ? 'hidden lg:block' : 'block'
+          }`}
+        >
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
+              Comparativa de Precios en Cusco ({comparisons.length})
+            </h3>
+            <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+              Facilito Multi-Canasta
+            </span>
+          </div>
+
+          {comparisons.map((res, idx) => {
+            const selected = activeResult?.market.id === res.market.id;
+            return (
+              <article
+                key={res.market.id}
+                onClick={() => {
+                  setSelectedMarketId(res.market.id);
+                  setMobileView('MAP');
+                }}
+                className={`rounded-3xl border p-4 cursor-pointer transition-all bg-white dark:bg-[#121620] space-y-3 ${
+                  selected
+                    ? 'border-emerald-500 ring-2 ring-emerald-500/25 shadow-xl'
+                    : 'border-black/10 dark:border-white/10 hover:border-[#D4AF37]/50'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {idx === 0 && res.market.abiertoAhora && (
+                        <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-600 text-white">
+                          Mejor Precio
+                        </span>
+                      )}
+                      <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                        <BadgeCheck className="w-3 h-3" />{' '}
+                        {res.market.abiertoAhora ? 'Abierto' : 'Cerrado'}
+                      </span>
+                      <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                        · {res.distanciaKm.toFixed(1)} km
+                      </span>
+                    </div>
+                    <h4 className="font-display text-lg font-semibold text-[#14171F] dark:text-white mt-0.5">
+                      {res.market.nombre}
+                    </h4>
+                    <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                      {res.market.zona} · ★ {res.market.calificacion.toFixed(2)}
+                    </p>
+                  </div>
+
+                  <div className="text-right shrink-0">
+                    <p
+                      className={`font-mono-tabular text-xl font-black ${
+                        res.priceTier === 'cheapest'
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : res.priceTier === 'high'
+                          ? 'text-rose-500'
+                          : 'text-[#9A7B2C] dark:text-amber-300'
+                      }`}
+                    >
+                      {fmtSoles(res.totalCentavos)}
+                    </p>
+                    <p className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                      {res.matchedCount}/{requestedItems.length} productos
+                    </p>
+                  </div>
+                </div>
+
+                {/* Mini resumen de precios por producto */}
+                <div className="flex flex-wrap gap-1.5">
+                  {res.items.map((it) => (
+                    <span
+                      key={it.sku}
+                      className="text-[11px] px-2.5 py-1 rounded-xl bg-[#F8F7F4] dark:bg-[#0B0E14] border border-black/10 dark:border-white/10 font-mono-tabular"
+                    >
+                      {it.requestedLabel.split(' ')[0]}:{' '}
+                      <strong>{it.matched ? fmtSoles(it.matched.precioCentavos) : 'N/D'}</strong>
+                    </span>
+                  ))}
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={!res.market.abiertoAhora || res.totalCentavos === 0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCheckoutTarget({ result: res, mode: 'COMPRA' });
+                    }}
+                    className="flex-1 min-h-[40px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold disabled:opacity-50"
+                  >
+                    Comprar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!res.market.abiertoAhora || res.totalCentavos === 0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCheckoutTarget({ result: res, mode: 'RESERVA' });
+                    }}
+                    className="flex-1 min-h-[40px] rounded-xl border border-black/15 dark:border-white/15 text-xs font-semibold disabled:opacity-50"
+                  >
+                    Reservar
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Modal de Compra / Reserva de Canasta Market */}
+      {checkoutTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+        >
+          <form
+            onSubmit={handleConfirmPurchase}
+            className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl"
+          >
+            <div>
+              <p className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400">
+                {checkoutTarget.mode === 'COMPRA'
+                  ? 'Compra Directa con Delivery / Recojo'
+                  : 'Reserva de Canasta en Market Abierto'}
+              </p>
+              <h3 className="font-display text-2xl font-semibold text-[#14171F] dark:text-white">
+                {checkoutTarget.result.market.nombre}
+              </h3>
+              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                {checkoutTarget.result.market.direccion} · Total:{' '}
+                <strong className="font-mono-tabular text-[#14171F] dark:text-white">
+                  {fmtSoles(checkoutTarget.result.totalCentavos)}
+                </strong>
+              </p>
+            </div>
+
+            <div className="space-y-2.5">
+              <input
+                required
+                type="text"
+                value={clienteNombre}
+                onChange={(e) => setClienteNombre(e.target.value)}
+                placeholder="Tu nombre completo"
+                className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+              />
+              <input
+                required
+                type="tel"
+                value={clienteTelefono}
+                onChange={(e) => setClienteTelefono(e.target.value)}
+                placeholder="WhatsApp (+51 9...)"
+                className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+              />
+              <div className="grid grid-cols-3 gap-2">
+                {(['Yape', 'Plin', 'Efectivo'] as MetodoPago[]).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMetodoPago(m)}
+                    className={`min-h-[40px] rounded-xl text-xs font-bold border ${
+                      metodoPago === m
+                        ? 'bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] border-transparent'
+                        : 'border-black/15 dark:border-white/15'
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setCheckoutTarget(null)}
+                className="flex-1 min-h-[46px] rounded-2xl border border-black/15 dark:border-white/15 text-xs font-semibold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="flex-[2] min-h-[46px] rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold flex items-center justify-center gap-2"
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>
+                  {checkoutTarget.mode === 'COMPRA' ? 'Confirmar Compra + PIN' : 'Generar Reserva + PIN'}
+                </span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </section>
+  );
+};
