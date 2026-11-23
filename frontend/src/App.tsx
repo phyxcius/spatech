@@ -5,8 +5,12 @@ import { BusinessPanel } from './components/BusinessPanel.tsx';
 import { ClientPortal } from './components/ClientPortal.tsx';
 import { GlowingNotificationCardHost } from './components/GlowingNotificationCard.tsx';
 import { OrderTracking } from './components/OrderTracking.tsx';
+import {
+  FloatingAvatarWidget,
+  type AssistantDispatchEvent,
+} from './components/RealisticHumanoidWidget.tsx';
 import { isFirebaseRtdbMode, subscribeFirebaseRtdbMode } from './lib/firebaseRtdb.ts';
-import type { PedidoPublico } from './types.ts';
+import type { PedidoPublico, Rubro } from './types.ts';
 
 type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'ADMIN';
 
@@ -17,6 +21,11 @@ export default function App() {
   const [lastOrderPin, setLastOrderPin] = useState<string | null>(null);
   const [assistantSignal, setAssistantSignal] = useState(0);
   const [sosSignal, setSosSignal] = useState(0);
+  const [externalPrompt, setExternalPrompt] = useState<{
+    seq: number;
+    query: string;
+    categoria?: Rubro;
+  } | null>(null);
   const [rtdbMode, setRtdbMode] = useState(() => isFirebaseRtdbMode());
 
   useEffect(() => subscribeFirebaseRtdbMode(setRtdbMode), []);
@@ -44,6 +53,15 @@ export default function App() {
   function triggerSosModal() {
     setView('CONCIERGE');
     setSosSignal((n) => n + 1);
+  }
+
+  function handleFloatingAssistantDispatch(ev: AssistantDispatchEvent) {
+    setView('CONCIERGE');
+    setExternalPrompt((prev) => ({
+      seq: (prev?.seq || 0) + 1,
+      query: ev.query,
+      categoria: ev.categoria,
+    }));
   }
 
   const navItems: Array<{ id: ViewMode; label: string; icon: React.ReactNode }> = [
@@ -144,6 +162,7 @@ export default function App() {
             onOrderCreated={handleOrderCreated}
             openAssistantSignal={assistantSignal}
             openSosSignal={sosSignal}
+            externalPromptSignal={externalPrompt}
           />
         )}
         {view === 'SEGUIMIENTO' && (
@@ -153,24 +172,11 @@ export default function App() {
         {view === 'ADMIN' && <AdminPanel />}
       </main>
 
-      {/* Acceso Flotante Cara Humanoide Digital del Asistente */}
-      {view !== 'NEGOCIO' && view !== 'ADMIN' && (
-        <button
-          type="button"
-          onClick={triggerAssistantSphere}
-          aria-label="Abrir agente humanoide digital La Chuspa"
-          title="Abrir agente digital La Chuspa"
-          className="fixed bottom-20 right-4 md:bottom-8 md:right-8 z-40 w-14 h-14 rounded-full p-[2px] chuspa-aistudio-glow shadow-xl hover:scale-105 active:scale-95 transition-transform"
-        >
-          <span className="relative block w-full h-full rounded-full overflow-hidden bg-[#05080F]">
-            <img
-              src={`${import.meta.env.BASE_URL}assets/aistudio/verificacion-biometrica-cara_1023984-56309_85734ea9.jpg`}
-              alt="Agente Digital La Chuspa"
-              className="w-full h-full object-cover"
-            />
-          </span>
-        </button>
-      )}
+      {/* Widget Flotante Circular del Avatar Humanoide Realista (sin bordes cuadrados, minimizable y cerrable) */}
+      <FloatingAvatarWidget
+        hidden={view === 'NEGOCIO' || view === 'ADMIN'}
+        onAssistantDispatch={handleFloatingAssistantDispatch}
+      />
 
       {/* Navegación Inferior Móvil (Zona de pulgar con icono SOS directo) */}
       <nav

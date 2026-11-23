@@ -162,7 +162,29 @@ function pickGoogleSpanishVoice(): SpeechSynthesisVoice | undefined {
   return [...spanishVoices].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0];
 }
 
+type SpeechCadenceListener = (ev: { speaking: boolean; level: number }) => void;
+const speechCadenceListeners = new Set<SpeechCadenceListener>();
+let speechFallbackTimer: number | null = null;
+
+export function subscribeSpeechCadence(cb: SpeechCadenceListener): () => void {
+  speechCadenceListeners.add(cb);
+  return () => speechCadenceListeners.delete(cb);
+}
+
+function emitSpeechCadence(ev: { speaking: boolean; level: number }): void {
+  speechCadenceListeners.forEach((cb) => cb(ev));
+}
+
+function stopSpeechCadenceTimer(): void {
+  if (speechFallbackTimer !== null && typeof window !== 'undefined') {
+    window.clearInterval(speechFallbackTimer);
+    speechFallbackTimer = null;
+  }
+}
+
 export function stopSpeaking(): void {
+  stopSpeechCadenceTimer();
+  emitSpeechCadence({ speaking: false, level: 0 });
   try {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -178,6 +200,7 @@ export function speakSpanish(text: string): void {
     const synth = window.speechSynthesis;
     const wasBusy = synth.speaking || synth.pending;
     if (wasBusy) {
+      stopSpeechCadenceTimer();
       synth.cancel();
     }
 
@@ -195,9 +218,49 @@ export function speakSpanish(text: string): void {
         utter.rate = 1.0;
         utter.pitch = 1.0;
         utter.volume = 1.0;
+
+        let tick = 0;
+        const approxMs = Math.min(12000, Math.max(1600, text.length * 64));
+        const startTs = Date.now();
+
+        const startFallbackLoop = () => {
+          stopSpeechCadenceTimer();
+          speechFallbackTimer = window.setInterval(() => {
+            const elapsed = Date.now() - startTs;
+            if (elapsed > approxMs || (!synth.speaking && elapsed > 800)) {
+              stopSpeechCadenceTimer();
+              emitSpeechCadence({ speaking: false, level: 0 });
+              return;
+            }
+            tick += 1;
+            const amp = 0.32 + ((tick * 37) % 55) / 100;
+            emitSpeechCadence({ speaking: true, level: amp });
+          }, 110);
+        };
+
+        utter.onstart = () => {
+          emitSpeechCadence({ speaking: true, level: 0.7 });
+          startFallbackLoop();
+        };
+        utter.onboundary = (ev) => {
+          const ch = text[ev.charIndex] || 'a';
+          const open = /[aeoáéó]/i.test(ch);
+          emitSpeechCadence({ speaking: true, level: open ? 0.88 : 0.48 });
+        };
+        utter.onend = () => {
+          stopSpeechCadenceTimer();
+          emitSpeechCadence({ speaking: false, level: 0 });
+        };
+        utter.onerror = () => {
+          stopSpeechCadenceTimer();
+          emitSpeechCadence({ speaking: false, level: 0 });
+        };
+
         synth.speak(utter);
+        startFallbackLoop();
       } catch {
-        // ignore speech errors
+        stopSpeechCadenceTimer();
+        emitSpeechCadence({ speaking: false, level: 0 });
       }
     };
 

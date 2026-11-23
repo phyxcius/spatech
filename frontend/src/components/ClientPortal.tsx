@@ -27,7 +27,8 @@ import {
   parseMarketQuery,
   type RequestedMarketItem,
 } from '../lib/cuscoMarkets.ts';
-import { apiFetch, speakSpanish, stopSpeaking } from '../lib/api.ts';
+import { apiFetch, speakSpanish, stopSpeaking, subscribeSpeechCadence } from '../lib/api.ts';
+import { subscribeAvatarSpeech } from '../lib/heygenAvatar.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
@@ -51,12 +52,14 @@ import {
   CampoDirectoModule,
   OficiosModule,
 } from './MarketplaceModules.tsx';
+import { RealisticAvatarPortrait } from './RealisticHumanoidWidget.tsx';
 import { TaxiInDriveFlow } from './TaxiInDriveFlow.tsx';
 
 interface ClientPortalProps {
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
   openAssistantSignal: number;
   openSosSignal?: number;
+  externalPromptSignal?: { seq: number; query: string; categoria?: Rubro } | null;
 }
 
 type ClientTab =
@@ -98,6 +101,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   onOrderCreated,
   openAssistantSignal,
   openSosSignal = 0,
+  externalPromptSignal = null,
 }) => {
   const [subTab, setSubTab] = useState<ClientTab>('CONCIERGE');
   const [conciergeMode, setConciergeMode] = useState<ConciergeMode>('SPHERE_IDLE');
@@ -113,11 +117,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [gpsStatus, setGpsStatus] = useState<'default' | 'live' | 'denied'>('default');
   const [loading, setLoading] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
+  const [avatarSpeaking, setAvatarSpeaking] = useState(false);
+  const [avatarMouthLevel, setAvatarMouthLevel] = useState(0);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
   const [speakReplies, setSpeakReplies] = useState(true);
   const [lastResponseMs, setLastResponseMs] = useState<number | null>(null);
   const [replyText, setReplyText] = useState<string>(
-    'Presiona el rostro digital y dime qué necesitas: taxi, restaurante, botica, tour o market.'
+    'Toca al asistente y dime qué necesitas: taxi, restaurante, botica, tour o market.'
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
@@ -182,6 +188,30 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       .then((res) => setOpciones(Array.isArray(res?.opciones) ? res.opciones : []))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const unsub1 = subscribeSpeechCadence((ev) => {
+      setAvatarSpeaking(ev.speaking);
+      setAvatarMouthLevel(ev.level);
+    });
+    const unsub2 = subscribeAvatarSpeech((ev) => {
+      setAvatarSpeaking(ev.speaking);
+      setAvatarMouthLevel(ev.level);
+    });
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (externalPromptSignal && externalPromptSignal.seq > 0 && externalPromptSignal.query.trim()) {
+      setLastTranscript(externalPromptSignal.query);
+      setQuery(externalPromptSignal.query);
+      setSphereExpanded(true);
+      void handleSearch(externalPromptSignal.query, externalPromptSignal.categoria, true);
+    }
+  }, [externalPromptSignal?.seq]);
 
   useEffect(() => {
     if (openAssistantSignal > 0) {
@@ -673,61 +703,30 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               : 'flex-col items-center text-center gap-6'
           }`}
         >
-          {/* Cara Humanoide Digital Interactiva */}
+          {/* Avatar Humanoide Realista Interactivo */}
           <div
-            className={`flex items-center gap-4 ${
+            className={`flex items-center gap-5 ${
               isCompactSphere ? 'flex-row' : 'flex-col'
             }`}
           >
-            <button
-              type="button"
+            <RealisticAvatarPortrait
+              sizeClass={isCompactSphere ? 'w-20 h-20 shrink-0' : 'w-36 h-36 sm:w-44 sm:h-44'}
+              listening={voiceActive}
+              speaking={avatarSpeaking}
+              mouthLevel={avatarMouthLevel}
               onClick={handleSpherePress}
-              aria-label="Presionar rostro digital La Chuspa para pedir por voz"
-              className={`relative group flex items-center justify-center rounded-full focus:outline-none transition-transform active:scale-95 ${
-                isCompactSphere ? 'w-16 h-16 shrink-0' : 'w-36 h-36 sm:w-40 sm:h-40'
-              }`}
-            >
-              {/* Halo resplandeciente estilo Google AI Studio */}
-              <span
-                aria-hidden="true"
-                className={`chuspa-aistudio-glow p-[3px] rounded-full ${
-                  voiceActive ? 'scale-105' : ''
-                }`}
-              />
-              {/* Anillo de escaneo biométrico */}
-              <span
-                aria-hidden="true"
-                className={`absolute -inset-2 rounded-full border border-dashed ${
-                  voiceActive ? 'border-cyan-400 animate-spin' : 'border-sky-400/40'
-                }`}
-              />
-              {/* Avatar Cara Humanoide Digital */}
-              <span className="relative w-full h-full rounded-full overflow-hidden bg-[#05080F] border border-cyan-400/40 shadow-[0_0_40px_rgba(34,211,238,0.35)] flex items-center justify-center">
-                <img
-                  src={`${import.meta.env.BASE_URL}assets/aistudio/verificacion-biometrica-cara_1023984-56309_85734ea9.jpg`}
-                  alt="Agente Humanoide Digital La Chuspa"
-                  className={`w-full h-full object-cover transition-transform duration-500 ${
-                    voiceActive ? 'scale-110 brightness-125' : 'group-hover:scale-105'
-                  }`}
-                />
-                {voiceActive && (
-                  <span className="absolute inset-x-0 bottom-2 flex items-center justify-center gap-1 bg-black/55 py-1">
-                    <span className="w-1.5 h-3.5 rounded-full bg-cyan-300 animate-bounce" />
-                    <span className="w-1.5 h-5 rounded-full bg-sky-400 animate-pulse" />
-                    <span className="w-1.5 h-3.5 rounded-full bg-cyan-300 animate-bounce" />
-                  </span>
-                )}
-              </span>
-            </button>
+              ariaLabel="Tocar asistente humanoide La Chuspa para pedir por voz"
+              title="Haz clic para hablar directamente con el asistente"
+            />
 
             <div className={isCompactSphere ? 'text-left' : 'space-y-1.5 max-w-xl'}>
               <div className="flex flex-wrap items-center gap-2 justify-center sm:justify-start">
-                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-cyan-600 dark:text-cyan-400">
-                  Agente Digital La Chuspa · Cusco
+                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#E5C158]">
+                  Concierge La Chuspa · Cusco
                 </p>
                 {lastResponseMs !== null && (
-                  <span className="text-[10px] font-mono-tabular px-2 py-0.5 rounded-full border border-cyan-500/35 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 font-semibold">
-                    ⚡ {lastResponseMs} ms
+                  <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD] font-semibold">
+                    · {lastResponseMs} ms
                   </span>
                 )}
                 {conciergeMode !== 'SPHERE_IDLE' && subTab === 'CONCIERGE' && (
@@ -738,10 +737,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       setSphereExpanded(false);
                       setLastTranscript(null);
                       setReplyText(
-                        'Presiona el rostro digital y dime qué necesitas: taxi, restaurante, botica, tour o market.'
+                        'Toca al asistente y dime qué necesitas: taxi, restaurante, botica, tour o market.'
                       );
                     }}
-                    className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-cyan-400"
+                    className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-[#D4AF37]"
                   >
                     Volver al inicio
                   </button>

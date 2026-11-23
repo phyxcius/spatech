@@ -767,4 +767,38 @@ test('8. RENIEC/SUNAT, categorías/modalidades, DNI en market, reglas de negocio
   }
 });
 
+test('9. Proxy HeyGen Interactive Avatar WebRTC: estado público seguro y validación de sesión/habla', async () => {
+  const prevKey = process.env.HEYGEN_API_KEY;
+  delete process.env.HEYGEN_API_KEY;
+  const { server, req } = await startTestServer();
+  try {
+    const statusRes = await req('GET', '/api/public/avatar/status');
+    assert.equal(statusRes.status, 200);
+    assert.equal(statusRes.data.configured, false);
+    assert.equal(statusRes.data.provider, 'realistic-local');
+    assert.equal('apiKey' in statusRes.data, false);
+
+    // Sin HEYGEN_API_KEY en el servidor, crear sesión WebRTC responde 503 para degradar al motor local
+    const sessionRes = await req('POST', '/api/public/avatar/session', {});
+    assert.equal(sessionRes.status, 503);
+
+    // Validación de campos obligatorios en /start, /ice y /speak
+    const badStart = await req('POST', '/api/public/avatar/start', { session_id: '' });
+    assert.equal(badStart.status, 400);
+
+    const badSpeak = await req('POST', '/api/public/avatar/speak', {
+      session_id: 'demo-session',
+      text: '',
+    });
+    assert.equal(badSpeak.status, 400);
+
+    const badStop = await req('POST', '/api/public/avatar/stop', { session_id: '' });
+    assert.equal(badStop.status, 400);
+  } finally {
+    if (prevKey !== undefined) process.env.HEYGEN_API_KEY = prevKey;
+    server.close();
+  }
+});
+
+
 

@@ -152,6 +152,222 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  // =========================================================================
+  // 1.1 AVATAR HUMANOIDE REALISTA (Proxy seguro HeyGen Interactive Avatar WebRTC)
+  // =========================================================================
+  const HEYGEN_API_BASE = 'https://api.heygen.com/v1';
+
+  function getHeygenConfig() {
+    const apiKey = (process.env.HEYGEN_API_KEY || '').trim();
+    const avatarId = (process.env.HEYGEN_AVATAR_ID || 'Wayne_20240711').trim();
+    const voiceId = (process.env.HEYGEN_VOICE_ID || '').trim();
+    return {
+      configured: apiKey.length > 0,
+      apiKey,
+      avatarId,
+      voiceId,
+    };
+  }
+
+  app.get('/api/public/avatar/status', publicLimiter, (_req, res) => {
+    const cfg = getHeygenConfig();
+    res.json({
+      configured: cfg.configured,
+      provider: cfg.configured ? 'heygen-webrtc' : 'realistic-local',
+      avatar_id: cfg.avatarId,
+    });
+  });
+
+  app.post('/api/public/avatar/session', publicLimiter, async (_req, res, next) => {
+    try {
+      const cfg = getHeygenConfig();
+      if (!cfg.configured) {
+        throw new HttpError(
+          503,
+          'HEYGEN_API_KEY no configurada en el servidor; usando motor realista local.'
+        );
+      }
+
+      const tokenRes = await fetch(`${HEYGEN_API_BASE}/streaming.create_token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': cfg.apiKey,
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      const tokenJson = (await tokenRes.json().catch(() => ({}))) as Record<string, any>;
+      const sessionToken = tokenJson?.data?.token;
+      if (!tokenRes.ok || !sessionToken) {
+        throw new HttpError(502, tokenJson?.message || 'No se pudo generar token de sesión HeyGen');
+      }
+
+      const newRes = await fetch(`${HEYGEN_API_BASE}/streaming.new`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify({
+          quality: 'high',
+          avatar_name: cfg.avatarId,
+          version: 'v2',
+          video_encoding: 'H264',
+          ...(cfg.voiceId
+            ? { voice: { voice_id: cfg.voiceId, rate: 1.0, emotion: 'Friendly' } }
+            : {}),
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const newJson = (await newRes.json().catch(() => ({}))) as Record<string, any>;
+      if (!newRes.ok || !newJson?.data?.session_id) {
+        throw new HttpError(502, newJson?.message || 'No se pudo iniciar sesión WebRTC con HeyGen');
+      }
+
+      res.json({
+        session_id: newJson.data.session_id,
+        session_token: sessionToken,
+        sdp: newJson.data.sdp,
+        ice_servers: newJson.data.ice_servers2 || newJson.data.ice_servers || [],
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/public/avatar/start', publicLimiter, async (req, res, next) => {
+    try {
+      const { session_id, session_token, sdp } = req.body || {};
+      if (typeof session_id !== 'string' || !session_id.trim() || !sdp) {
+        throw new HttpError(400, 'session_id y sdp son obligatorios');
+      }
+      const cfg = getHeygenConfig();
+      const authHeader =
+        typeof session_token === 'string' && session_token.trim()
+          ? `Bearer ${session_token.trim()}`
+          : '';
+      if (!authHeader && !cfg.configured) {
+        throw new HttpError(503, 'Avatar WebRTC no configurado en el servidor');
+      }
+      const upstream = await fetch(`${HEYGEN_API_BASE}/streaming.start`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authHeader ? { Authorization: authHeader } : { 'X-Api-Key': cfg.apiKey }),
+        },
+        body: JSON.stringify({ session_id: session_id.trim(), sdp }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = (await upstream.json().catch(() => ({}))) as Record<string, any>;
+      if (!upstream.ok) {
+        throw new HttpError(upstream.status || 502, data?.message || 'Error iniciando stream WebRTC');
+      }
+      res.json({ ok: true, data: data?.data || {} });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/public/avatar/ice', publicLimiter, async (req, res, next) => {
+    try {
+      const { session_id, session_token, candidate } = req.body || {};
+      if (typeof session_id !== 'string' || !session_id.trim() || !candidate) {
+        throw new HttpError(400, 'session_id y candidate son obligatorios');
+      }
+      const cfg = getHeygenConfig();
+      const authHeader =
+        typeof session_token === 'string' && session_token.trim()
+          ? `Bearer ${session_token.trim()}`
+          : '';
+      if (!authHeader && !cfg.configured) {
+        throw new HttpError(503, 'Avatar WebRTC no configurado en el servidor');
+      }
+      const upstream = await fetch(`${HEYGEN_API_BASE}/streaming.ice`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authHeader ? { Authorization: authHeader } : { 'X-Api-Key': cfg.apiKey }),
+        },
+        body: JSON.stringify({ session_id: session_id.trim(), candidate }),
+        signal: AbortSignal.timeout(6000),
+      });
+      if (!upstream.ok) {
+        throw new HttpError(upstream.status || 502, 'Error enviando candidato ICE');
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/public/avatar/speak', publicLimiter, async (req, res, next) => {
+    try {
+      const { session_id, session_token, text } = req.body || {};
+      if (typeof session_id !== 'string' || !session_id.trim()) {
+        throw new HttpError(400, 'session_id obligatorio');
+      }
+      if (typeof text !== 'string' || !text.trim()) {
+        throw new HttpError(400, 'text obligatorio');
+      }
+      const cfg = getHeygenConfig();
+      const authHeader =
+        typeof session_token === 'string' && session_token.trim()
+          ? `Bearer ${session_token.trim()}`
+          : '';
+      if (!authHeader && !cfg.configured) {
+        throw new HttpError(503, 'Avatar WebRTC no configurado en el servidor');
+      }
+      const upstream = await fetch(`${HEYGEN_API_BASE}/streaming.task`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authHeader ? { Authorization: authHeader } : { 'X-Api-Key': cfg.apiKey }),
+        },
+        body: JSON.stringify({
+          session_id: session_id.trim(),
+          text: text.trim().slice(0, 600),
+          task_type: 'repeat',
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = (await upstream.json().catch(() => ({}))) as Record<string, any>;
+      if (!upstream.ok) {
+        throw new HttpError(upstream.status || 502, data?.message || 'Error al hablar en WebRTC');
+      }
+      res.json({ ok: true, data: data?.data || {} });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/public/avatar/stop', publicLimiter, async (req, res, next) => {
+    try {
+      const { session_id, session_token } = req.body || {};
+      if (typeof session_id !== 'string' || !session_id.trim()) {
+        throw new HttpError(400, 'session_id obligatorio');
+      }
+      const cfg = getHeygenConfig();
+      const authHeader =
+        typeof session_token === 'string' && session_token.trim()
+          ? `Bearer ${session_token.trim()}`
+          : '';
+      if (authHeader || cfg.configured) {
+        await fetch(`${HEYGEN_API_BASE}/streaming.stop`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(authHeader ? { Authorization: authHeader } : { 'X-Api-Key': cfg.apiKey }),
+          },
+          body: JSON.stringify({ session_id: session_id.trim() }),
+          signal: AbortSignal.timeout(5000),
+        }).catch(() => {});
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get('/api/public/consulta-documento', publicLimiter, async (req, res, next) => {
     try {
       const tipo = String(req.query.tipo || '').trim().toUpperCase();

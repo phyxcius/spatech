@@ -82,3 +82,52 @@
   animation: chuspa-glow-spin 4s linear infinite;
 }
 
+@keyframes chuspa-human-breathe {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+  }
+  50% {
+    transform: translateY(-1.8px) scale(1.018);
+  }
+}
+
+@keyframes chuspa-human-head-idle {
+  0%, 100% {
+    transform: rotate(0deg) translateX(0px);
+  }
+  28% {
+    transform: rotate(0.9deg) translateX(1.2px);
+  }
+  65% {
+    transform: rotate(-0.85deg) translateX(-1.1px);
+  }
+}
+
+@keyframes chuspa-human-head-talk {
+  0%, 100% {
+    transform: rotate(0deg) translateY(0px) scale(1.015);
+  }
+  25% {
+    transform: rotate(1.3deg) translateY(-1.5px) scale(1.022);
+  }
+  55% {
+    transform: rotate(-1.1deg) translateY(0.8px) scale(1.018);
+  }
+  80% {
+    transform: rotate(0.65deg) translateY(-0.8px) scale(1.02);
+  }
+}
+
+.chuspa-avatar-idle {
+  animation:
+    chuspa-human-breathe 4.4s ease-in-out infinite,
+    chuspa-human-head-idle 7.5s ease-in-out infinite;
+  transform-origin: center 75%;
+}
+
+.chuspa-avatar-talking {
+  animation: chuspa-human-head-talk 1.35s ease-in-out infinite;
+  transform-origin: center 75%;
+}
+
+
