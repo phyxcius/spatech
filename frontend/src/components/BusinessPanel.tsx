@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, ApiError, playLuxuryChime, speakSpanish } from '../lib/api.ts';
+import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
 import {
   ESTADO_LABELS,
   formatSoles,
@@ -191,7 +192,13 @@ export const BusinessPanel: React.FC = () => {
     if (!session) return;
     loadWorkspace(true);
     const id = setInterval(() => loadWorkspace(true), 6000);
-    return () => clearInterval(id);
+    const unsubPedidos = subscribeFirebaseRtdbPath('pedidos', () => {
+      void loadWorkspace(true);
+    });
+    return () => {
+      clearInterval(id);
+      unsubPedidos();
+    };
   }, [session?.negocioId, session?.token]);
 
   async function loadWorkspace(silent = false) {
@@ -230,7 +237,7 @@ export const BusinessPanel: React.FC = () => {
       const pendingCount = nextPedidos.filter(
         (p) => p.estado === 'PENDIENTE_CONFIRMACION' && p.negocio_id === session.negocioId
       ).length;
-      if (soundEnabled && pendingCount > prevPendingCountRef.current) {
+      if (resRes?.negocio && soundEnabled && pendingCount > prevPendingCountRef.current) {
         playLuxuryChime();
         if (resRes.negocio.alerta_voz_activa !== false) {
           const newest = nextPedidos.find(

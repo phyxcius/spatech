@@ -19,6 +19,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, speakSpanish } from '../lib/api.ts';
+import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
 
 // ============================================================================
 // 1. PANEL DE DESPACHO UNIFICADO (CENTRAL DE DESPACHO CUSCO - EMERGENCIAS)
@@ -103,7 +104,13 @@ export const EmergencyDispatchCenter: React.FC = () => {
   useEffect(() => {
     loadEmergencies();
     const id = setInterval(loadEmergencies, 8000);
-    return () => clearInterval(id);
+    const unsubEmergencies = subscribeFirebaseRtdbPath('emergencias', () => {
+      void loadEmergencies();
+    });
+    return () => {
+      clearInterval(id);
+      unsubEmergencies();
+    };
   }, []);
 
   const mergedAlerts: EmergencyItem[] = [

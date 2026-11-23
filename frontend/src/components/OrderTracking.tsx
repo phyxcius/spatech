@@ -10,6 +10,7 @@ import {
   Star,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api.ts';
+import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
 import {
   ESTADO_LABELS,
   formatSoles,
@@ -54,7 +55,13 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
       return;
     }
     const id = setInterval(() => fetchOrder(pedido.codigo, true), 5000);
-    return () => clearInterval(id);
+    const unsubPedido = subscribeFirebaseRtdbPath(`pedidos/${pedido.codigo}`, () => {
+      void fetchOrder(pedido.codigo, true);
+    });
+    return () => {
+      clearInterval(id);
+      unsubPedido();
+    };
   }, [pedido?.codigo, pedido?.estado]);
 
   async function fetchOrder(code: string, silent = false) {

@@ -2,7 +2,11 @@ import 'dotenv/config';
 import { createApp } from './app.ts';
 import { initDatabase, seedDatabase } from './db.ts';
 import { expireStaleOrders } from './finance.ts';
-import { getRtdbBaseUrl, syncSnapshotToFirebaseRtdb } from './rtdbSync.ts';
+import {
+  getRtdbBaseUrl,
+  hydrateDatabaseFromFirebaseRtdb,
+  syncSnapshotToFirebaseRtdb,
+} from './rtdbSync.ts';
 import { validateProductionEnv } from './security.ts';
 
 function resolvePort(): number {
@@ -39,6 +43,7 @@ async function bootstrap() {
 
   const db = initDatabase();
   seedDatabase(db);
+  await hydrateDatabaseFromFirebaseRtdb(db);
   void syncSnapshotToFirebaseRtdb(db);
 
   setInterval(() => {

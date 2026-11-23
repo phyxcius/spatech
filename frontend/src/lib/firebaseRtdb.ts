@@ -6,10 +6,14 @@ import type {
 } from '../types.ts';
 
 const DEFAULT_RTDB_URL = 'https://spatech-b3edf-default-rtdb.firebaseio.com';
-export const FIREBASE_RTDB_URL = (
-  ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_FIREBASE_RTDB_URL ||
-    DEFAULT_RTDB_URL)
-).replace(/\/$/, '');
+const envRtdbUrl = (
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_FIREBASE_RTDB_URL || ''
+)
+  .trim()
+  .replace(/\/$/, '');
+export const FIREBASE_RTDB_URL = /^https?:\/\/[a-z0-9.-]+/i.test(envRtdbUrl)
+  ? envRtdbUrl
+  : DEFAULT_RTDB_URL;
 
 let rtdbModeActive = false;
 const listeners = new Set<(active: boolean) => void>();
@@ -28,6 +32,43 @@ export function setFirebaseRtdbMode(active: boolean): void {
 export function subscribeFirebaseRtdbMode(cb: (active: boolean) => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
+}
+
+/**
+ * Suscripción en tiempo real a Firebase Realtime Database mediante Server-Sent Events (REST streaming).
+ */
+export function subscribeFirebaseRtdbPath(
+  nodePath: string,
+  onChange: () => void
+): () => void {
+  if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    return () => {};
+  }
+  const clean = nodePath.replace(/^\/+/, '');
+  const streamUrl = `${FIREBASE_RTDB_URL}/lachuspa/${clean}.json`;
+  let es: EventSource | null = null;
+  let initialized = false;
+  try {
+    es = new EventSource(streamUrl);
+    const handler = () => {
+      if (!initialized) {
+        initialized = true;
+        return;
+      }
+      onChange();
+    };
+    es.addEventListener('put', handler);
+    es.addEventListener('patch', handler);
+  } catch {
+    return () => {};
+  }
+  return () => {
+    try {
+      es?.close();
+    } catch {
+      // ignore
+    }
+  };
 }
 
 interface RtdbNegocio {
@@ -368,6 +409,15 @@ async function buildInitialSeed(): Promise<RtdbSnapshot> {
     const hashed = await hashPinBrowser(demoPin, `seed-${item.codigo}`);
     negociosMap[item.codigo] = {
       ...rest,
+      telefono: '+51984000000',
+      horario_apertura: item.rubro === 'FARMACIA' || item.rubro === 'HOTEL' ? '00:00' : '07:00',
+      horario_cierre: item.rubro === 'FARMACIA' || item.rubro === 'HOTEL' ? '23:59' : '22:30',
+      abierto_24h: item.rubro === 'FARMACIA' || item.rubro === 'HOTEL' ? 1 : 0,
+      metodos_pago_aceptados: 'Yape,Plin,Efectivo,Tarjeta',
+      auto_aceptar_pedidos: 0,
+      alerta_voz_activa: 1,
+      tarifa_minima_centavos: 600,
+      radio_cobertura_km: 8.0,
       pin_salt: hashed.salt,
       pin_hash: hashed.hash,
     };
@@ -1276,6 +1326,24 @@ export async function handleFirebaseRtdbRequest<T>(
       return { ok: true, servicio: srv } as T;
     }
 
+    if (sub === 'recargas' && method === 'POST') {
+      const codigoOp = String(payload.codigo_operacion || '').trim().toUpperCase();
+      if (!codigoOp) throw new Error('Ingresa el código de operación único.');
+      const id = Date.now();
+      const recarga = {
+        id,
+        negocio_id: biz.id,
+        monto_centavos: Number(payload.monto_centavos) || 1000,
+        metodo: String(payload.metodo || 'Yape'),
+        codigo_operacion: codigoOp,
+        estado: 'PENDIENTE',
+        motivo_rechazo: null,
+        created_at: new Date().toISOString(),
+      };
+      await rtdbFetch(`recargas/${codigoOp}`, 'PUT', recarga);
+      return { ok: true, recarga } as T;
+    }
+
     if (sub.startsWith('pedidos/')) {
       const pedidoId = Number(bizMatch[3]);
       const action = bizMatch[4];
@@ -1328,6 +1396,21 @@ export async function handleFirebaseRtdbRequest<T>(
         return { ok: true } as T;
       }
     }
+  }
+
+  if (cleanPath === '/api/public/firebase-status') {
+    return {
+      url: FIREBASE_RTDB_URL,
+      enabled: true,
+      connected: true,
+      lastSyncAt: snap.meta?.updated_at || new Date().toISOString(),
+      lastHydratedAt: new Date().toISOString(),
+      lastError: null,
+    } as T;
+  }
+
+  if (cleanPath === '/api/admin/bootstrap-status') {
+    return { configured: true, requires_claim: false } as T;
   }
 
   throw new Error(

@@ -17,7 +17,11 @@ import {
   solicitarRecarga,
   validarPinYEntregar,
 } from './finance.ts';
-import { syncSnapshotToFirebaseRtdb } from './rtdbSync.ts';
+import {
+  getFirebaseSyncState,
+  syncNegocioPinToFirebaseRtdb,
+  syncSnapshotToFirebaseRtdb,
+} from './rtdbSync.ts';
 import {
   createRateLimiter,
   createSessionToken,
@@ -109,7 +113,20 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   // 1. RUTAS PÚBLICAS DE CLIENTE / TURISTA
   // =========================================================================
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'la-chuspa-core' });
+    res.json({ ok: true, service: 'la-chuspa-core', firebase: getFirebaseSyncState() });
+  });
+
+  app.get('/api/public/firebase-status', publicLimiter, (_req, res) => {
+    res.json(getFirebaseSyncState());
+  });
+
+  app.post('/api/public/firebase-sync', publicLimiter, async (_req, res, next) => {
+    try {
+      await syncSnapshotToFirebaseRtdb(db);
+      res.json({ ok: true, firebase: getFirebaseSyncState() });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.get('/api/public/directorio', publicLimiter, (_req, res) => {
@@ -892,6 +909,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         rubro: negocio.rubro,
       });
 
+      void syncNegocioPinToFirebaseRtdb(negocio.codigo, cleanPin);
+
       res.status(201).json({
         token,
         negocio: {
@@ -1210,6 +1229,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         INSERT INTO seguridad_auditoria (actor_tipo, actor_id, accion, detalle, ip)
         VALUES ('NEGOCIO', ?, 'CAMBIO_PIN', 'PIN actualizado desde panel de configuración', ?)
       `).run(String(negocioId), req.ip || '');
+      const bizRow = db.prepare('SELECT codigo FROM negocios WHERE id = ?').get(negocioId) as
+        | { codigo: string }
+        | undefined;
+      if (bizRow?.codigo) {
+        void syncNegocioPinToFirebaseRtdb(bizRow.codigo, pinNuevo);
+      }
       res.json({ ok: true });
     } catch (err) {
       next(err);
