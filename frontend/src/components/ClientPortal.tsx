@@ -696,6 +696,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   }
 
   async function handleLockRate(rate: DivisaRate) {
+    if (!isDocValid || !docVerificado) {
+      setErrorMsg(
+        'Es obligatorio ingresar y validar tu DNI (8 dígitos) o RUC (11 dígitos) del titular antes de reservar una tasa de cambio.'
+      );
+      notifyDocumentAlertIfNeeded('Reserva de Divisas');
+      return;
+    }
     if (!clienteNombre.trim() || !clienteTelefono.trim()) {
       setErrorMsg('Ingresa tu nombre y WhatsApp en la calculadora para reservar la tasa.');
       return;
@@ -715,6 +722,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           monto_origen: Number(divisaMonto) || 100,
           cliente_nombre: clienteNombre,
           cliente_telefono: clienteTelefono,
+          cliente_documento_tipo: docVerificado.tipo,
+          cliente_documento_numero: docVerificado.numero,
+          cliente_documento_verificado: true,
         },
       });
       setDivisaLockCode(res);
@@ -726,6 +736,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   async function handleReserveSeat(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedSeatRoute || !selectedSeatNum) return;
+    if (!isDocValid || !docVerificado) {
+      setErrorMsg(
+        'Es obligatorio ingresar y validar el DNI (8 dígitos) o RUC (11 dígitos) del titular antes de reservar una butaca.'
+      );
+      notifyDocumentAlertIfNeeded('Reserva de Butaca');
+      return;
+    }
     setErrorMsg(null);
     if (selectedSeatRoute.id === 999) {
       const pin = String(Math.floor(1000 + Math.random() * 9000));
@@ -756,6 +773,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           asiento_numero: selectedSeatNum,
           cliente_nombre: clienteNombre,
           cliente_telefono: clienteTelefono,
+          cliente_documento_tipo: docVerificado.tipo,
+          cliente_documento_numero: docVerificado.numero,
+          cliente_documento_verificado: true,
         },
       });
       setSeatSuccess(res);
@@ -1148,6 +1168,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   setDocVerificado(null);
                   setDocLookupError(null);
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleVerifyCustomerDoc();
+                  }
+                }}
                 placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
                 className="w-40 sm:w-44 min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular text-[#14171F] dark:text-white"
               />
@@ -1467,6 +1493,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
           )}
 
+          {!isDocValid && (
+            <div className="rounded-2xl border border-amber-500/45 bg-amber-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-200">
+              <span>
+                <strong>DNI/RUC Obligatorio:</strong> valida el DNI o RUC del titular arriba antes de bloquear una tasa.
+              </span>
+              <button
+                type="button"
+                onClick={() => docInputRef.current?.focus()}
+                className="px-3 py-1.5 rounded-xl bg-amber-500 text-[#0B0E14] font-bold"
+              >
+                Ingresar DNI/RUC
+              </button>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {divisas.map((r) => {
               const rate = divisaOp === 'COMPRA' ? r.tasa_compra : r.tasa_venta;
@@ -1491,10 +1532,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     <p className="font-mono-tabular text-lg font-semibold">S/ {est}</p>
                     <button
                       type="button"
+                      disabled={!isDocValid}
                       onClick={() => handleLockRate(r)}
-                      className="min-h-[44px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap"
+                      className="min-h-[44px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap disabled:opacity-45 disabled:cursor-not-allowed"
                     >
-                      Bloquear tasa
+                      {isDocValid ? 'Bloquear tasa' : 'Valida DNI/RUC'}
                     </button>
                   </div>
                 </div>
@@ -1818,6 +1860,28 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       : 'Toca un asiento libre en verde en el mapa de cabina'}
                   </p>
                 </div>
+                <div
+                  className={`rounded-2xl border p-3 text-xs flex items-center justify-between gap-2 ${
+                    isDocValid && docVerificado
+                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                      : 'border-amber-500/45 bg-amber-500/10 text-amber-200'
+                  }`}
+                >
+                  <span>
+                    {isDocValid && docVerificado
+                      ? `✓ Titular verificado: ${docVerificado.tipo} ${docVerificado.numero}`
+                      : 'Obligatorio: valida tu DNI o RUC arriba para reservar butaca.'}
+                  </span>
+                  {!isDocValid && (
+                    <button
+                      type="button"
+                      onClick={() => docInputRef.current?.focus()}
+                      className="px-2.5 py-1 rounded-lg bg-[#D4AF37] text-[#0B0E14] font-bold shrink-0"
+                    >
+                      Validar
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   required
@@ -1836,13 +1900,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 />
                 <button
                   type="submit"
-                  disabled={!selectedSeatNum}
+                  disabled={!selectedSeatNum || !isDocValid}
                   onClick={() => {
                     if (!selectedSeatRoute) setSelectedSeatRoute(activeRoute);
                   }}
-                  className="w-full min-h-[48px] rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider disabled:opacity-40"
+                  className="w-full min-h-[48px] rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Apartar Butaca con PIN de Garantía
+                  {!isDocValid
+                    ? 'Valida DNI/RUC del titular para apartar'
+                    : 'Apartar Butaca con PIN de Garantía'}
                 </button>
               </form>
             </div>
@@ -1850,9 +1916,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         );
       })()}
 
-      {subTab === 'BODEGA' && <BodegaMinimarketModule />}
-      {subTab === 'OFICIOS' && <OficiosModule />}
-      {subTab === 'CAMPO' && <CampoDirectoModule />}
+      {subTab === 'BODEGA' && (
+        <BodegaMinimarketModule
+          customerDoc={sharedCustomerDoc}
+          onCustomerDocVerified={handleSharedDocSynced}
+        />
+      )}
+      {subTab === 'OFICIOS' && (
+        <OficiosModule
+          customerDoc={sharedCustomerDoc}
+          onCustomerDocVerified={handleSharedDocSynced}
+        />
+      )}
+      {subTab === 'CAMPO' && (
+        <CampoDirectoModule
+          customerDoc={sharedCustomerDoc}
+          onCustomerDocVerified={handleSharedDocSynced}
+        />
+      )}
       {subTab === 'DESPACHO' && <EmergencyDispatchCenter />}
 
       {/* HOJA DE CONFIRMACIÓN DE PEDIDO */}
@@ -1919,11 +2000,17 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </div>
               )}
 
-              {/* Validación DNI / RUC sincronizada con RENIEC / SUNAT */}
-              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2.5">
+              {/* Validación DNI / RUC sincronizada con RENIEC / SUNAT — OBLIGATORIA */}
+              <div
+                className={`rounded-2xl border p-3.5 space-y-2.5 ${
+                  isDocValid
+                    ? 'border-emerald-500/40 bg-emerald-500/8'
+                    : 'border-amber-500/45 bg-amber-500/10'
+                }`}
+              >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-                    Documento Cliente (RENIEC / SUNAT) *
+                    DNI (8) o RUC (11) del Titular *
                   </span>
                   {isDocValid && docVerificado ? (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
@@ -1931,8 +2018,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       {docVerificado.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'}
                     </span>
                   ) : (
-                    <span className="text-[10px] font-semibold text-amber-600 dark:text-amber-400">
-                      Requerido para emitir recibo
+                    <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                      Obligatorio para reservar
                     </span>
                   )}
                 </div>
@@ -1962,7 +2049,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       setDocVerificado(null);
                       setDocLookupError(null);
                     }}
-                    placeholder={docTipo === 'DNI' ? 'Ej: 44556677' : 'Ej: 20601234561'}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleVerifyCustomerDoc();
+                      }
+                    }}
+                    placeholder={docTipo === 'DNI' ? 'Ej: 44556677' : 'Ej: 20601234565'}
                     className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
                   />
                   <button
@@ -1974,6 +2067,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     {docLookupLoading ? 'Validando...' : 'Validar'}
                   </button>
                 </div>
+                {!isDocValid && (
+                  <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
+                    Obligatorio: ingresa y valida el DNI o RUC del titular para habilitar la reserva.
+                  </p>
+                )}
                 {isDocValid && docVerificado && (
                   <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
                     ✓ {docVerificado.nombre_completo} · Fuente: {docVerificado.fuente || docVerificado.source}
@@ -2075,10 +2173,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingOrder}
-                  className="flex-1 min-h-[48px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold hover:opacity-90 disabled:opacity-50"
+                  disabled={submittingOrder || docLookupLoading || !isDocValid}
+                  className="flex-1 min-h-[48px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {submittingOrder ? 'Enviando...' : 'Confirmar'}
+                  {submittingOrder
+                    ? 'Enviando...'
+                    : !isDocValid
+                    ? 'Valida DNI/RUC'
+                    : 'Confirmar'}
                 </button>
               </div>
             </form>

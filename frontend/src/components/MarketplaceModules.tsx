@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -26,7 +26,143 @@ import {
   Zap,
   ZoomIn,
 } from 'lucide-react';
-import { speakSpanish } from '../lib/api.ts';
+import { apiFetch, speakSpanish } from '../lib/api.ts';
+import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
+import type { SharedCustomerDoc } from '../types.ts';
+
+interface MarketplaceModuleProps {
+  customerDoc?: SharedCustomerDoc | null;
+  onCustomerDocVerified?: (doc: SharedCustomerDoc) => void;
+}
+
+const MandatoryDocGate: React.FC<{
+  customerDoc?: SharedCustomerDoc | null;
+  onVerified: (doc: SharedCustomerDoc) => void;
+  contextLabel: string;
+}> = ({ customerDoc, onVerified, contextLabel }) => {
+  const [tipo, setTipo] = useState<'DNI' | 'RUC'>(customerDoc?.tipo || 'DNI');
+  const [numero, setNumero] = useState(customerDoc?.numero || '');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setTipo(customerDoc.tipo);
+      setNumero(customerDoc.numero);
+      setError(null);
+    }
+  }, [customerDoc?.verificado, customerDoc?.tipo, customerDoc?.numero]);
+
+  async function handleVerify() {
+    const clean = numero.replace(/\D/g, '');
+    setError(null);
+    if (!clean) {
+      setError('Ingresa el DNI (8 dígitos) o RUC (11 dígitos) del titular.');
+      return;
+    }
+    const useTipo: 'DNI' | 'RUC' = clean.length === 11 ? 'RUC' : clean.length === 8 ? 'DNI' : tipo;
+    if (useTipo !== tipo) setTipo(useTipo);
+    setLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${useTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      onVerified({
+        tipo: res.tipo,
+        numero: res.numero,
+        nombre: res.nombre_completo,
+        direccionFiscal: res.direccion,
+        verificado: true,
+        fuente: res.fuente || res.source,
+      });
+    } catch (err) {
+      setError(formatPeruLookupError(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const verified = Boolean(customerDoc?.verificado);
+
+  return (
+    <div
+      className={`rounded-2xl border p-3.5 space-y-2 ${
+        verified
+          ? 'border-emerald-500/40 bg-emerald-500/10'
+          : 'border-amber-500/45 bg-amber-500/10'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] uppercase tracking-wider font-bold text-amber-300">
+          DNI / RUC del Titular * ({contextLabel})
+        </span>
+        {verified && customerDoc ? (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300">
+            <BadgeCheck className="w-3.5 h-3.5" /> {customerDoc.tipo} {customerDoc.numero} Verificado
+          </span>
+        ) : (
+          <span className="text-[10px] font-bold text-amber-300">Obligatorio para reservar</span>
+        )}
+      </div>
+
+      <div className="flex gap-2">
+        <select
+          value={tipo}
+          onChange={(e) => {
+            setTipo(e.target.value as 'DNI' | 'RUC');
+            setError(null);
+          }}
+          className="min-h-[40px] px-2.5 rounded-xl border border-white/15 bg-[#07090E] text-xs font-bold text-white"
+        >
+          <option value="DNI">DNI (8)</option>
+          <option value="RUC">RUC (11)</option>
+        </select>
+        <input
+          type="text"
+          inputMode="numeric"
+          maxLength={tipo === 'DNI' ? 8 : 11}
+          value={numero}
+          onChange={(e) => {
+            const digits = e.target.value.replace(/\D/g, '');
+            setNumero(digits);
+            if (digits.length > 8 && tipo !== 'RUC') setTipo('RUC');
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void handleVerify();
+            }
+          }}
+          placeholder={tipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+          className="flex-1 min-h-[40px] px-3 rounded-xl border border-white/15 bg-[#07090E] text-xs font-mono-tabular text-white"
+        />
+        <button
+          type="button"
+          onClick={() => void handleVerify()}
+          disabled={loading}
+          className="min-h-[40px] px-3 rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+        >
+          {loading ? 'Validando...' : 'Validar'}
+        </button>
+      </div>
+
+      {verified && customerDoc ? (
+        <p className="text-[11px] text-emerald-300 font-medium">
+          ✓ Titular: {customerDoc.nombre}
+        </p>
+      ) : (
+        <p className="text-[11px] text-amber-200">
+          Obligatorio: ingresa y valida tu DNI o RUC para habilitar la reserva.
+        </p>
+      )}
+      {error && <p className="text-[11px] text-rose-400">{error}</p>}
+    </div>
+  );
+};
 
 // ============================================================================
 // 1. MINIMARKET LOCAL + VIVERO + ZOOM HD + CANASTA DINÁMICA + DETALLE
@@ -124,7 +260,10 @@ function fmtSoles(centavos: number): string {
   return `S/ ${(centavos / 100).toFixed(2)}`;
 }
 
-export const BodegaMinimarketModule: React.FC = () => {
+export const BodegaMinimarketModule: React.FC<MarketplaceModuleProps> = ({
+  customerDoc,
+  onCustomerDocVerified,
+}) => {
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState<'Todos' | BodegaProduct['categoria']>('Todos');
   const [cart, setCart] = useState<Array<{ product: BodegaProduct; qty: number }>>([
@@ -146,8 +285,28 @@ export const BodegaMinimarketModule: React.FC = () => {
     totalCentavos: number;
     itemsCount: number;
   } | null>(null);
-  const [clienteNombre, setClienteNombre] = useState('');
+  const [localDoc, setLocalDoc] = useState<SharedCustomerDoc | null>(customerDoc ?? null);
+  const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
   const [clienteTel, setClienteTel] = useState('');
+  const [docError, setDocError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setLocalDoc(customerDoc);
+      if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      setDocError(null);
+    }
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.nombre]);
+
+  const activeDoc = customerDoc?.verificado ? customerDoc : localDoc;
+  const isDocValid = Boolean(activeDoc?.verificado);
+
+  function handleDocVerified(doc: SharedCustomerDoc) {
+    setLocalDoc(doc);
+    if (doc.nombre) setClienteNombre(doc.nombre);
+    setDocError(null);
+    onCustomerDocVerified?.(doc);
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -193,6 +352,11 @@ export const BodegaMinimarketModule: React.FC = () => {
   function handleConfirmBasket(e: React.FormEvent) {
     e.preventDefault();
     if (cart.length === 0) return;
+    if (!isDocValid) {
+      setDocError('Es obligatorio validar el DNI o RUC del titular para confirmar la reserva.');
+      return;
+    }
+    setDocError(null);
     const pin = String(Math.floor(1000 + Math.random() * 9000));
     const codigo = `BOD-${Math.floor(1000 + Math.random() * 9000)}`;
     setCheckoutPin({
@@ -584,6 +748,12 @@ export const BodegaMinimarketModule: React.FC = () => {
               </div>
             ) : (
               <form onSubmit={handleConfirmBasket} className="space-y-3">
+                <MandatoryDocGate
+                  customerDoc={activeDoc}
+                  onVerified={handleDocVerified}
+                  contextLabel="Bodega / Vivero"
+                />
+                {docError && <p className="text-[11px] text-rose-400">{docError}</p>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <input
                     type="text"
@@ -604,10 +774,12 @@ export const BodegaMinimarketModule: React.FC = () => {
                 </div>
                 <button
                   type="submit"
-                  disabled={cart.length === 0}
-                  className="w-full min-h-[48px] rounded-2xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-40"
+                  disabled={cart.length === 0 || !isDocValid}
+                  className="w-full min-h-[48px] rounded-2xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Confirmar Pedido con PIN de Entrega
+                  {isDocValid
+                    ? 'Confirmar Pedido con PIN de Entrega'
+                    : 'Valida DNI/RUC del titular para confirmar'}
                 </button>
               </form>
             )}
@@ -745,7 +917,10 @@ const TECHNICIANS: TechnicianItem[] = [
   },
 ];
 
-export const OficiosModule: React.FC = () => {
+export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
+  customerDoc,
+  onCustomerDocVerified,
+}) => {
   const [oficio, setOficio] = useState<TechnicianItem['oficio']>('Gasfitería');
   const [solicitud, setSolicitud] = useState('Fuga en tubería de lavadero / baño');
   const [modo, setModo] = useState<'INMEDIATO' | 'PROGRAMAR'>('INMEDIATO');
@@ -757,14 +932,39 @@ export const OficiosModule: React.FC = () => {
     tech: TechnicianItem;
     horario: string;
   } | null>(null);
-  const [nombre, setNombre] = useState('');
+  const [localDoc, setLocalDoc] = useState<SharedCustomerDoc | null>(customerDoc ?? null);
+  const [nombre, setNombre] = useState(customerDoc?.nombre || '');
   const [telefono, setTelefono] = useState('');
+  const [docError, setDocError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setLocalDoc(customerDoc);
+      if (customerDoc.nombre) setNombre(customerDoc.nombre);
+      setDocError(null);
+    }
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.nombre]);
+
+  const activeDoc = customerDoc?.verificado ? customerDoc : localDoc;
+  const isDocValid = Boolean(activeDoc?.verificado);
+
+  function handleDocVerified(doc: SharedCustomerDoc) {
+    setLocalDoc(doc);
+    if (doc.nombre) setNombre(doc.nombre);
+    setDocError(null);
+    onCustomerDocVerified?.(doc);
+  }
 
   const visibleTechs = TECHNICIANS.filter((t) => t.oficio === oficio);
 
   function handleConfirmVisit(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedTech) return;
+    if (!isDocValid) {
+      setDocError('Es obligatorio validar el DNI o RUC del titular para solicitar la visita.');
+      return;
+    }
+    setDocError(null);
     setVisitBooking({
       codigo: `OFI-${Math.floor(1000 + Math.random() * 9000)}`,
       pin: String(Math.floor(1000 + Math.random() * 9000)),
@@ -993,6 +1193,12 @@ export const OficiosModule: React.FC = () => {
               </button>
             </div>
             <form onSubmit={handleConfirmVisit} className="space-y-3">
+              <MandatoryDocGate
+                customerDoc={activeDoc}
+                onVerified={handleDocVerified}
+                contextLabel="Visita Técnica"
+              />
+              {docError && <p className="text-[11px] text-rose-400">{docError}</p>}
               <input
                 type="text"
                 required
@@ -1011,9 +1217,12 @@ export const OficiosModule: React.FC = () => {
               />
               <button
                 type="submit"
-                className="w-full min-h-[48px] rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider"
+                disabled={!isDocValid}
+                className="w-full min-h-[48px] rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Confirmar Solicitud con PIN
+                {isDocValid
+                  ? 'Confirmar Solicitud con PIN'
+                  : 'Valida DNI/RUC del titular para solicitar'}
               </button>
             </form>
           </div>
@@ -1096,7 +1305,10 @@ const CAMPO_LOTS: CampoLot[] = [
   },
 ];
 
-export const CampoDirectoModule: React.FC = () => {
+export const CampoDirectoModule: React.FC<MarketplaceModuleProps> = ({
+  customerDoc,
+  onCustomerDocVerified,
+}) => {
   const [categoria, setCategoria] = useState<'Todas' | CampoLot['categoria']>('Todas');
   const [quantities, setQuantities] = useState<Record<string, number>>({
     'lot-papa': 2,
@@ -1105,6 +1317,8 @@ export const CampoDirectoModule: React.FC = () => {
     'lot-cuy': 1,
   });
   const [activeLot, setActiveLot] = useState<CampoLot>(CAMPO_LOTS[0]);
+  const [localDoc, setLocalDoc] = useState<SharedCustomerDoc | null>(customerDoc ?? null);
+  const [docError, setDocError] = useState<string | null>(null);
   const [escrowReceipt, setEscrowReceipt] = useState<{
     codigo: string;
     pin: string;
@@ -1112,6 +1326,22 @@ export const CampoDirectoModule: React.FC = () => {
     qty: number;
     totalCentavos: number;
   } | null>(null);
+
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setLocalDoc(customerDoc);
+      setDocError(null);
+    }
+  }, [customerDoc?.verificado, customerDoc?.numero]);
+
+  const activeDoc = customerDoc?.verificado ? customerDoc : localDoc;
+  const isDocValid = Boolean(activeDoc?.verificado);
+
+  function handleDocVerified(doc: SharedCustomerDoc) {
+    setLocalDoc(doc);
+    setDocError(null);
+    onCustomerDocVerified?.(doc);
+  }
 
   const visibleLots = CAMPO_LOTS.filter((l) => categoria === 'Todas' || l.categoria === categoria);
 
@@ -1123,6 +1353,11 @@ export const CampoDirectoModule: React.FC = () => {
   }
 
   function confirmPreventa(lot: CampoLot) {
+    if (!isDocValid) {
+      setDocError('Es obligatorio validar el DNI o RUC del titular para confirmar una preventa.');
+      return;
+    }
+    setDocError(null);
     const qty = quantities[lot.id] || 1;
     setEscrowReceipt({
       codigo: `AGR-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -1187,6 +1422,13 @@ export const CampoDirectoModule: React.FC = () => {
             </button>
           ))}
         </div>
+
+        <MandatoryDocGate
+          customerDoc={activeDoc}
+          onVerified={handleDocVerified}
+          contextLabel="Preventa B2B"
+        />
+        {docError && <p className="text-xs text-rose-400">{docError}</p>}
       </div>
 
       {escrowReceipt && (
@@ -1293,13 +1535,16 @@ export const CampoDirectoModule: React.FC = () => {
 
                 <button
                   type="button"
+                  disabled={!isDocValid}
                   onClick={(e) => {
                     e.stopPropagation();
                     confirmPreventa(lot);
                   }}
-                  className="flex-1 min-h-[44px] px-4 rounded-xl bg-emerald-500 text-slate-950 text-xs font-bold hover:bg-emerald-400 transition-colors"
+                  className="flex-1 min-h-[44px] px-4 rounded-xl bg-emerald-500 text-slate-950 text-xs font-bold hover:bg-emerald-400 transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
                 >
-                  Confirmar Preventa · {fmtSoles(total)}
+                  {isDocValid
+                    ? `Confirmar Preventa · ${fmtSoles(total)}`
+                    : 'Valida DNI/RUC para reservar'}
                 </button>
               </div>
             </article>

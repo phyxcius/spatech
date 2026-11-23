@@ -90,13 +90,10 @@ function parseClienteDocumentoInput(body: Record<string, any>): {
       : null;
 
   if (!rawNum) {
-    return {
-      docTipo: null,
-      docNum: null,
-      docVerif: 0,
-      docDireccionFiscal: rawDir,
-      comprobanteTipo: 'BOLETA',
-    };
+    throw new HttpError(
+      400,
+      'Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.'
+    );
   }
 
   const t = String(body.cliente_documento_tipo || (rawNum.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
@@ -1300,6 +1297,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       if (typeof cliente_telefono !== 'string' || cliente_telefono.trim().length < 6) {
         throw new HttpError(400, 'WhatsApp obligatorio');
       }
+      const { docTipo, docNum } = parseClienteDocumentoInput(req.body || {});
       const tasa = db
         .prepare(
           "SELECT * FROM agentes_cambio WHERE negocio_id = ? AND moneda_origen = ? AND moneda_destino = 'PEN' AND disponible = 1"
@@ -1335,6 +1333,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         monto_origen,
         tasa_aplicada: rate,
         monto_destino_pen: montoDestino,
+        cliente_documento_tipo: docTipo,
+        cliente_documento_numero: docNum,
       });
     } catch (err) {
       next(err);
@@ -1377,6 +1377,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       if (typeof cliente_telefono !== 'string' || cliente_telefono.trim().length < 6) {
         throw new HttpError(400, 'WhatsApp obligatorio');
       }
+      const { docTipo, docNum } = parseClienteDocumentoInput(req.body || {});
       const ruta = db
         .prepare('SELECT * FROM asientos_servicios WHERE id = ?')
         .get(asiento_servicio_id) as
@@ -1417,6 +1418,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           codigo_ruta: ruta.codigo_ruta,
           asiento_numero,
           cliente_pin: pin,
+          cliente_documento_tipo: docTipo,
+          cliente_documento_numero: docNum,
         });
       } catch {
         throw new HttpError(409, `El asiento #${asiento_numero} ya está reservado`);

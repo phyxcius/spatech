@@ -184,6 +184,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [osrmRoute, setOsrmRoute] = useState<{ km: number; etaMin: number } | null>(null);
+  const isDocValid = Boolean(docVerificado && (docVerificado.valid || docVerificado.validado));
 
   useEffect(() => {
     if (customerDoc?.verificado) {
@@ -380,9 +381,9 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     let activeNombre = clienteNombre.trim();
     let activeDireccion = clienteDireccionFiscal.trim();
 
-    if (!activeVerif?.validado) {
+    if (!activeVerif || !(activeVerif.valid || activeVerif.validado)) {
       if (!cleanDoc) {
-        setErrorMsg('Ingresa y valida tu DNI (Boleta) o RUC (Factura Electrónica) antes de pedir el taxi.');
+        setErrorMsg('Es obligatorio ingresar y validar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar un taxi.');
         return;
       }
       setDocLookupLoading(true);
@@ -430,7 +431,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             cliente_telefono: clienteTelefono,
             cliente_documento_tipo: activeVerif?.tipo || docTipo,
             cliente_documento_numero: activeVerif?.numero || cleanDoc,
-            cliente_documento_verificado: Boolean(activeVerif?.validado),
+            cliente_documento_verificado: Boolean(activeVerif && (activeVerif.valid || activeVerif.validado)),
             cliente_direccion_fiscal: activeDireccion || undefined,
             origen_texto: gpsLive ? 'Mi ubicación GPS Cusco' : 'Plaza de Armas, Cusco',
             destino_texto: `${destinoText} (Oferta acordada ${formatSoles(confirmDriver.finalCentavos)})`,
@@ -856,16 +857,26 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                 </div>
               )}
 
-              {/* Verificación DNI (Boleta) / RUC (Factura) RENIEC / SUNAT */}
-              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2">
+              {/* Verificación DNI (Boleta) / RUC (Factura) RENIEC / SUNAT — OBLIGATORIA */}
+              <div
+                className={`rounded-2xl border p-3.5 space-y-2 ${
+                  isDocValid
+                    ? 'border-emerald-500/40 bg-emerald-500/8'
+                    : 'border-amber-500/45 bg-amber-500/10'
+                }`}
+              >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                  <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
                     <Receipt className="w-3.5 h-3.5" />
-                    {docTipo === 'RUC' ? 'Factura (Empresa RUC)' : 'Boleta (Persona DNI)'}
+                    {docTipo === 'RUC' ? 'RUC del Titular * (Factura)' : 'DNI del Titular * (Boleta)'}
                   </span>
-                  {docVerificado?.validado && (
+                  {isDocValid && docVerificado ? (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
                       <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                      Obligatorio para reservar
                     </span>
                   )}
                 </div>
@@ -889,8 +900,17 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                     maxLength={docTipo === 'DNI' ? 8 : 11}
                     value={docNumero}
                     onChange={(e) => {
-                      setDocNumero(e.target.value.replace(/\D/g, ''));
+                      const digits = e.target.value.replace(/\D/g, '');
+                      setDocNumero(digits);
+                      if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
                       setDocVerificado(null);
+                      setDocLookupError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleVerifyTaxiDoc();
+                      }
                     }}
                     placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
                     className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
@@ -904,6 +924,11 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                     {docLookupLoading ? 'Validando...' : 'Validar'}
                   </button>
                 </div>
+                {!isDocValid && (
+                  <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
+                    Obligatorio: ingresa y valida el DNI o RUC del titular para habilitar la reserva del taxi.
+                  </p>
+                )}
                 {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
               </div>
 
@@ -952,11 +977,17 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || docLookupLoading}
-                  className="flex-[2] min-h-[46px] rounded-2xl bg-[#B6F02B] text-[#0B0E14] text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60"
+                  disabled={submitting || docLookupLoading || !isDocValid}
+                  className="flex-[2] min-h-[46px] rounded-2xl bg-[#B6F02B] text-[#0B0E14] text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>{submitting ? 'Enviando...' : 'Pedir Taxi y Ver PIN'}</span>
+                  <span>
+                    {submitting
+                      ? 'Enviando...'
+                      : !isDocValid
+                      ? 'Valida DNI/RUC del titular'
+                      : 'Pedir Taxi y Ver PIN'}
+                  </span>
                 </button>
               </div>
             </form>

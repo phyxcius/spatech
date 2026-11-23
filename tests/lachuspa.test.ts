@@ -150,6 +150,9 @@ test('3. Saldo insuficiente (402), retención al aceptar, cobro al validar PIN y
       metodo_pago: 'Efectivo',
       cliente_nombre: 'Sofía Vargas',
       cliente_telefono: '+51984998877',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
       destino_texto: 'Aeropuerto Velasco Astete',
       precio_centavos: 1, // Intento de manipulación ignorado por servidor
     });
@@ -260,6 +263,9 @@ test('4. Bloqueo tras 5 PIN incorrectos (423) y flujo completo de reserva referi
       metodo_pago: 'Yape',
       cliente_nombre: 'Lucas Mendoza',
       cliente_telefono: '+51984555111',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
     });
     assert.equal(pedFarm.status, 201);
     const rightPin = pedFarm.data.cliente_pin;
@@ -415,6 +421,9 @@ test('5. Separación estricta por categorías e inmutabilidad del libro contable
       metodo_pago: 'Efectivo',
       cliente_nombre: 'Test Mismatch',
       cliente_telefono: '+51984000111',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
     });
     assert.equal(mismatch1.status, 400);
 
@@ -427,6 +436,9 @@ test('5. Separación estricta por categorías e inmutabilidad del libro contable
       metodo_pago: 'Efectivo',
       cliente_nombre: 'Test Cross Item',
       cliente_telefono: '+51984000112',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
     });
     assert.equal(mismatch2.status, 400);
 
@@ -464,6 +476,9 @@ test('6. Producción sin secretos falla al arrancar, expiración automática lib
       asiento_numero: 2,
       cliente_nombre: 'Otro Pasajero',
       cliente_telefono: '+51999888777',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
     });
     assert.equal(choque.status, 409);
 
@@ -478,6 +493,9 @@ test('6. Producción sin secretos falla al arrancar, expiración automática lib
       metodo_pago: 'Tarjeta',
       cliente_nombre: 'Ana Prado',
       cliente_telefono: '+51984321654',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
     });
     const loginRest = await req('POST', '/api/negocio/login', { codigo: 'NEG-RE-01', pin: '5792' });
     await req(
@@ -956,6 +974,101 @@ test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electr�
     assert.equal(delMkt.data.comprobante.igv_centavos, 180);
 
     assert.equal(auditarLibroContable(db).cuadra, true);
+  } finally {
+    server.close();
+  }
+});
+
+test('11. Regla estricta: sin DNI o RUC del titular NO se permite reservar taxi, negocio, market, divisas ni butacas (HTTP 400)', async () => {
+  const { server, req } = await startTestServer();
+  try {
+    const dir = await req('GET', '/api/public/directorio');
+    const unitTx1 = dir.data.unidades[0];
+    const rest = dir.data.negocios.find((n: any) => n.codigo === 'NEG-RE-01');
+    const plato = dir.data.servicios.find((s: any) => s.negocio_id === rest.id);
+    const divisasRes = await req('GET', '/api/public/divisas');
+    const divisaBiz = divisasRes.data.tasas[0];
+    const butacasRes = await req('GET', '/api/public/butacas');
+    const ruta = butacasRes.data.rutas[0];
+
+    const noDniTaxi = await req('POST', '/api/public/taxi/pedir', {
+      unidad_id: unitTx1.id,
+      metodo_pago: 'Efectivo',
+      cliente_nombre: 'Cliente Sin DNI',
+      cliente_telefono: '+51984000999',
+      destino_texto: 'Aeropuerto Cusco',
+    });
+    assert.equal(noDniTaxi.status, 400);
+    assert.match(String(noDniTaxi.data.error || ''), /obligatorio/i);
+
+    const noDniPedido = await req('POST', '/api/public/pedidos', {
+      negocio_id: rest.id,
+      servicio_id: plato.id,
+      categoria: 'RESTAURANTE',
+      metodo_pago: 'Yape',
+      cliente_nombre: 'Cliente Sin DNI',
+      cliente_telefono: '+51984000999',
+    });
+    assert.equal(noDniPedido.status, 400);
+    assert.match(String(noDniPedido.data.error || ''), /obligatorio/i);
+
+    const noDniMarket = await req('POST', '/api/public/market-pedidos', {
+      market_nombre: 'Supermercados Orión Cusco',
+      market_zona: 'Cusco Centro',
+      items_resumen: '1x Leche',
+      monto_centavos: 1000,
+      metodo_pago: 'Yape',
+      cliente_nombre: 'Cliente Sin DNI',
+      cliente_telefono: '+51984000999',
+      tipo_entrega: 'DELIVERY',
+    });
+    assert.equal(noDniMarket.status, 400);
+    assert.match(String(noDniMarket.data.error || ''), /obligatorio/i);
+
+    const noDniDivisa = await req('POST', '/api/public/divisas/reservar', {
+      negocio_id: divisaBiz.negocio_id,
+      moneda: divisaBiz.moneda_origen,
+      operacion: 'COMPRA',
+      monto_origen: 100,
+      cliente_nombre: 'Cliente Sin DNI',
+      cliente_telefono: '+51984000999',
+    });
+    assert.equal(noDniDivisa.status, 400);
+    assert.match(String(noDniDivisa.data.error || ''), /obligatorio/i);
+
+    const noDniButaca = await req('POST', '/api/public/butacas/reservar', {
+      asiento_servicio_id: ruta.id,
+      asiento_numero: 8,
+      cliente_nombre: 'Cliente Sin DNI',
+      cliente_telefono: '+51984000999',
+    });
+    assert.equal(noDniButaca.status, 400);
+    assert.match(String(noDniButaca.data.error || ''), /obligatorio/i);
+
+    // Con DNI válido las reservas de divisas y butacas sí proceden (201)
+    const okDivisa = await req('POST', '/api/public/divisas/reservar', {
+      negocio_id: divisaBiz.negocio_id,
+      moneda: divisaBiz.moneda_origen,
+      operacion: 'COMPRA',
+      monto_origen: 100,
+      cliente_nombre: 'Cliente Con DNI',
+      cliente_telefono: '+51984000999',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+    });
+    assert.equal(okDivisa.status, 201);
+    assert.equal(okDivisa.data.cliente_documento_numero, '44556677');
+
+    const okButaca = await req('POST', '/api/public/butacas/reservar', {
+      asiento_servicio_id: ruta.id,
+      asiento_numero: 8,
+      cliente_nombre: 'Cliente Con DNI',
+      cliente_telefono: '+51984000999',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+    });
+    assert.equal(okButaca.status, 201);
+    assert.equal(okButaca.data.cliente_documento_numero, '44556677');
   } finally {
     server.close();
   }

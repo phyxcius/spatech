@@ -988,6 +988,11 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/divisas/reservar' && method === 'POST') {
+    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
+    const docTipo = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+    if (!/^\d{8}$/.test(rawDoc) && !(docTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
+      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.');
+    }
     const moneda = String(payload.moneda || 'USD');
     const divisas = toArray(snap.divisas);
     const rate = divisas.find((d) => d.moneda_origen === moneda) || divisas[0];
@@ -1000,6 +1005,8 @@ export async function handleFirebaseRtdbRequest<T>(
       operacion: payload.operacion || 'COMPRA',
       monto_origen: monto,
       monto_destino_pen: Number((monto * tasa).toFixed(2)),
+      cliente_documento_tipo: docTipo === 'RUC' ? 'RUC' : 'DNI',
+      cliente_documento_numero: rawDoc,
       created_at: new Date().toISOString(),
     });
     return {
@@ -1019,6 +1026,11 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/butacas/reservar' && method === 'POST') {
+    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
+    const docTipo = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+    if (!/^\d{8}$/.test(rawDoc) && !(docTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
+      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.');
+    }
     const rutas = toArray(snap.butacas);
     const idx = rutas.findIndex((b) => b.id === Number(payload.asiento_servicio_id));
     const seatNum = Number(payload.asiento_numero);
@@ -1084,6 +1096,11 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/taxi/pedir' && method === 'POST') {
+    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
+    const docTipoResolved = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+    if (!/^\d{8}$/.test(rawDoc) && !(docTipoResolved === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
+      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar taxi.');
+    }
     const unidades = toArray(snap.unidades);
     const unit = unidades.find((u) => u.id === Number(payload.unidad_id)) || unidades[0];
     const biz = toArray(snap.negocios).find((n) => n.id === unit.negocio_id);
@@ -1093,10 +1110,7 @@ export async function handleFirebaseRtdbRequest<T>(
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
     const monto = unit.tarifa_base_centavos + unit.tarifa_km_centavos * 5;
     const comPlat = Math.round(monto * 0.03);
-    const docTipo =
-      payload.cliente_documento_tipo === 'RUC' || payload.cliente_documento_tipo === 'DNI'
-        ? payload.cliente_documento_tipo
-        : null;
+    const docTipo: 'DNI' | 'RUC' = docTipoResolved === 'RUC' ? 'RUC' : 'DNI';
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1139,6 +1153,11 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/pedidos' && method === 'POST') {
+    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
+    const docTipoResolved = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+    if (!/^\d{8}$/.test(rawDoc) && !(docTipoResolved === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
+      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.');
+    }
     const servicios = toArray(snap.servicios);
     const srv = servicios.find((s) => s.id === Number(payload.servicio_id)) || servicios[0];
     const biz = toArray(snap.negocios).find((n) => n.id === srv.negocio_id);
@@ -1147,10 +1166,7 @@ export async function handleFirebaseRtdbRequest<T>(
     const tel = String(payload.cliente_telefono || '+51984000000');
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
     const comPlat = Math.round(srv.precio_centavos * 0.03);
-    const docTipo =
-      payload.cliente_documento_tipo === 'RUC' || payload.cliente_documento_tipo === 'DNI'
-        ? payload.cliente_documento_tipo
-        : null;
+    const docTipo: 'DNI' | 'RUC' = docTipoResolved === 'RUC' ? 'RUC' : 'DNI';
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1189,6 +1205,11 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/market-pedidos' && method === 'POST') {
+    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
+    const docTipoResolved = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+    if (!/^\d{8}$/.test(rawDoc) && !(docTipoResolved === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
+      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar en minimarket.');
+    }
     const negocios = toArray(snap.negocios).filter((n) => n.activo !== 0);
     const targetBiz =
       negocios.find((n) => n.rubro === 'RESTAURANTE' || n.rubro === 'FARMACIA') || negocios[0];
@@ -1201,10 +1222,7 @@ export async function handleFirebaseRtdbRequest<T>(
     const comPlat = Math.round(monto * 0.03);
     const marketNombre = String(payload.market_nombre || 'Minimarket Cusco');
     const resumen = String(payload.items_resumen || payload.item_resumen || 'Canasta de productos');
-    const docTipo =
-      payload.cliente_documento_tipo === 'RUC' || payload.cliente_documento_tipo === 'DNI'
-        ? payload.cliente_documento_tipo
-        : null;
+    const docTipo: 'DNI' | 'RUC' = docTipoResolved === 'RUC' ? 'RUC' : 'DNI';
 
     const pedido: RtdbPedido = {
       id: Date.now(),
