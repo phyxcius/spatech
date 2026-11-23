@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, speakSpanish } from '../lib/api.ts';
 import { haversineKm } from '../lib/cuscoMarkets.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatSoles,
   type ConciergeOpcion,
@@ -151,6 +152,13 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   const [promotorCodigo, setPromotorCodigo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [osrmRoute, setOsrmRoute] = useState<{ km: number; etaMin: number } | null>(null);
+
+  useEffect(() => {
+    if (!gpsLive) {
+      onRequestGps();
+    }
+  }, []);
 
   useEffect(() => {
     if (initialDestination && initialDestination.trim()) {
@@ -166,11 +174,12 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     return match || DESTINATION_PRESETS[0];
   }, [destinoText]);
 
-  const routeDistanceKm = useMemo(
+  const haversineRouteKm = useMemo(
     () => Math.max(1.2, haversineKm(userLat, userLng, destCoords.lat, destCoords.lng)),
     [userLat, userLng, destCoords.lat, destCoords.lng]
   );
-  const routeEtaMin = Math.max(5, Math.round(routeDistanceKm * 3.1 + 3));
+  const routeDistanceKm = osrmRoute?.km ?? haversineRouteKm;
+  const routeEtaMin = osrmRoute?.etaMin ?? Math.max(5, Math.round(routeDistanceKm * 3.1 + 3));
   const recommendedSoles = useMemo(
     () => Number(Math.max(6.0, routeDistanceKm * 2.1 + 3.5).toFixed(1)),
     [routeDistanceKm]
@@ -244,6 +253,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
         lng: d.lng,
         priceText: formatSoles(d.priceCentavos),
         sublabel: `${d.etaMin} min · ${d.conductor_nombre.split(' ')[0]}`,
+        detailTitle: `${d.conductor_nombre} (${d.modelo} · ${d.placa})`,
         tier: d.priceTier,
         kind: 'DRIVER',
         isOpen: true,
@@ -251,18 +261,31 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     [driverBids]
   );
 
+  const cheapestDriver = driverBids[0];
+
   function triggerDriverSearch() {
+    const t0 = performance.now();
     setSearchingRound((r) => r + 1);
     const cheapest = driverBids[0];
-    if (speakEnabled && cheapest) {
-      speakSpanish(
-        `Encontré ${driverBids.length} conductores cerca de ti rumbo a ${destinoText}. La mejor tarifa es ${formatSoles(
-          cheapest.priceCentavos
-        )} con ${cheapest.conductor_nombre}, a ${cheapest.etaMin} minutos.`
-      );
-    }
-    if (autoAccept && cheapest) {
-      setConfirmDriver({ driver: cheapest, finalCentavos: Math.round(offerSoles * 100) });
+    const latency = Math.max(18, Math.round(performance.now() - t0));
+    if (cheapest) {
+      const msg = `La mejor tarifa a ${destinoText} es ${formatSoles(
+        cheapest.priceCentavos
+      )} con ${cheapest.conductor_nombre} (${cheapest.modelo}, a ${cheapest.etaMin} min).`;
+      emitCenterNotification({
+        title: `Mejor Precio Taxi · ${formatSoles(cheapest.priceCentavos)}`,
+        message: msg,
+        badge: 'AGENTE LA CHUSPA',
+        tone: 'success',
+        responseTimeMs: latency,
+        speakText: speakEnabled ? msg : undefined,
+      });
+      if (speakEnabled) {
+        speakSpanish(msg);
+      }
+      if (autoAccept) {
+        setConfirmDriver({ driver: cheapest, finalCentavos: Math.round(offerSoles * 100) });
+      }
     }
   }
 
@@ -271,6 +294,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     if (!confirmDriver) return;
     setSubmitting(true);
     setErrorMsg(null);
+    const t0 = performance.now();
     try {
       const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
         '/api/public/taxi/pedir',
@@ -285,10 +309,23 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             destino_texto: `${destinoText} (Oferta acordada ${formatSoles(confirmDriver.finalCentavos)})`,
             origen_lat: userLat,
             origen_lng: userLng,
+            destino_lat: destCoords.lat,
+            destino_lng: destCoords.lng,
             promotor_codigo: promotorCodigo || undefined,
           },
         }
       );
+      const latency = Math.round(performance.now() - t0);
+      emitCenterNotification({
+        title: `Taxi Confirmado · ${res.pedido.codigo}`,
+        message: `${confirmDriver.driver.conductor_nombre} (${confirmDriver.driver.placa}) en camino rumbo a ${destinoText}. PIN de abordaje: ${res.cliente_pin}`,
+        badge: 'TAXI EN RUTA',
+        tone: 'success',
+        responseTimeMs: latency,
+        speakText: speakEnabled
+          ? `Tu taxi ${res.pedido.codigo} con ${confirmDriver.driver.conductor_nombre} fue asignado. Tu PIN de abordaje es ${res.cliente_pin}.`
+          : undefined,
+      });
       setConfirmDriver(null);
       onOrderCreated(res.pedido, res.cliente_pin);
     } catch (err) {
@@ -376,6 +413,41 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             </button>
           ))}
         </div>
+
+        {/* Recomendación Agente La Chuspa: Mejor Precio */}
+        {cheapestDriver && (
+          <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300">
+                  Recomendación La Chuspa · Mejor Precio
+                </p>
+                <p className="text-xs sm:text-sm font-semibold text-[#14171F] dark:text-white truncate">
+                  {cheapestDriver.conductor_nombre} ({cheapestDriver.modelo}) ·{' '}
+                  <span className="font-mono-tabular font-bold text-emerald-700 dark:text-emerald-300">
+                    {formatSoles(cheapestDriver.priceCentavos)}
+                  </span>{' '}
+                  · llega en {cheapestDriver.etaMin} min
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                setConfirmDriver({
+                  driver: cheapestDriver,
+                  finalCentavos: cheapestDriver.priceCentavos,
+                })
+              }
+              className="min-h-[38px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shrink-0 transition-colors"
+            >
+              Pedir Mejor Precio
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Layout principal: Mapa + Panel Viaja a tu precio | Lista de Conductores */}
@@ -394,6 +466,14 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             pins={mapPins}
             selectedPinId={selectedDriverId}
             onSelectPin={(id) => setSelectedDriverId(id)}
+            onRequestPinAction={(id) => {
+              const drv = driverBids.find((d) => d.id === id);
+              if (drv) {
+                setSelectedDriverId(drv.id);
+                setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
+              }
+            }}
+            onRouteComputed={setOsrmRoute}
             onRequestGps={onRequestGps}
             gpsLive={gpsLive}
           />

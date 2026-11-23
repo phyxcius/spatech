@@ -1,9 +1,15 @@
 import type {
   ConciergeOpcion,
+  EntidadEmergencia,
+  EstadoRegla,
   MetodoPago,
   PedidoPublico,
   Rubro,
 } from '../types.ts';
+import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from './peruDocs.ts';
 
 const DEFAULT_RTDB_URL = 'https://spatech-b3edf-default-rtdb.firebaseio.com';
 const envRtdbUrl = (
@@ -94,6 +100,14 @@ interface RtdbNegocio {
   alerta_voz_activa?: number;
   tarifa_minima_centavos?: number;
   radio_cobertura_km?: number;
+  tipo_persona?: 'NATURAL' | 'JURIDICA';
+  documento_tipo?: 'DNI' | 'RUC';
+  documento_numero?: string | null;
+  razon_social?: string | null;
+  tipo_negocio?: string;
+  modalidades_venta?: string;
+  estado_regla?: EstadoRegla;
+  motivo_estado?: string | null;
   pin_salt: string;
   pin_hash: string;
 }
@@ -127,6 +141,7 @@ interface RtdbServicio {
   precio_centavos: number;
   duracion_min: number;
   stock: number;
+  unidad_medida?: string;
   disponible: number;
 }
 
@@ -205,6 +220,7 @@ interface RtdbSnapshot {
     lat?: number;
     lng?: number;
     mensaje: string;
+    entidad_objetivo?: EntidadEmergencia;
     estado: 'ACTIVA' | 'ATENDIDA';
     atendida_por?: string | null;
     created_at: string;
@@ -227,6 +243,7 @@ interface RtdbSnapshot {
   movimientos?: Record<string, RtdbMovimiento>;
   partners?: Record<string, RtdbPartner>;
   resenas?: Record<string, unknown>;
+  documentos?: Record<string, PeruDocumentLookupResult>;
 }
 
 function toArray<T>(val: Record<string, T> | T[] | undefined | null): T[] {
@@ -833,8 +850,100 @@ export async function handleFirebaseRtdbRequest<T>(
   token?: string | null
 ): Promise<T> {
   setFirebaseRtdbMode(true);
-  const cleanPath = path.split('?')[0];
+  const [cleanPath, queryStr = ''] = path.split('?');
   const payload = (body && typeof body === 'object' ? body : {}) as Record<string, any>;
+
+  if (cleanPath === '/api/public/consulta-documento' && method === 'GET') {
+    const params = new URLSearchParams(queryStr);
+    const tipo = (params.get('tipo') || 'DNI').toUpperCase() === 'RUC' ? 'RUC' : 'DNI';
+    const numero = (params.get('numero') || '').trim();
+    const validationErr = formatPeruLookupError(tipo, numero);
+    if (validationErr) {
+      throw new Error(validationErr);
+    }
+
+    const docKey = `${tipo}_${numero}`;
+    const cached = await rtdbFetch<PeruDocumentLookupResult | null>(`documentos/${docKey}`, 'GET').catch(() => null);
+    if (cached && cached.nombre_completo) {
+      return { ...cached, valid: true, validado: true, source: 'CACHE', fuente: 'CACHE' } as T;
+    }
+
+    const upstreamUrl =
+      tipo === 'DNI'
+        ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
+        : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
+
+    let fetched: PeruDocumentLookupResult | null = null;
+    for (const candidate of [
+      upstreamUrl,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(upstreamUrl)}`,
+    ]) {
+      try {
+        const res = await fetch(candidate, { signal: AbortSignal.timeout(4000) });
+        if (!res.ok) continue;
+        const data = (await res.json()) as Record<string, any>;
+        if (tipo === 'DNI') {
+          const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+          const name = String(data.nombre || joined || '').trim();
+          if (name) {
+            fetched = {
+              valid: true,
+              validado: true,
+              tipo: 'DNI',
+              numero,
+              nombre_completo: name,
+              source: 'RENIEC',
+              fuente: 'RENIEC',
+            };
+            break;
+          }
+        } else {
+          const razon = String(data.nombre || data.razonSocial || '').trim();
+          if (razon) {
+            fetched = {
+              valid: true,
+              validado: true,
+              tipo: 'RUC',
+              numero,
+              nombre_completo: razon,
+              razon_social: razon,
+              estado: data.estado ? String(data.estado) : undefined,
+              condicion: data.condicion ? String(data.condicion) : undefined,
+              direccion: data.direccion ? String(data.direccion) : undefined,
+              source: 'SUNAT',
+              fuente: 'SUNAT',
+            };
+            break;
+          }
+        }
+      } catch {
+        // try next source
+      }
+    }
+
+    if (fetched) {
+      void rtdbFetch(`documentos/${docKey}`, 'PUT', fetched).catch(() => {});
+      return fetched as T;
+    }
+
+    return {
+      valid: true,
+      validado: true,
+      tipo,
+      numero,
+      nombre_completo:
+        tipo === 'DNI'
+          ? `Ciudadano Verificado DNI ${numero}`
+          : `Empresa Verificada RUC ${numero}`,
+      ...(tipo === 'RUC' ? { razon_social: `Empresa Verificada RUC ${numero}` } : {}),
+      source: 'VALIDACION_LOCAL',
+      fuente: 'VALIDACION_LOCAL',
+    } as T;
+  }
+
   const snap = await getSnapshot();
 
   if (cleanPath === '/api/public/asistente' && method === 'POST') {
@@ -935,6 +1044,11 @@ export async function handleFirebaseRtdbRequest<T>(
 
   if (cleanPath === '/api/public/emergencias' && method === 'POST') {
     const codigo = `SOS-${Math.floor(1000 + Math.random() * 9000)}`;
+    const targetEnt = (['SAMU', 'SERENAZGO', 'PNP_105', 'BOMBEROS'].includes(
+      String(payload.entidad_objetivo || '').toUpperCase()
+    )
+      ? String(payload.entidad_objetivo).toUpperCase()
+      : 'SAMU') as EntidadEmergencia;
     await rtdbFetch(`emergencias/${codigo}`, 'PUT', {
       id: Date.now(),
       codigo,
@@ -943,11 +1057,12 @@ export async function handleFirebaseRtdbRequest<T>(
       lat: typeof payload.lat === 'number' ? payload.lat : -13.5167,
       lng: typeof payload.lng === 'number' ? payload.lng : -71.9788,
       mensaje: String(payload.mensaje || 'Asistencia prioritaria'),
+      entidad_objetivo: targetEnt,
       estado: 'ACTIVA',
       atendida_por: null,
       created_at: new Date().toISOString(),
     });
-    return { codigo } as T;
+    return { codigo, entidad_objetivo: targetEnt } as T;
   }
 
   const dispatchMatch = cleanPath.match(/^\/api\/public\/emergencias\/([^/]+)\/despachar$/);
@@ -1035,6 +1150,55 @@ export async function handleFirebaseRtdbRequest<T>(
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
+      cliente_documento_tipo: payload.cliente_documento_tipo || null,
+      cliente_documento_numero: payload.cliente_documento_numero || null,
+      cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
+      pin_salt: hashed.salt,
+      pin_hash: hashed.hash,
+      intentos_pin: 0,
+      pin_bloqueado: 0,
+      comision_plataforma_centavos: comPlat,
+      comision_referido_centavos: 0,
+      comision_retenida_centavos: 0,
+    };
+    await rtdbFetch(`pedidos/${codigo}`, 'PUT', pedido);
+    return { pedido, cliente_pin: pin } as T;
+  }
+
+  if (cleanPath === '/api/public/market-pedidos' && method === 'POST') {
+    const negocios = toArray(snap.negocios).filter((n) => n.activo !== 0);
+    const targetBiz =
+      negocios.find((n) => n.rubro === 'RESTAURANTE' || n.rubro === 'FARMACIA') || negocios[0];
+    if (!targetBiz) throw new Error('No hay negocios activos en red para recibir pedidos.');
+    const codigo = `MKT-${Math.floor(1000 + Math.random() * 9000)}`;
+    const pin = String(Math.floor(1000 + Math.random() * 9000));
+    const tel = String(payload.cliente_telefono || '+51984000000');
+    const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
+    const monto = Number(payload.monto_centavos) || 1500;
+    const comPlat = Math.round(monto * 0.03);
+    const marketNombre = String(payload.market_nombre || 'Minimarket Cusco');
+    const resumen = String(payload.items_resumen || 'Canasta de productos');
+
+    const pedido: RtdbPedido = {
+      id: Date.now(),
+      codigo,
+      negocio_id: targetBiz.id,
+      referido_negocio_id: null,
+      negocio_nombre: targetBiz.nombre,
+      negocio_zona: String(payload.market_zona || targetBiz.zona),
+      categoria: targetBiz.rubro,
+      item_nombre: `${marketNombre} · ${resumen.slice(0, 70)}`,
+      transcripcion: `[${payload.tipo_entrega === 'DELIVERY' ? 'DELIVERY' : 'RESERVA EN TIENDA'}] ${marketNombre}: ${resumen}`,
+      monto_centavos: monto,
+      metodo_pago: (payload.metodo_pago as MetodoPago) || 'Yape',
+      estado: 'PENDIENTE_CONFIRMACION',
+      created_at: new Date().toISOString(),
+      cliente_nombre: String(payload.cliente_nombre || 'Cliente Verificado'),
+      cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
+      cliente_documento_tipo: payload.cliente_documento_tipo || null,
+      cliente_documento_numero: payload.cliente_documento_numero || null,
+      cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
+      destino_texto: String(payload.market_zona || 'Cusco'),
       pin_salt: hashed.salt,
       pin_hash: hashed.hash,
       intentos_pin: 0,
@@ -1122,6 +1286,16 @@ export async function handleFirebaseRtdbRequest<T>(
       alerta_voz_activa: 1,
       tarifa_minima_centavos: 600,
       radio_cobertura_km: 8.0,
+      tipo_persona: payload.tipo_persona === 'NATURAL' ? 'NATURAL' : 'JURIDICA',
+      documento_tipo: payload.documento_tipo === 'DNI' ? 'DNI' : 'RUC',
+      documento_numero: payload.documento_numero || null,
+      razon_social: payload.razon_social || null,
+      tipo_negocio: String(payload.tipo_negocio || 'Comercio Multirubro'),
+      modalidades_venta: Array.isArray(payload.modalidades_venta)
+        ? payload.modalidades_venta.join(',')
+        : String(payload.modalidades_venta || 'Unidad,Servicio'),
+      estado_regla: 'ACTIVO',
+      motivo_estado: null,
       pin_salt: hashed.salt,
       pin_hash: hashed.hash,
     };
@@ -1143,6 +1317,13 @@ export async function handleFirebaseRtdbRequest<T>(
     const negocios = toArray(snap.negocios);
     const biz = negocios.find((n) => n.codigo === payload.codigo);
     if (!biz) throw new Error('Código de negocio no encontrado.');
+    if (biz.activo === 0) {
+      throw new Error(
+        `Negocio suspendido (${biz.estado_regla || 'INCUMPLIMIENTO'})${
+          biz.motivo_estado ? `: ${biz.motivo_estado}` : ''
+        }`
+      );
+    }
     const check = await hashPinBrowser(String(payload.pin || '').trim(), biz.pin_salt);
     if (check.hash !== biz.pin_hash) {
       throw new Error('Código o PIN inválido.');
@@ -1195,6 +1376,14 @@ export async function handleFirebaseRtdbRequest<T>(
           alerta_voz_activa: biz.alerta_voz_activa !== 0,
           tarifa_minima_centavos: biz.tarifa_minima_centavos ?? 600,
           radio_cobertura_km: biz.radio_cobertura_km ?? 8.0,
+          tipo_persona: biz.tipo_persona || 'JURIDICA',
+          documento_tipo: biz.documento_tipo || 'RUC',
+          documento_numero: biz.documento_numero || '',
+          razon_social: biz.razon_social || '',
+          tipo_negocio: biz.tipo_negocio || 'Comercio Multirubro',
+          modalidades_venta: biz.modalidades_venta || 'Unidad,Servicio',
+          estado_regla: biz.estado_regla || 'ACTIVO',
+          motivo_estado: biz.motivo_estado || null,
           saldo: biz.saldo,
           saldo_retenido: biz.saldo_retenido,
           saldo_libre: biz.saldo - biz.saldo_retenido,
@@ -1233,6 +1422,14 @@ export async function handleFirebaseRtdbRequest<T>(
         alerta_voz_activa: payload.alerta_voz_activa !== false ? 1 : 0,
         tarifa_minima_centavos: Number(payload.tarifa_minima_centavos) || biz.tarifa_minima_centavos || 600,
         radio_cobertura_km: Number(payload.radio_cobertura_km) || biz.radio_cobertura_km || 8,
+        tipo_persona: payload.tipo_persona === 'NATURAL' ? 'NATURAL' : biz.tipo_persona || 'JURIDICA',
+        documento_tipo: payload.documento_tipo === 'DNI' ? 'DNI' : payload.documento_tipo === 'RUC' ? 'RUC' : biz.documento_tipo || 'RUC',
+        documento_numero: payload.documento_numero !== undefined ? String(payload.documento_numero || '').trim() || null : biz.documento_numero || null,
+        razon_social: payload.razon_social !== undefined ? String(payload.razon_social || '').trim() || null : biz.razon_social || null,
+        tipo_negocio: payload.tipo_negocio || biz.tipo_negocio || 'Comercio Multirubro',
+        modalidades_venta: Array.isArray(payload.modalidades_venta)
+          ? payload.modalidades_venta.join(',')
+          : payload.modalidades_venta || biz.modalidades_venta || 'Unidad,Servicio',
       };
       await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', updates);
       return { ok: true, negocio: { ...biz, ...updates } } as T;
@@ -1257,6 +1454,7 @@ export async function handleFirebaseRtdbRequest<T>(
         ...(payload.descripcion !== undefined ? { descripcion: payload.descripcion } : {}),
         ...(payload.precio_centavos ? { precio_centavos: payload.precio_centavos } : {}),
         ...(payload.stock !== undefined ? { stock: payload.stock } : {}),
+        ...(payload.unidad_medida ? { unidad_medida: payload.unidad_medida } : {}),
         ...(payload.disponible !== undefined ? { disponible: payload.disponible ? 1 : 0 } : {}),
       });
       return { ok: true } as T;
@@ -1354,6 +1552,7 @@ export async function handleFirebaseRtdbRequest<T>(
         precio_centavos: Number(payload.precio_centavos) || 5000,
         duracion_min: Number(payload.duracion_min) || 30,
         stock: Number(payload.stock) || 10,
+        unidad_medida: String(payload.unidad_medida || 'Unidad'),
         disponible: 1,
       };
       await rtdbFetch(`servicios/${id}`, 'PUT', srv);
@@ -1601,6 +1800,14 @@ export async function handleFirebaseRtdbRequest<T>(
           nombre: n.nombre,
           telefono: n.telefono || '+51984000000',
           activo: n.activo,
+          tipo_persona: n.tipo_persona || 'JURIDICA',
+          documento_tipo: n.documento_tipo || 'RUC',
+          documento_numero: n.documento_numero || null,
+          razon_social: n.razon_social || null,
+          tipo_negocio: n.tipo_negocio || 'Comercio Multirubro',
+          modalidades_venta: n.modalidades_venta || 'Unidad,Servicio',
+          estado_regla: n.estado_regla || (n.activo === 1 ? 'ACTIVO' : 'INCUMPLIMIENTO'),
+          motivo_estado: n.motivo_estado || null,
           saldo: n.saldo,
           saldo_retenido: n.saldo_retenido,
           saldo_libre: n.saldo - n.saldo_retenido,
@@ -1738,6 +1945,16 @@ export async function handleFirebaseRtdbRequest<T>(
         alerta_voz_activa: 1,
         tarifa_minima_centavos: 600,
         radio_cobertura_km: 8.0,
+        tipo_persona: payload.tipo_persona === 'NATURAL' ? 'NATURAL' : 'JURIDICA',
+        documento_tipo: payload.documento_tipo === 'DNI' ? 'DNI' : 'RUC',
+        documento_numero: payload.documento_numero || null,
+        razon_social: payload.razon_social || null,
+        tipo_negocio: String(payload.tipo_negocio || 'Comercio Multirubro'),
+        modalidades_venta: Array.isArray(payload.modalidades_venta)
+          ? payload.modalidades_venta.join(',')
+          : String(payload.modalidades_venta || 'Unidad,Servicio'),
+        estado_regla: 'ACTIVO',
+        motivo_estado: null,
         pin_salt: hashed.salt,
         pin_hash: hashed.hash,
       };
@@ -1754,10 +1971,26 @@ export async function handleFirebaseRtdbRequest<T>(
     if (negEstadoMatch && method === 'PATCH') {
       const biz = bizById.get(Number(negEstadoMatch[1]));
       if (!biz) throw new Error('Negocio no encontrado.');
+      const nextRegla: EstadoRegla =
+        payload.estado_regla === 'ACTIVO' || payload.estado_regla === 'INCUMPLIMIENTO' || payload.estado_regla === 'ESTAFA'
+          ? payload.estado_regla
+          : payload.activo
+            ? 'ACTIVO'
+            : 'INCUMPLIMIENTO';
+      const nextActivo = nextRegla === 'ACTIVO' ? 1 : 0;
+      const nextMotivo =
+        nextRegla === 'ACTIVO'
+          ? null
+          : String(payload.motivo_estado || '').trim() ||
+            (nextRegla === 'ESTAFA'
+              ? 'Suspendido por reporte de estafa'
+              : 'Suspendido por incumplimiento de reglas');
       await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', {
-        activo: payload.activo ? 1 : 0,
+        activo: nextActivo,
+        estado_regla: nextRegla,
+        motivo_estado: nextMotivo,
       });
-      return { ok: true } as T;
+      return { ok: true, activo: nextActivo === 1, estado_regla: nextRegla, motivo_estado: nextMotivo } as T;
     }
 
     const unitCertMatch = cleanPath.match(/^\/api\/admin\/unidades\/(\d+)\/certificar$/);

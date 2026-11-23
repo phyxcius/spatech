@@ -19,8 +19,13 @@ import {
   type MarketComparisonResult,
   type RequestedMarketItem,
 } from '../lib/cuscoMarkets.ts';
-import { speakSpanish } from '../lib/api.ts';
-import { type MetodoPago } from '../types.ts';
+import { apiFetch, speakSpanish } from '../lib/api.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
+import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
+import { type MetodoPago, type PedidoPublico } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 
 interface MarketComparatorFlowProps {
@@ -31,6 +36,7 @@ interface MarketComparatorFlowProps {
   requestedItems: RequestedMarketItem[];
   onChangeItems: (items: RequestedMarketItem[]) => void;
   speakEnabled: boolean;
+  onOrderCreated?: (pedido: PedidoPublico, pin: string) => void;
 }
 
 function fmtSoles(centavos: number): string {
@@ -45,6 +51,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   requestedItems,
   onChangeItems,
   speakEnabled,
+  onOrderCreated,
 }) => {
   const [onlyOpen, setOnlyOpen] = useState(true);
   const [sortBy, setSortBy] = useState<'PRICE' | 'DISTANCE'>('PRICE');
@@ -59,6 +66,13 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   } | null>(null);
   const [clienteNombre, setClienteNombre] = useState('');
   const [clienteTelefono, setClienteTelefono] = useState('');
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>('DNI');
+  const [docNumero, setDocNumero] = useState('');
+  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
+  const [docLookupLoading, setDocLookupLoading] = useState(false);
+  const [docLookupError, setDocLookupError] = useState<string | null>(null);
+  const [submittingCheckout, setSubmittingCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
   const [orderReceipt, setOrderReceipt] = useState<{
     codigo: string;
@@ -68,6 +82,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     totalCentavos: number;
     mode: 'COMPRA' | 'RESERVA';
     itemsCount: number;
+    documentoResumen?: string;
   } | null>(null);
 
   const comparisons = useMemo(() => {
@@ -117,37 +132,121 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     onChangeItems([...requestedItems, { sku: meta.sku, label: meta.label, cantidad: 1 }]);
   }
 
-  function handleConfirmPurchase(e: React.FormEvent) {
+  async function handleVerifyCustomerDoc() {
+    const clean = docNumero.replace(/\D/g, '');
+    setDocLookupError(null);
+    if (!clean) {
+      setDocLookupError('Ingresa DNI (8 dígitos) o RUC (11 dígitos).');
+      return;
+    }
+    setDocLookupLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      setDocVerificado(res);
+      if (res.nombre_completo) {
+        setClienteNombre(res.nombre_completo);
+      }
+    } catch (err) {
+      setDocVerificado(null);
+      setDocLookupError(formatPeruLookupError(err));
+    } finally {
+      setDocLookupLoading(false);
+    }
+  }
+
+  async function handleConfirmPurchase(e: React.FormEvent) {
     e.preventDefault();
     if (!checkoutTarget) return;
-    const pin = String(Math.floor(1000 + Math.random() * 9000));
-    const codigo = `${checkoutTarget.mode === 'COMPRA' ? 'MKT' : 'RES'}-${Math.floor(
-      1000 + Math.random() * 9000
-    )}`;
-    const count = checkoutTarget.result.items.reduce(
-      (acc, i) => acc + (i.matched ? i.cantidad : 0),
-      0
-    );
+    setCheckoutError(null);
 
-    const receipt = {
-      codigo,
-      pin,
-      marketName: checkoutTarget.result.market.nombre,
-      direccion: checkoutTarget.result.market.direccion,
-      totalCentavos: checkoutTarget.result.totalCentavos,
-      mode: checkoutTarget.mode,
-      itemsCount: count,
-    };
-    setOrderReceipt(receipt);
-    setCheckoutTarget(null);
-    if (speakEnabled) {
-      speakSpanish(
-        `${
-          checkoutTarget.mode === 'COMPRA' ? 'Compra confirmada' : 'Reserva generada'
-        } en ${receipt.marketName} por ${fmtSoles(receipt.totalCentavos)}. Tu PIN de entrega es ${pin
-          .split('')
-          .join(' ')}.`
+    const cleanDoc = docNumero.replace(/\D/g, '');
+    if (!docVerificado?.validado) {
+      if (!cleanDoc) {
+        setCheckoutError('Valida tu DNI (RENIEC) o RUC (SUNAT) antes de enviar tu pedido al minimarket.');
+        return;
+      }
+      setDocLookupLoading(true);
+      try {
+        const res = await apiFetch<PeruDocumentLookupResult>(
+          `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}`
+        );
+        setDocVerificado(res);
+        if (res.nombre_completo && !clienteNombre.trim()) {
+          setClienteNombre(res.nombre_completo);
+        }
+      } catch (err) {
+        setDocLookupLoading(false);
+        setCheckoutError(formatPeruLookupError(err));
+        return;
+      }
+      setDocLookupLoading(false);
+    }
+
+    const t0 = performance.now();
+    setSubmittingCheckout(true);
+    const itemsMatched = checkoutTarget.result.items.filter((i) => i.matched);
+    const count = itemsMatched.reduce((acc, i) => acc + i.cantidad, 0);
+    const resumen = itemsMatched
+      .map((i) => `${i.cantidad}x ${i.matched?.nombre || i.requestedLabel}`)
+      .join(', ');
+
+    try {
+      const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
+        '/api/public/market-pedidos',
+        {
+          method: 'POST',
+          body: {
+            market_nombre: checkoutTarget.result.market.nombre,
+            item_resumen: resumen || 'Canasta de productos',
+            monto_centavos: checkoutTarget.result.totalCentavos,
+            metodo_pago: metodoPago,
+            cliente_nombre: clienteNombre,
+            cliente_telefono: clienteTelefono,
+            cliente_documento_tipo: docVerificado?.tipo || docTipo,
+            cliente_documento_numero: docVerificado?.numero || cleanDoc,
+            cliente_documento_verificado: true,
+            tipo_entrega: checkoutTarget.mode === 'COMPRA' ? 'DELIVERY' : 'RESERVA',
+          },
+        }
       );
+
+      const ms = Math.max(1, Math.round(performance.now() - t0));
+      const receipt = {
+        codigo: res.pedido.codigo,
+        pin: res.cliente_pin,
+        marketName: checkoutTarget.result.market.nombre,
+        direccion: checkoutTarget.result.market.direccion,
+        totalCentavos: checkoutTarget.result.totalCentavos,
+        mode: checkoutTarget.mode,
+        itemsCount: count,
+        documentoResumen: `${docVerificado?.tipo || docTipo} ${docVerificado?.numero || cleanDoc}`,
+      };
+      setOrderReceipt(receipt);
+      setCheckoutTarget(null);
+      emitCenterNotification({
+        id: `market-order-${receipt.codigo}`,
+        title: `${checkoutTarget.mode === 'COMPRA' ? 'Compra Confirmada' : 'Reserva Confirmada'} · ${receipt.codigo}`,
+        subtitle: `${receipt.marketName} · ${fmtSoles(receipt.totalCentavos)} · PIN ${receipt.pin}`,
+        detail: `Sincronizado con panel multinegocio (${receipt.documentoResumen}).`,
+        tone: 'success',
+        responseMs: ms,
+        speakText: speakEnabled
+          ? `${
+              checkoutTarget.mode === 'COMPRA' ? 'Compra confirmada' : 'Reserva generada'
+            } en ${receipt.marketName} por ${fmtSoles(receipt.totalCentavos)}. Tu PIN es ${receipt.pin
+              .split('')
+              .join(' ')}.`
+          : undefined,
+      });
+      onOrderCreated?.(res.pedido, res.cliente_pin);
+    } catch (err) {
+      setCheckoutError(
+        err instanceof Error ? err.message : 'No se pudo enviar el pedido al minimarket'
+      );
+    } finally {
+      setSubmittingCheckout(false);
     }
   }
 
@@ -297,6 +396,13 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             pins={mapPins}
             selectedPinId={activeResult?.market.id ?? null}
             onSelectPin={(id) => setSelectedMarketId(id)}
+            onRequestPinAction={(id) => {
+              const target = comparisons.find((c) => c.market.id === id);
+              if (target && target.market.abiertoAhora && target.totalCentavos > 0) {
+                setSelectedMarketId(id);
+                setCheckoutTarget({ result: target, mode: 'COMPRA' });
+              }
+            }}
             onRequestGps={onRequestGps}
             gpsLive={gpsLive}
           />
@@ -520,7 +626,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         >
           <form
             onSubmit={handleConfirmPurchase}
-            className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl"
+            className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto"
           >
             <div>
               <p className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400">
@@ -539,13 +645,69 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
               </p>
             </div>
 
+            {checkoutError && (
+              <div className="rounded-xl border border-[#C81E5B]/40 bg-[#C81E5B]/10 px-3.5 py-2 text-xs text-[#C81E5B]">
+                {checkoutError}
+              </div>
+            )}
+
+            {/* Validación DNI RENIEC / RUC SUNAT obligatoria para pedidos en minimarket */}
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400">
+                  Validación RENIEC / SUNAT
+                </span>
+                {docVerificado?.validado && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                    <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado ({docVerificado.fuente})
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <select
+                  value={docTipo}
+                  onChange={(e) => {
+                    setDocTipo(e.target.value as 'DNI' | 'RUC');
+                    setDocVerificado(null);
+                    setDocLookupError(null);
+                  }}
+                  className="min-h-[42px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-bold"
+                >
+                  <option value="DNI">DNI (RENIEC)</option>
+                  <option value="RUC">RUC (SUNAT)</option>
+                </select>
+                <input
+                  required
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={docTipo === 'DNI' ? 8 : 11}
+                  value={docNumero}
+                  onChange={(e) => {
+                    setDocNumero(e.target.value.replace(/\D/g, ''));
+                    setDocVerificado(null);
+                  }}
+                  placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+                  className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                />
+                <button
+                  type="button"
+                  onClick={handleVerifyCustomerDoc}
+                  disabled={docLookupLoading}
+                  className="min-h-[42px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                >
+                  {docLookupLoading ? 'Validando...' : 'Validar'}
+                </button>
+              </div>
+              {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
+            </div>
+
             <div className="space-y-2.5">
               <input
                 required
                 type="text"
                 value={clienteNombre}
                 onChange={(e) => setClienteNombre(e.target.value)}
-                placeholder="Tu nombre completo"
+                placeholder="Titular / Razón social (autocompletado al validar)"
                 className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
               <input
@@ -577,18 +739,26 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             <div className="flex gap-2.5 pt-2">
               <button
                 type="button"
-                onClick={() => setCheckoutTarget(null)}
+                onClick={() => {
+                  setCheckoutTarget(null);
+                  setCheckoutError(null);
+                }}
                 className="flex-1 min-h-[46px] rounded-2xl border border-black/15 dark:border-white/15 text-xs font-semibold"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
-                className="flex-[2] min-h-[46px] rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold flex items-center justify-center gap-2"
+                disabled={submittingCheckout || docLookupLoading}
+                className="flex-[2] min-h-[46px] rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 <Sparkles className="w-4 h-4" />
                 <span>
-                  {checkoutTarget.mode === 'COMPRA' ? 'Confirmar Compra + PIN' : 'Generar Reserva + PIN'}
+                  {submittingCheckout
+                    ? 'Sincronizando...'
+                    : checkoutTarget.mode === 'COMPRA'
+                    ? 'Confirmar Compra + PIN'
+                    : 'Generar Reserva + PIN'}
                 </span>
               </button>
             </div>

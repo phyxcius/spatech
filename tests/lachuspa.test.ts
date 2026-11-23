@@ -605,3 +605,166 @@ test('7. Panel Multinegocio: auto-registro, configuración de horario/pagos/voz,
   }
 });
 
+test('8. RENIEC/SUNAT, categorías/modalidades, DNI en market, reglas de negocio y entidades SOS', async () => {
+  const { db, server, req } = await startTestServer();
+  try {
+    // 1. Consulta RENIEC / SUNAT con validación estricta
+    const badDni = await req('GET', '/api/public/consulta-documento?tipo=DNI&numero=123');
+    assert.equal(badDni.status, 400);
+
+    const okDni = await req('GET', '/api/public/consulta-documento?tipo=DNI&numero=44556677');
+    assert.equal(okDni.status, 200);
+    assert.equal(okDni.data.valid, true);
+    assert.equal(okDni.data.tipo, 'DNI');
+    assert.equal(okDni.data.numero, '44556677');
+    assert.ok(String(okDni.data.nombre_completo || '').length >= 4);
+
+    // 20601234565 posee dígito verificador SUNAT válido
+    const okRuc = await req('GET', '/api/public/consulta-documento?tipo=RUC&numero=20601234565');
+    assert.equal(okRuc.status, 200);
+    assert.equal(okRuc.data.valid, true);
+    assert.equal(okRuc.data.tipo, 'RUC');
+    assert.equal(okRuc.data.numero, '20601234565');
+
+    // 2. Registro de negocio con RUC, categoría y modalidades + servicio por Arroba
+    const regBiz = await req('POST', '/api/public/negocios/registro', {
+      rubro: 'RESTAURANTE',
+      nombre: 'Market Andino San Blas',
+      telefono: '984665544',
+      zona: 'San Blas, Cusco',
+      pin: '6543',
+      tipo_persona: 'JURIDICA',
+      documento_tipo: 'RUC',
+      documento_numero: '20601234565',
+      razon_social: 'MARKET ANDINO SAN BLAS S.A.C.',
+      tipo_negocio: 'Minimarket / Bodega',
+      modalidades_venta: 'Kilo,Arroba,Unidad',
+    });
+    assert.equal(regBiz.status, 201);
+    const bizId = regBiz.data.negocio.id;
+    const bizCodigo = regBiz.data.negocio.codigo;
+    const bizToken = regBiz.data.token;
+    assert.equal(regBiz.data.negocio.documento_tipo, 'RUC');
+    assert.equal(regBiz.data.negocio.documento_numero, '20601234565');
+    assert.equal(regBiz.data.negocio.tipo_negocio, 'Minimarket / Bodega');
+    assert.equal(regBiz.data.negocio.modalidades_venta, 'Kilo,Arroba,Unidad');
+
+    const svcRes = await req(
+      'POST',
+      `/api/negocio/${bizId}/servicios`,
+      {
+        nombre: 'Papa Huayro Seleccionada',
+        descripcion: 'Cosecha directa del Valle Sagrado',
+        precio_centavos: 2800,
+        duracion_min: 15,
+        stock: 30,
+        unidad_medida: 'Arroba',
+      },
+      bizToken
+    );
+    assert.equal(svcRes.status, 201);
+    assert.equal(svcRes.data.servicio.unidad_medida, 'Arroba');
+
+    const dirRes = await req('GET', '/api/public/directorio');
+    assert.equal(dirRes.status, 200);
+    const listedBiz = dirRes.data.negocios.find((n: any) => n.id === bizId);
+    assert.ok(listedBiz);
+    assert.equal(listedBiz.tipo_negocio, 'Minimarket / Bodega');
+    assert.equal(listedBiz.modalidades_venta, 'Kilo,Arroba,Unidad');
+    const listedSvc = dirRes.data.servicios.find((s: any) => s.id === svcRes.data.servicio.id);
+    assert.ok(listedSvc);
+    assert.equal(listedSvc.unidad_medida, 'Arroba');
+
+    // 3. Pedido desde comparador de markets con DNI verificado RENIEC
+    const marketOrder = await req('POST', '/api/public/market-pedidos', {
+      market_nombre: 'Market Andino San Blas',
+      market_zona: 'San Blas, Cusco',
+      items_resumen: '1x Arroba Papa Huayro + 2x Leche Gloria',
+      monto_centavos: 4180,
+      metodo_pago: 'Yape',
+      cliente_nombre: 'Lucia Mamani Quispe',
+      cliente_telefono: '984123456',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
+      tipo_entrega: 'DELIVERY',
+    });
+    assert.equal(marketOrder.status, 201);
+    assert.equal(marketOrder.data.pedido.cliente_documento_tipo, 'DNI');
+    assert.equal(marketOrder.data.pedido.cliente_documento_numero, '44556677');
+    assert.equal(marketOrder.data.pedido.cliente_documento_verificado, 1);
+
+    // Verificar persistencia para el panel receptor del negocio
+    const receptorRow = db
+      .prepare('SELECT id, codigo FROM negocios WHERE id = ?')
+      .get(marketOrder.data.pedido.negocio_id) as { id: number; codigo: string } | undefined;
+    assert.ok(receptorRow);
+    const storedOrder = db
+      .prepare(
+        'SELECT cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado FROM pedidos_ordenes WHERE id = ?'
+      )
+      .get(marketOrder.data.pedido.id) as any;
+    assert.equal(storedOrder.cliente_documento_tipo, 'DNI');
+    assert.equal(storedOrder.cliente_documento_numero, '44556677');
+    assert.equal(storedOrder.cliente_documento_verificado, 1);
+
+    // 4. Reglas de activación/suspensión por admin (ESTAFA -> bloquea login 403 -> ACTIVO restaura 200)
+    const loginAdmin = await req('POST', '/api/admin/login', { pin: '998877' });
+    assert.equal(loginAdmin.status, 200);
+    const adminToken = loginAdmin.data.token;
+
+    const suspendEstafa = await req(
+      'PATCH',
+      `/api/admin/negocios/${bizId}/estado`,
+      {
+        estado_regla: 'ESTAFA',
+        activo: false,
+        motivo_estado: 'Cobro indebido reportado por cliente',
+      },
+      adminToken
+    );
+    assert.equal(suspendEstafa.status, 200);
+    assert.equal(suspendEstafa.data.activo, false);
+    assert.equal(suspendEstafa.data.estado_regla, 'ESTAFA');
+
+    const blockedLogin = await req('POST', '/api/negocio/login', { codigo: bizCodigo, pin: '6543' });
+    assert.equal(blockedLogin.status, 403);
+    assert.match(String(blockedLogin.data.error || ''), /ESTAFA/i);
+
+    const reactivate = await req(
+      'PATCH',
+      `/api/admin/negocios/${bizId}/estado`,
+      { estado_regla: 'ACTIVO', activo: true },
+      adminToken
+    );
+    assert.equal(reactivate.status, 200);
+    assert.equal(reactivate.data.activo, true);
+    assert.equal(reactivate.data.estado_regla, 'ACTIVO');
+
+    const restoredLogin = await req('POST', '/api/negocio/login', { codigo: bizCodigo, pin: '6543' });
+    assert.equal(restoredLogin.status, 200);
+
+    // 5. Alerta SOS dirigida a entidad específica (SERENAZGO)
+    const sosRes = await req('POST', '/api/public/emergencias', {
+      cliente_nombre: 'Carlos Huaman',
+      cliente_telefono: '984776655',
+      ubicacion_texto: 'Plaza San Blas, Cusco',
+      lat: -13.5149,
+      lng: -71.9742,
+      mensaje: 'Auxilio inmediato en San Blas',
+      entidad_objetivo: 'SERENAZGO',
+    });
+    assert.equal(sosRes.status, 201);
+    assert.equal(sosRes.data.entidad_objetivo, 'SERENAZGO');
+
+    const sosList = await req('GET', '/api/public/emergencias');
+    assert.equal(sosList.status, 200);
+    const createdSos = sosList.data.emergencias.find((e: any) => e.codigo === sosRes.data.codigo);
+    assert.ok(createdSos);
+    assert.equal(createdSos.entidad_objetivo, 'SERENAZGO');
+  } finally {
+    server.close();
+  }
+});
+
+

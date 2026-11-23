@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
+  BadgeCheck,
   CarFront,
   CheckCircle2,
   Clock,
@@ -12,7 +13,18 @@ import {
   Volume2,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api.ts';
-import { formatSoles, RUBRO_LABELS, type MetodoPago, type Rubro } from '../types.ts';
+import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
+import {
+  BUSINESS_CATEGORIES,
+  formatSoles,
+  RUBRO_LABELS,
+  SALE_MODALITIES,
+  type MetodoPago,
+  type Rubro,
+} from '../types.ts';
 
 export interface BusinessConfigResumen {
   negocio: {
@@ -34,12 +46,19 @@ export interface BusinessConfigResumen {
     alerta_voz_activa?: boolean | number;
     tarifa_minima_centavos?: number;
     radio_cobertura_km?: number;
+    tipo_persona?: 'NATURAL' | 'JURIDICA';
+    documento_tipo?: 'DNI' | 'RUC';
+    documento_numero?: string;
+    razon_social?: string;
+    tipo_negocio?: string;
+    modalidades_venta?: string[];
   };
   servicios: Array<{
     id: number;
     nombre: string;
     descripcion?: string;
     precio_centavos: number;
+    unidad_medida?: string;
     stock: number;
     disponible: number;
   }>;
@@ -105,6 +124,19 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
     String(((n.tarifa_minima_centavos ?? 600) / 100).toFixed(2))
   );
   const [radioKm, setRadioKm] = useState(String(n.radio_cobertura_km ?? 8));
+  const [tipoPersona, setTipoPersona] = useState<'NATURAL' | 'JURIDICA'>(
+    n.tipo_persona || (n.documento_tipo === 'DNI' ? 'NATURAL' : 'JURIDICA')
+  );
+  const [documentoNumero, setDocumentoNumero] = useState(n.documento_numero || '');
+  const [razonSocial, setRazonSocial] = useState(n.razon_social || '');
+  const [tipoNegocio, setTipoNegocio] = useState(n.tipo_negocio || BUSINESS_CATEGORIES[0]);
+  const [modalidadesVenta, setModalidadesVenta] = useState<string[]>(() =>
+    Array.isArray(n.modalidades_venta) && n.modalidades_venta.length > 0
+      ? n.modalidades_venta
+      : ['Unidad']
+  );
+  const [docLookupLoading, setDocLookupLoading] = useState(false);
+  const [docVerified, setDocVerified] = useState<PeruDocumentLookupResult | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
 
   // Cambio de PIN
@@ -145,6 +177,15 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
     setAlertaVoz(n.alerta_voz_activa !== false && n.alerta_voz_activa !== 0);
     setTarifaMinSoles(String(((n.tarifa_minima_centavos ?? 600) / 100).toFixed(2)));
     setRadioKm(String(n.radio_cobertura_km ?? 8));
+    setTipoPersona(n.tipo_persona || (n.documento_tipo === 'DNI' ? 'NATURAL' : 'JURIDICA'));
+    setDocumentoNumero(n.documento_numero || '');
+    setRazonSocial(n.razon_social || '');
+    setTipoNegocio(n.tipo_negocio || BUSINESS_CATEGORIES[0]);
+    setModalidadesVenta(
+      Array.isArray(n.modalidades_venta) && n.modalidades_venta.length > 0
+        ? n.modalidades_venta
+        : ['Unidad']
+    );
   }, [n.id, n.nombre, n.zona, n.en_linea, n.horario_apertura, n.horario_cierre]);
 
   function togglePago(p: MetodoPago) {
@@ -154,6 +195,44 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
       }
       return [...prev, p];
     });
+  }
+
+  function toggleModalidad(mod: string) {
+    setModalidadesVenta((prev) => {
+      if (prev.includes(mod)) {
+        return prev.length > 1 ? prev.filter((x) => x !== mod) : prev;
+      }
+      return [...prev, mod];
+    });
+  }
+
+  async function handleLookupBusinessDoc() {
+    const docTipo = tipoPersona === 'NATURAL' ? 'DNI' : 'RUC';
+    const clean = documentoNumero.replace(/\D/g, '');
+    if (!clean) {
+      onFeedback({ type: 'err', text: `Ingresa el ${docTipo} para validar con RENIEC/SUNAT.` });
+      return;
+    }
+    setDocLookupLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      setDocVerified(res);
+      if (res.nombre_completo) {
+        setRazonSocial(res.nombre_completo);
+        if (!nombre.trim()) setNombre(res.nombre_completo);
+      }
+      onFeedback({
+        type: 'ok',
+        text: `${res.tipo} ${res.numero} verificado (${res.fuente}): ${res.nombre_completo}`,
+      });
+    } catch (err) {
+      setDocVerified(null);
+      onFeedback({ type: 'err', text: formatPeruLookupError(err) });
+    } finally {
+      setDocLookupLoading(false);
+    }
   }
 
   function detectGpsForBiz() {
@@ -171,6 +250,7 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
   async function handleSaveConfig(e: React.FormEvent) {
     e.preventDefault();
     setSavingConfig(true);
+    const docTipo = tipoPersona === 'NATURAL' ? 'DNI' : 'RUC';
     try {
       await apiFetch(`/api/negocio/${negocioId}/configuracion`, {
         method: 'PUT',
@@ -190,6 +270,12 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
           alerta_voz_activa: alertaVoz,
           tarifa_minima_centavos: Math.max(100, Math.round((Number(tarifaMinSoles) || 6) * 100)),
           radio_cobertura_km: Math.max(1, Math.min(80, Number(radioKm) || 8)),
+          tipo_persona: tipoPersona,
+          documento_tipo: docTipo,
+          documento_numero: documentoNumero.replace(/\D/g, ''),
+          razon_social: razonSocial,
+          tipo_negocio: tipoNegocio,
+          modalidades_venta: modalidadesVenta,
         },
         token,
       });
@@ -430,6 +516,122 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
               onChange={(e) => setZona(e.target.value)}
               className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
             />
+          </div>
+
+          {/* Identidad Tributaria SUNAT / RENIEC + Categoría y Modalidades de Venta */}
+          <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
+                Identidad RUC / DNI (SUNAT & RENIEC) y Categoría
+              </span>
+              {docVerified?.validado && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                  <BadgeCheck className="w-3.5 h-3.5" /> {docVerified.tipo} Verificado
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Tipo de Persona
+                </label>
+                <select
+                  value={tipoPersona}
+                  onChange={(e) => {
+                    setTipoPersona(e.target.value as 'NATURAL' | 'JURIDICA');
+                    setDocVerified(null);
+                  }}
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
+                >
+                  <option value="JURIDICA">Persona Jurídica (RUC 11 dígitos)</option>
+                  <option value="NATURAL">Persona Natural (DNI 8 dígitos)</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  {tipoPersona === 'NATURAL' ? 'Número de DNI' : 'Número de RUC'}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={tipoPersona === 'NATURAL' ? 8 : 11}
+                    value={documentoNumero}
+                    onChange={(e) => {
+                      setDocumentoNumero(e.target.value.replace(/\D/g, ''));
+                      setDocVerified(null);
+                    }}
+                    placeholder={tipoPersona === 'NATURAL' ? '44556677' : '20601234561'}
+                    className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleLookupBusinessDoc}
+                    disabled={docLookupLoading}
+                    className="min-h-[40px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                  >
+                    {docLookupLoading ? 'Validando...' : 'Validar'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Razón Social / Titular SUNAT-RENIEC
+                </label>
+                <input
+                  type="text"
+                  value={razonSocial}
+                  onChange={(e) => setRazonSocial(e.target.value)}
+                  placeholder="Razón social o nombres completos"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Categoría / Tipo de Negocio
+                </label>
+                <select
+                  value={tipoNegocio}
+                  onChange={(e) => setTipoNegocio(e.target.value)}
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
+                >
+                  {BUSINESS_CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                Modalidades de Venta (Kilos, Arrobas, Unidades, Medidas, etc.)
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {SALE_MODALITIES.map((mod) => {
+                  const active = modalidadesVenta.includes(mod);
+                  return (
+                    <button
+                      key={mod}
+                      type="button"
+                      onClick={() => toggleModalidad(mod)}
+                      className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold border transition-colors ${
+                        active
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-[#555B66] dark:text-[#98A0AD]'
+                      }`}
+                    >
+                      {mod}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <div>
@@ -827,7 +1029,7 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
                     <div className="min-w-0">
                       <p className="font-semibold truncate">{s.nombre}</p>
                       <p className="font-mono-tabular text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
-                        {formatSoles(s.precio_centavos)} · Stock {s.stock}
+                        {formatSoles(s.precio_centavos)} / {s.unidad_medida || 'Unidad'} · Stock {s.stock}
                       </p>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">

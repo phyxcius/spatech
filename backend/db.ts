@@ -300,13 +300,33 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
       estado TEXT NOT NULL DEFAULT 'ENVIADO',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS documentos_peru (
+      numero TEXT PRIMARY KEY,
+      tipo TEXT NOT NULL CHECK(tipo IN ('DNI','RUC')),
+      nombre_completo TEXT NOT NULL,
+      razon_social TEXT,
+      estado TEXT,
+      condicion TEXT,
+      direccion TEXT,
+      source TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Migración idempotente para bases SQLite existentes
-  const cols = (db.prepare('PRAGMA table_info(negocios)').all() as Array<{ name: string }>).map(
-    (c) => c.name
-  );
-  const alterCols: Array<[string, string]> = [
+  const ensureCols = (table: string, defs: Array<[string, string]>) => {
+    const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+      (c) => c.name
+    );
+    for (const [col, def] of defs) {
+      if (!existing.includes(col)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def};`);
+      }
+    }
+  };
+
+  ensureCols('negocios', [
     ['horario_apertura', "TEXT NOT NULL DEFAULT '07:00'"],
     ['horario_cierre', "TEXT NOT NULL DEFAULT '22:30'"],
     ['abierto_24h', 'INTEGER NOT NULL DEFAULT 0'],
@@ -315,12 +335,29 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['alerta_voz_activa', 'INTEGER NOT NULL DEFAULT 1'],
     ['tarifa_minima_centavos', 'INTEGER NOT NULL DEFAULT 600'],
     ['radio_cobertura_km', 'REAL NOT NULL DEFAULT 8.0'],
-  ];
-  for (const [col, def] of alterCols) {
-    if (!cols.includes(col)) {
-      db.exec(`ALTER TABLE negocios ADD COLUMN ${col} ${def};`);
-    }
-  }
+    ['tipo_persona', "TEXT NOT NULL DEFAULT 'JURIDICA'"],
+    ['documento_tipo', "TEXT NOT NULL DEFAULT 'RUC'"],
+    ['documento_numero', 'TEXT'],
+    ['razon_social', 'TEXT'],
+    ['tipo_negocio', "TEXT NOT NULL DEFAULT 'Comercio Multirubro'"],
+    ['modalidades_venta', "TEXT NOT NULL DEFAULT 'UNIDAD,SERVICIO'"],
+    ['estado_regla', "TEXT NOT NULL DEFAULT 'ACTIVO'"],
+    ['motivo_estado', 'TEXT'],
+  ]);
+
+  ensureCols('servicios_catalogo', [
+    ['unidad_medida', "TEXT NOT NULL DEFAULT 'UNIDAD'"],
+  ]);
+
+  ensureCols('pedidos_ordenes', [
+    ['cliente_documento_tipo', 'TEXT'],
+    ['cliente_documento_numero', 'TEXT'],
+    ['cliente_documento_verificado', 'INTEGER NOT NULL DEFAULT 0'],
+  ]);
+
+  ensureCols('alertas_emergencias', [
+    ['entidad_objetivo', "TEXT NOT NULL DEFAULT 'SAMU'"],
+  ]);
 
   return db;
 }

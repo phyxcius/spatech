@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { apiFetch, speakSpanish } from '../lib/api.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
+import { type EntidadEmergencia } from '../types.ts';
 
 // ============================================================================
 // 1. PANEL DE DESPACHO UNIFICADO (CENTRAL DE DESPACHO CUSCO - EMERGENCIAS)
@@ -33,6 +35,7 @@ export interface EmergencyItem {
   lat?: number;
   lng?: number;
   mensaje: string;
+  entidad_objetivo?: EntidadEmergencia;
   estado: 'ACTIVA' | 'ATENDIDA';
   atendida_por?: string | null;
   created_at: string;
@@ -50,6 +53,7 @@ const SHOWCASE_EMERGENCIES: EmergencyItem[] = [
     lat: -13.5194,
     lng: -71.9756,
     mensaje: 'Hemorragia / Fractura en Pierna tras caída en graderías',
+    entidad_objetivo: 'SAMU',
     estado: 'ACTIVA',
     atendida_por: null,
     created_at: new Date().toISOString(),
@@ -65,8 +69,9 @@ const SHOWCASE_EMERGENCIES: EmergencyItem[] = [
     lat: -13.5161,
     lng: -71.9794,
     mensaje: 'Botón de Pánico / Acoso Callejero en vía peatonal',
+    entidad_objetivo: 'SERENAZGO',
     estado: 'ATENDIDA',
-    atendida_por: 'Unidad Serenos 02',
+    atendida_por: 'Central Serenazgo Cusco',
     created_at: new Date(Date.now() - 420_000).toISOString(),
     unitType: 'SERENAZGO',
     distancia: '0.4 km',
@@ -74,38 +79,108 @@ const SHOWCASE_EMERGENCIES: EmergencyItem[] = [
   },
 ];
 
-const TERMINALS = [
-  { id: 'BOMBEROS', label: 'Cía. Bomberos Santiago N° 116', badge: '🚒 Bomberos / SAMU' },
-  { id: 'SAMU', label: 'Ambulancia SAMU Cusco 106', badge: '🚑 Médica SAMU' },
-  { id: 'SERENAZGO', label: 'Central Serenazgo Cusco', badge: '🛡️ Serenazgo' },
-  { id: 'PNP', label: 'Comisaría Turismo PNP 105', badge: '🚓 PNP 105' },
+const TERMINALS: Array<{
+  id: EntidadEmergencia;
+  label: string;
+  shortName: string;
+  badge: string;
+  number: string;
+  accent: string;
+}> = [
+  {
+    id: 'SAMU',
+    label: 'Ambulancia SAMU Cusco 106',
+    shortName: 'SAMU 106',
+    badge: '🚑 Médica SAMU',
+    number: '106',
+    accent: 'border-rose-500/45 bg-rose-500/10 text-rose-300',
+  },
+  {
+    id: 'SERENAZGO',
+    label: 'Central Serenazgo Cusco',
+    shortName: 'Serenazgo',
+    badge: '🛡️ Serenazgo',
+    number: 'Alerta Municipal',
+    accent: 'border-sky-500/45 bg-sky-500/10 text-sky-300',
+  },
+  {
+    id: 'PNP_105',
+    label: 'Comisaría Turismo PNP 105',
+    shortName: 'Policía PNP',
+    badge: '🚓 PNP 105',
+    number: '105',
+    accent: 'border-emerald-500/45 bg-emerald-500/10 text-emerald-300',
+  },
+  {
+    id: 'BOMBEROS',
+    label: 'Cía. Bomberos Santiago N° 116',
+    shortName: 'Bomberos 116',
+    badge: '🚒 Bomberos',
+    number: '116',
+    accent: 'border-amber-500/45 bg-amber-500/10 text-amber-300',
+  },
 ];
 
+function inferEntityForEmergency(item: EmergencyItem): EntidadEmergencia {
+  if (item.entidad_objetivo) return item.entidad_objetivo;
+  const txt = `${item.mensaje} ${item.atendida_por || ''}`.toLowerCase();
+  if (txt.includes('pnp') || txt.includes('polic') || txt.includes('robo')) return 'PNP_105';
+  if (txt.includes('seren') || txt.includes('seguridad') || txt.includes('acoso')) return 'SERENAZGO';
+  if (txt.includes('bomber') || txt.includes('incend') || txt.includes('rescate')) return 'BOMBEROS';
+  if (item.unitType === 'PNP_105') return 'PNP_105';
+  if (item.unitType === 'SERENAZGO') return 'SERENAZGO';
+  return 'SAMU';
+}
+
 export const EmergencyDispatchCenter: React.FC = () => {
+  const [selectedEntity, setSelectedEntity] = useState<'TODOS' | EntidadEmergencia>('TODOS');
   const [terminal, setTerminal] = useState(TERMINALS[0].label);
-  const [unitFilter, setUnitFilter] = useState<'TODOS' | 'BOMBEROS_SAMU' | 'SERENAZGO' | 'PNP_105'>('TODOS');
   const [liveAlerts, setLiveAlerts] = useState<EmergencyItem[]>([]);
   const [localStatusOverride, setLocalStatusOverride] = useState<Record<string, { estado: 'ATENDIDA'; atendida_por: string }>>({});
   const [loading, setLoading] = useState(false);
   const [dispatchMsg, setDispatchMsg] = useState<string | null>(null);
+  const prevActiveCodesRef = useRef<Set<string>>(new Set());
+  const seededInitialRef = useRef(false);
 
-  async function loadEmergencies() {
-    setLoading(true);
+  async function loadEmergencies(silent = false) {
+    if (!silent) setLoading(true);
     try {
       const res = await apiFetch<{ emergencias: EmergencyItem[] }>('/api/public/emergencias');
-      setLiveAlerts(Array.isArray(res.emergencias) ? res.emergencias : []);
+      const items = Array.isArray(res.emergencias) ? res.emergencias : [];
+      setLiveAlerts(items);
+
+      const currentActive = items.filter((e) => e.estado === 'ACTIVA');
+      if (!seededInitialRef.current) {
+        seededInitialRef.current = true;
+        prevActiveCodesRef.current = new Set(currentActive.map((e) => e.codigo));
+      } else {
+        for (const item of currentActive) {
+          if (!prevActiveCodesRef.current.has(item.codigo)) {
+            const entity = inferEntityForEmergency(item);
+            emitCenterNotification({
+              id: `sos-dispatch-${item.codigo}`,
+              title: `🚨 Alerta SOS ${entity} · #${item.codigo}`,
+              subtitle: `${item.cliente_nombre} · ${item.ubicacion_texto}`,
+              detail: item.mensaje,
+              tone: 'emergency',
+              speakText: `Alerta SOS para ${entity}. ${item.cliente_nombre} en ${item.ubicacion_texto}.`,
+            });
+          }
+        }
+        prevActiveCodesRef.current = new Set(currentActive.map((e) => e.codigo));
+      }
     } catch {
       // Keep fallback showcase emergencies if server hasn't received any yet
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadEmergencies();
-    const id = setInterval(loadEmergencies, 8000);
+    void loadEmergencies(false);
+    const id = setInterval(() => void loadEmergencies(true), 2000);
     const unsubEmergencies = subscribeFirebaseRtdbPath('emergencias', () => {
-      void loadEmergencies();
+      void loadEmergencies(true);
     });
     return () => {
       clearInterval(id);
@@ -113,7 +188,7 @@ export const EmergencyDispatchCenter: React.FC = () => {
     };
   }, []);
 
-  const mergedAlerts: EmergencyItem[] = [
+  const mergedAlerts: Array<EmergencyItem & { resolvedEntity: EntidadEmergencia }> = [
     ...liveAlerts.map((a) => ({
       ...a,
       unitType: a.unitType || ('BOMBEROS_SAMU' as const),
@@ -125,23 +200,31 @@ export const EmergencyDispatchCenter: React.FC = () => {
     ),
   ].map((item) => {
     const ov = localStatusOverride[item.codigo];
-    return ov ? { ...item, estado: ov.estado, atendida_por: ov.atendida_por } : item;
+    const resolved = ov ? { ...item, estado: ov.estado, atendida_por: ov.atendida_por } : item;
+    return {
+      ...resolved,
+      resolvedEntity: inferEntityForEmergency(resolved),
+    };
   });
 
   const filteredAlerts = mergedAlerts.filter(
-    (a) => unitFilter === 'TODOS' || a.unitType === unitFilter
+    (a) => selectedEntity === 'TODOS' || a.resolvedEntity === selectedEntity
   );
   const pendientesCount = mergedAlerts.filter((a) => a.estado === 'ACTIVA').length;
   const enAtencionCount = mergedAlerts.filter((a) => a.estado === 'ATENDIDA').length;
 
-  async function handleTakeAuxilio(alertItem: EmergencyItem) {
+  async function handleTakeAuxilio(alertItem: EmergencyItem & { resolvedEntity: EntidadEmergencia }) {
     setDispatchMsg(null);
+    const activeTerminal =
+      selectedEntity === 'TODOS'
+        ? TERMINALS.find((t) => t.id === alertItem.resolvedEntity)?.label || terminal
+        : terminal;
     const isLiveServerItem = liveAlerts.some((l) => l.codigo === alertItem.codigo);
     if (isLiveServerItem) {
       try {
         await apiFetch(`/api/public/emergencias/${encodeURIComponent(alertItem.codigo)}/despachar`, {
           method: 'POST',
-          body: { atendida_por: terminal },
+          body: { atendida_por: activeTerminal },
         });
       } catch {
         // Fallback to local lock if offline
@@ -149,10 +232,18 @@ export const EmergencyDispatchCenter: React.FC = () => {
     }
     setLocalStatusOverride((prev) => ({
       ...prev,
-      [alertItem.codigo]: { estado: 'ATENDIDA', atendida_por: terminal },
+      [alertItem.codigo]: { estado: 'ATENDIDA', atendida_por: activeTerminal },
     }));
-    setDispatchMsg(`Auxilio #${alertItem.codigo} asignado a ${terminal}. Sirena y ruta GPS activadas.`);
-    await loadEmergencies();
+    const msg = `Auxilio #${alertItem.codigo} aceptado por ${activeTerminal}. Sirena y ruta GPS activadas.`;
+    setDispatchMsg(msg);
+    emitCenterNotification({
+      id: `sos-accept-${alertItem.codigo}`,
+      title: `Auxilio #${alertItem.codigo} Aceptado`,
+      subtitle: activeTerminal,
+      detail: `${alertItem.cliente_nombre} · Unidad despachada al punto GPS.`,
+      tone: 'success',
+    });
+    await loadEmergencies(true);
   }
 
   return (
@@ -187,7 +278,7 @@ export const EmergencyDispatchCenter: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={loadEmergencies}
+            onClick={() => void loadEmergencies(false)}
             className="min-h-[34px] px-3 rounded-full border border-white/10 bg-white/5 text-[11px] text-slate-300 flex items-center gap-1.5 hover:border-amber-400/50"
           >
             <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
@@ -199,45 +290,59 @@ export const EmergencyDispatchCenter: React.FC = () => {
         </div>
       </div>
 
-      {/* Resumen Operativo */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-red-500/10 border border-red-500/25 rounded-2xl p-3 text-center">
-          <span className="text-[10px] text-red-400 uppercase font-bold block">
-            Auxilios Pendientes
-          </span>
-          <span className="text-2xl font-black text-red-300 font-mono-tabular">
-            {pendientesCount}
-          </span>
-        </div>
-        <div className="bg-blue-500/10 border border-blue-500/25 rounded-2xl p-3 text-center">
-          <span className="text-[10px] text-blue-400 uppercase font-bold block">En Atención</span>
-          <span className="text-2xl font-black text-blue-300 font-mono-tabular">
-            {enAtencionCount}
-          </span>
-        </div>
-        <div className="col-span-2 flex flex-wrap items-center gap-1.5 bg-[#07090E] border border-white/10 rounded-2xl p-2.5">
-          {(
-            [
-              { id: 'TODOS', label: 'Todos' },
-              { id: 'BOMBEROS_SAMU', label: '🚒 Bomberos / SAMU' },
-              { id: 'SERENAZGO', label: '🛡️ Serenazgo' },
-              { id: 'PNP_105', label: '🚓 PNP 105' },
-            ] as const
-          ).map((f) => (
+      {/* Paneles de Control Propios por Entidad de Emergencia */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-2.5">
+        <button
+          type="button"
+          onClick={() => setSelectedEntity('TODOS')}
+          className={`rounded-2xl border p-3 text-left transition-all ${
+            selectedEntity === 'TODOS'
+              ? 'border-[#D4AF37] bg-[#D4AF37]/15 ring-2 ring-[#D4AF37]/30'
+              : 'border-white/10 bg-[#07090E] hover:border-white/25'
+          }`}
+        >
+          <p className="text-[10px] uppercase tracking-wider font-bold text-[#D4AF37]">
+            Todas las Entidades
+          </p>
+          <p className="font-mono-tabular text-xl font-black text-white mt-0.5">
+            {pendientesCount} activas
+          </p>
+          <p className="text-[10px] text-slate-400">{enAtencionCount} en atención</p>
+        </button>
+
+        {TERMINALS.map((term) => {
+          const activeCount = mergedAlerts.filter(
+            (a) => a.resolvedEntity === term.id && a.estado === 'ACTIVA'
+          ).length;
+          const doneCount = mergedAlerts.filter(
+            (a) => a.resolvedEntity === term.id && a.estado === 'ATENDIDA'
+          ).length;
+          const isSelected = selectedEntity === term.id;
+          return (
             <button
-              key={f.id}
+              key={term.id}
               type="button"
-              onClick={() => setUnitFilter(f.id)}
-              className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition-colors ${
-                unitFilter === f.id
-                  ? 'bg-[#D4AF37] text-[#0B0E14]'
-                  : 'text-slate-300 hover:bg-white/5'
+              onClick={() => {
+                setSelectedEntity(term.id);
+                setTerminal(term.label);
+              }}
+              className={`rounded-2xl border p-3 text-left transition-all ${
+                isSelected
+                  ? `${term.accent} ring-2 ring-white/20`
+                  : 'border-white/10 bg-[#07090E] hover:border-white/25'
               }`}
             >
-              {f.label}
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[11px] font-bold">{term.badge}</span>
+                <span className="text-[9px] font-mono-tabular opacity-80">{term.number}</span>
+              </div>
+              <p className="font-mono-tabular text-lg font-black text-white mt-0.5">
+                {activeCount} SOS
+              </p>
+              <p className="text-[10px] text-slate-400">{doneCount} atendidos</p>
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
       {dispatchMsg && (
@@ -250,7 +355,7 @@ export const EmergencyDispatchCenter: React.FC = () => {
       {/* Cola de Emergencias Activas */}
       <div className="space-y-3">
         <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-          Cola de Emergencias Activas
+          Panel {selectedEntity === 'TODOS' ? 'Unificado' : selectedEntity} · Cola de Emergencias ({filteredAlerts.length})
         </h3>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -278,7 +383,7 @@ export const EmergencyDispatchCenter: React.FC = () => {
                         {isActive ? 'CÓDIGO ROJO · SIN ASIGNAR' : 'EN ATENCIÓN'}
                       </span>
                       <span className="font-mono-tabular text-[11px] text-slate-400">
-                        #{item.codigo}
+                        #{item.codigo} · {item.resolvedEntity}
                       </span>
                     </div>
                     <h4 className="text-sm font-bold text-white mt-1.5">{item.mensaje}</h4>
@@ -344,12 +449,12 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
 }) => {
   const [nombre, setNombre] = useState(defaultNombre || '');
   const [telefono, setTelefono] = useState(defaultTelefono || '');
-  const [tipo, setTipo] = useState<'Médica / SAMU' | 'Seguridad / Serenazgo' | 'Ruta / Mecánica'>('Médica / SAMU');
-  const [mensaje, setMensaje] = useState('Hemorragia / Fractura o asistencia médica prioritaria');
+  const [entidadObjetivo, setEntidadObjetivo] = useState<EntidadEmergencia>('SAMU');
+  const [mensaje, setMensaje] = useState('Asistencia prioritaria en ubicación GPS actual');
   const [activeTicket, setActiveTicket] = useState<{
     codigo: string;
     paciente: string;
-    tipo: string;
+    entidad: EntidadEmergencia;
     detalle: string;
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -357,6 +462,7 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
   async function handleSubmitSos(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
+    const t0 = performance.now();
     try {
       const res = await apiFetch<{ codigo: string }>('/api/public/emergencias', {
         method: 'POST',
@@ -366,20 +472,31 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
           ubicacion_texto: `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`,
           lat: coords.lat,
           lng: coords.lng,
-          mensaje: `[${tipo}] ${mensaje}`,
+          entidad_objetivo: entidadObjetivo,
+          mensaje: `[${entidadObjetivo}] ${mensaje}`,
         },
       });
+      const ms = Math.max(1, Math.round(performance.now() - t0));
       setActiveTicket({
         codigo: res.codigo,
         paciente: nombre || 'Huésped La Chuspa',
-        tipo,
+        entidad: entidadObjetivo,
         detalle: mensaje,
       });
+      emitCenterNotification({
+        id: `sos-sent-${res.codigo}`,
+        title: `🚨 SOS Enviado a ${entidadObjetivo} · #${res.codigo}`,
+        subtitle: `Coordenadas GPS: ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`,
+        detail: 'La unidad de respuesta recibió tu alerta en tiempo real.',
+        tone: 'emergency',
+        responseMs: ms,
+      });
     } catch {
+      const fallbackCode = `CUS-2026-${Math.floor(10 + Math.random() * 89)}`;
       setActiveTicket({
-        codigo: `CUS-2026-${Math.floor(10 + Math.random() * 89)}`,
+        codigo: fallbackCode,
         paciente: nombre || 'Huésped La Chuspa',
-        tipo,
+        entidad: entidadObjetivo,
         detalle: mensaje,
       });
     } finally {
@@ -507,19 +624,19 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmitSos} className="space-y-3">
-            <div className="grid grid-cols-3 gap-2">
-              {(['Médica / SAMU', 'Seguridad / Serenazgo', 'Ruta / Mecánica'] as const).map((t) => (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {TERMINALS.map((t) => (
                 <button
-                  key={t}
+                  key={t.id}
                   type="button"
-                  onClick={() => setTipo(t)}
-                  className={`py-2 px-2 rounded-xl text-[11px] font-semibold border transition-colors ${
-                    tipo === t
+                  onClick={() => setEntidadObjetivo(t.id)}
+                  className={`py-2 px-2 rounded-xl text-[11px] font-bold border transition-colors ${
+                    entidadObjetivo === t.id
                       ? 'bg-red-600 text-white border-red-500'
                       : 'border-white/10 bg-[#07090E] text-slate-300'
                   }`}
                 >
-                  {t}
+                  {t.shortName}
                 </button>
               ))}
             </div>
@@ -551,7 +668,7 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
               disabled={submitting}
               className="w-full min-h-[48px] rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black uppercase tracking-wider"
             >
-              {submitting ? 'Despachando...' : '🚨 Activar Chuspa SOS Ahora'}
+              {submitting ? 'Despachando...' : `🚨 Activar SOS (${entidadObjetivo})`}
             </button>
 
             <div className="flex items-center justify-between gap-2 pt-1">
@@ -561,7 +678,7 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
                   setActiveTicket({
                     codigo: 'CUS-2026-88',
                     paciente: nombre || 'Carlos Mendoza',
-                    tipo,
+                    entidad: entidadObjetivo,
                     detalle: 'Hemorragia / Fractura en Pierna · Av. El Sol 450',
                   })
                 }

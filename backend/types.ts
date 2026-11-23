@@ -36,6 +36,9 @@ export const TIPOS_LEDGER = [
 
 export type TipoLedger = (typeof TIPOS_LEDGER)[number];
 
+export const ESTADOS_REGLA = ['ACTIVO', 'INCUMPLIMIENTO', 'ESTAFA'] as const;
+export type EstadoRegla = (typeof ESTADOS_REGLA)[number];
+
 export interface NegocioRow {
   id: number;
   codigo: string;
@@ -59,6 +62,14 @@ export interface NegocioRow {
   alerta_voz_activa?: number;
   tarifa_minima_centavos?: number;
   radio_cobertura_km?: number;
+  tipo_persona?: 'NATURAL' | 'JURIDICA';
+  documento_tipo?: 'DNI' | 'RUC';
+  documento_numero?: string | null;
+  razon_social?: string | null;
+  tipo_negocio?: string;
+  modalidades_venta?: string;
+  estado_regla?: EstadoRegla;
+  motivo_estado?: string | null;
   created_at: string;
 }
 
@@ -85,6 +96,9 @@ export interface PedidoRow {
   estado: EstadoPedido;
   cliente_nombre: string;
   cliente_telefono: string;
+  cliente_documento_tipo?: 'DNI' | 'RUC' | null;
+  cliente_documento_numero?: string | null;
+  cliente_documento_verificado?: number;
   origen_texto: string | null;
   destino_texto: string | null;
   origen_lat: number | null;

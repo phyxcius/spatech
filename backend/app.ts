@@ -19,6 +19,7 @@ import {
 } from './finance.ts';
 import {
   getFirebaseSyncState,
+  getRtdbBaseUrl,
   syncNegocioPinToFirebaseRtdb,
   syncSnapshotToFirebaseRtdb,
 } from './rtdbSync.ts';
@@ -37,16 +38,38 @@ import {
   type AuthedRequest,
 } from './security.ts';
 import {
+  ESTADOS_REGLA,
   HttpError,
   METODOS_PAGO,
   METODOS_RECARGA,
   RUBROS,
+  type EstadoRegla,
   type MetodoPago,
   type MetodoRecarga,
   type NegocioRow,
   type PedidoRow,
   type Rubro,
 } from './types.ts';
+
+const ENTIDADES_EMERGENCIA = ['SAMU', 'SERENAZGO', 'PNP_105', 'BOMBEROS'] as const;
+type EntidadEmergencia = (typeof ENTIDADES_EMERGENCIA)[number];
+
+function isValidDni(raw: string): boolean {
+  return /^\d{8}$/.test(raw.trim());
+}
+
+function isValidRuc(raw: string): boolean {
+  const ruc = raw.trim();
+  if (!/^(10|15|16|17|20)\d{9}$/.test(ruc)) return false;
+  const weights = [5, 4, 3, 2, 7, 6, 5, 4, 3, 2];
+  let sum = 0;
+  for (let i = 0; i < 10; i++) {
+    sum += Number(ruc[i]) * weights[i];
+  }
+  const rem = 11 - (sum % 11);
+  const check = rem === 10 ? 0 : rem === 11 ? 1 : rem;
+  return check === Number(ruc[10]);
+}
 
 function generateCode(prefix: string): string {
   const num = crypto.randomInt(1000, 9999);
@@ -129,12 +152,157 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  app.get('/api/public/consulta-documento', publicLimiter, async (req, res, next) => {
+    try {
+      const tipo = String(req.query.tipo || '').trim().toUpperCase();
+      const numero = String(req.query.numero || '').trim();
+      if (tipo !== 'DNI' && tipo !== 'RUC') {
+        throw new HttpError(400, 'Tipo de documento debe ser DNI o RUC');
+      }
+      if (tipo === 'DNI' && !isValidDni(numero)) {
+        throw new HttpError(400, 'El DNI peruano debe tener exactamente 8 dígitos numéricos');
+      }
+      if (tipo === 'RUC' && !isValidRuc(numero)) {
+        throw new HttpError(400, 'El RUC peruano debe tener 11 dígitos válidos (SUNAT)');
+      }
+
+      const cached = db
+        .prepare('SELECT * FROM documentos_peru WHERE tipo = ? AND numero = ?')
+        .get(tipo, numero) as
+        | {
+            tipo: 'DNI' | 'RUC';
+            numero: string;
+            nombre_completo: string;
+            razon_social: string | null;
+            estado: string | null;
+            condicion: string | null;
+            direccion: string | null;
+          }
+        | undefined;
+
+      if (cached) {
+        res.json({
+          valid: true,
+          validado: true,
+          tipo: cached.tipo,
+          numero: cached.numero,
+          nombre_completo: cached.nombre_completo,
+          razon_social: cached.razon_social || undefined,
+          estado: cached.estado || undefined,
+          condicion: cached.condicion || undefined,
+          direccion: cached.direccion || undefined,
+          source: 'CACHE',
+          fuente: 'CACHE',
+        });
+        return;
+      }
+
+      let nombreCompleto = '';
+      let razonSocial: string | null = null;
+      let estado: string | null = null;
+      let condicion: string | null = null;
+      let direccion: string | null = null;
+      let source: 'RENIEC' | 'SUNAT' | 'VALIDACION_LOCAL' = 'VALIDACION_LOCAL';
+
+      if (process.env.NODE_ENV !== 'test') {
+        try {
+          const endpoint =
+            tipo === 'DNI'
+              ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
+              : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
+          const upstream = await fetch(endpoint, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(4500),
+          });
+          if (upstream.ok) {
+            const data = (await upstream.json()) as Record<string, any>;
+            if (tipo === 'DNI') {
+              const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
+                .filter(Boolean)
+                .join(' ')
+                .trim();
+              nombreCompleto = String(data.nombre || joined || '').trim();
+              if (nombreCompleto) source = 'RENIEC';
+            } else {
+              razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
+              nombreCompleto = razonSocial || '';
+              estado = data.estado ? String(data.estado) : null;
+              condicion = data.condicion ? String(data.condicion) : null;
+              direccion = data.direccion ? String(data.direccion) : null;
+              if (nombreCompleto) source = 'SUNAT';
+            }
+          }
+        } catch {
+          // Fallback to validated local format below when offline / upstream unavailable
+        }
+      }
+
+      if (!nombreCompleto) {
+        nombreCompleto =
+          tipo === 'DNI'
+            ? `Ciudadano Verificado DNI ${numero}`
+            : `Empresa Verificada RUC ${numero}`;
+        if (tipo === 'RUC') {
+          razonSocial = nombreCompleto;
+        }
+        source = 'VALIDACION_LOCAL';
+      } else {
+        db.prepare(`
+          INSERT OR REPLACE INTO documentos_peru (tipo, numero, nombre_completo, razon_social, estado, condicion, direccion, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(tipo, numero, nombreCompleto, razonSocial, estado, condicion, direccion, source);
+
+        if (process.env.DISABLE_FIREBASE_SYNC !== 'true') {
+          const baseUrl = getRtdbBaseUrl();
+          if (baseUrl) {
+            void fetch(`${baseUrl}/lachuspa/documentos/${tipo}_${numero}.json`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                valid: true,
+                validado: true,
+                tipo,
+                numero,
+                nombre_completo: nombreCompleto,
+                razon_social: razonSocial,
+                estado,
+                condicion,
+                direccion,
+                source,
+                fuente: source,
+                updated_at: new Date().toISOString(),
+              }),
+            }).catch(() => {});
+          }
+        }
+      }
+
+      res.json({
+        valid: true,
+        validado: true,
+        tipo,
+        numero,
+        nombre_completo: nombreCompleto,
+        razon_social: razonSocial || undefined,
+        estado: estado || undefined,
+        condicion: condicion || undefined,
+        direccion: direccion || undefined,
+        source,
+        fuente: source,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get('/api/public/directorio', publicLimiter, (_req, res) => {
     const negocios = db
       .prepare(`
         SELECT id, codigo, rubro, nombre, descripcion, zona, lat, lng, en_linea, calificacion,
                horario_apertura, horario_cierre, abierto_24h, metodos_pago_aceptados,
-               tarifa_minima_centavos, radio_cobertura_km
+               tarifa_minima_centavos, radio_cobertura_km,
+               tipo_persona, documento_tipo, documento_numero, razon_social,
+               tipo_negocio, modalidades_venta, estado_regla, motivo_estado
         FROM negocios
         WHERE activo = 1
         ORDER BY rubro ASC, calificacion DESC
@@ -143,7 +311,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     const servicios = db
       .prepare(`
         SELECT s.id, s.negocio_id, s.categoria, s.nombre, s.descripcion, s.precio_centavos, s.duracion_min, s.stock,
-               n.nombre AS negocio_nombre, n.zona, n.calificacion
+               s.unidad_medida, n.nombre AS negocio_nombre, n.zona, n.calificacion
         FROM servicios_catalogo s
         JOIN negocios n ON n.id = s.negocio_id
         WHERE n.activo = 1 AND n.en_linea = 1 AND s.disponible = 1 AND s.stock > 0 AND s.categoria = n.rubro
@@ -195,6 +363,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         metodo_pago,
         cliente_nombre,
         cliente_telefono,
+        cliente_documento_tipo,
+        cliente_documento_numero,
+        cliente_documento_verificado,
         transcripcion,
         promotor_codigo,
         fecha_hora_reserva,
@@ -214,6 +385,25 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       }
       if (typeof cliente_telefono !== 'string' || cliente_telefono.trim().length < 6) {
         throw new HttpError(400, 'Teléfono WhatsApp obligatorio');
+      }
+
+      let docTipo: 'DNI' | 'RUC' | null = null;
+      let docNum: string | null = null;
+      let docVerif = 0;
+      if (cliente_documento_numero) {
+        const cleanDoc = String(cliente_documento_numero).trim();
+        const t = String(cliente_documento_tipo || (cleanDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+        if (t === 'DNI' && isValidDni(cleanDoc)) {
+          docTipo = 'DNI';
+          docNum = cleanDoc;
+          docVerif = cliente_documento_verificado ? 1 : 0;
+        } else if (t === 'RUC' && isValidRuc(cleanDoc)) {
+          docTipo = 'RUC';
+          docNum = cleanDoc;
+          docVerif = cliente_documento_verificado ? 1 : 0;
+        } else {
+          throw new HttpError(400, 'El DNI/RUC del cliente no tiene formato válido');
+        }
       }
 
       const negocio = db
@@ -273,10 +463,11 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           INSERT INTO pedidos_ordenes (
             codigo, negocio_id, referido_negocio_id, promotor_codigo, categoria,
             servicio_id, unidad_id, item_nombre, transcripcion, monto_centavos,
-            metodo_pago, estado, cliente_nombre, cliente_telefono, eta_min,
-            fecha_hora_reserva, pin_hash, pin_salt, pin_cifrado, expires_at
+            metodo_pago, estado, cliente_nombre, cliente_telefono,
+            cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
+            eta_min, fecha_hora_reserva, pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+2 hours'))
+          VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+2 hours'))
         `)
         .run(
           codigo,
@@ -290,6 +481,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           metodo_pago,
           cliente_nombre.trim(),
           cliente_telefono.trim(),
+          docTipo,
+          docNum,
+          docVerif,
           item.duracion_min,
           typeof fecha_hora_reserva === 'string' ? fecha_hora_reserva.trim() : null,
           hash,
@@ -302,6 +496,131 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         'pedido_recibido',
         codigo,
         `Tu solicitud ${codigo} (${item.nombre}) fue enviada a ${negocio.nombre}. Tu PIN de entrega es ${pin}. Compártelo solo al recibir.`
+      );
+
+      const created = db
+        .prepare('SELECT * FROM pedidos_ordenes WHERE id = ?')
+        .get(Number(insertRes.lastInsertRowid)) as unknown as PedidoRow;
+
+      res.status(201).json({
+        pedido: sanitizeOrderPublic(created),
+        cliente_pin: pin,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Pedido / Reserva de Comparador de Minimarkets con verificación DNI/RUC RENIEC/SUNAT
+  app.post('/api/public/market-pedidos', publicLimiter, (req, res, next) => {
+    try {
+      const {
+        market_nombre,
+        market_zona,
+        items_resumen,
+        monto_centavos,
+        metodo_pago,
+        cliente_nombre,
+        cliente_telefono,
+        cliente_documento_tipo,
+        cliente_documento_numero,
+        cliente_documento_verificado,
+        tipo_entrega,
+      } = req.body || {};
+
+      if (typeof market_nombre !== 'string' || market_nombre.trim().length < 2) {
+        throw new HttpError(400, 'Nombre del minimarket obligatorio');
+      }
+      if (!METODOS_PAGO.includes(metodo_pago as MetodoPago)) {
+        throw new HttpError(400, 'Método de pago inválido');
+      }
+      if (typeof cliente_nombre !== 'string' || cliente_nombre.trim().length < 2) {
+        throw new HttpError(400, 'Nombre del cliente obligatorio');
+      }
+      if (typeof cliente_telefono !== 'string' || cliente_telefono.trim().length < 6) {
+        throw new HttpError(400, 'Teléfono WhatsApp obligatorio');
+      }
+      if (!Number.isInteger(monto_centavos) || monto_centavos < 100 || monto_centavos > 2000000) {
+        throw new HttpError(400, 'Monto del pedido inválido');
+      }
+
+      let docTipo: 'DNI' | 'RUC' | null = null;
+      let docNum: string | null = null;
+      let docVerif = 0;
+      if (cliente_documento_numero) {
+        const cleanDoc = String(cliente_documento_numero).trim();
+        const t = String(cliente_documento_tipo || (cleanDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+        if (t === 'DNI' && isValidDni(cleanDoc)) {
+          docTipo = 'DNI';
+          docNum = cleanDoc;
+          docVerif = cliente_documento_verificado ? 1 : 0;
+        } else if (t === 'RUC' && isValidRuc(cleanDoc)) {
+          docTipo = 'RUC';
+          docNum = cleanDoc;
+          docVerif = cliente_documento_verificado ? 1 : 0;
+        } else {
+          throw new HttpError(400, 'DNI/RUC inválido');
+        }
+      }
+
+      // Asignar a un negocio activo de minimarket/restaurante/farmacia en red para que el panel multinegocio lo reciba en vivo
+      const targetBiz =
+        (db
+          .prepare(
+            "SELECT * FROM negocios WHERE activo = 1 AND en_linea = 1 AND (LOWER(tipo_negocio) LIKE '%market%' OR LOWER(tipo_negocio) LIKE '%bodega%' OR rubro IN ('RESTAURANTE','FARMACIA')) ORDER BY id ASC LIMIT 1"
+          )
+          .get() as unknown as NegocioRow | undefined) ||
+        (db.prepare('SELECT * FROM negocios WHERE activo = 1 ORDER BY id ASC LIMIT 1').get() as unknown as NegocioRow);
+
+      if (!targetBiz) {
+        throw new HttpError(404, 'No hay negocios receptores activos');
+      }
+
+      const pin = generateOrderPin();
+      const { hash, salt } = hashPin(pin);
+      const codigo = generateCode('MKT-CUSCO');
+      const resumenClean =
+        typeof items_resumen === 'string' && items_resumen.trim()
+          ? items_resumen.trim().slice(0, 320)
+          : `Canasta Market ${market_nombre.trim()}`;
+
+      const insertRes = db
+        .prepare(`
+          INSERT INTO pedidos_ordenes (
+            codigo, negocio_id, referido_negocio_id, promotor_codigo, categoria,
+            servicio_id, unidad_id, item_nombre, transcripcion, monto_centavos,
+            metodo_pago, estado, cliente_nombre, cliente_telefono,
+            cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
+            destino_texto, eta_min, pin_hash, pin_salt, pin_cifrado, expires_at
+          )
+          VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, 20, ?, ?, NULL, datetime('now', '+2 hours'))
+        `)
+        .run(
+          codigo,
+          targetBiz.id,
+          targetBiz.rubro,
+          `${market_nombre.trim()} · ${resumenClean.slice(0, 90)}`,
+          `[${tipo_entrega === 'DELIVERY' ? 'DELIVERY' : 'RESERVA EN TIENDA'}] ${market_nombre.trim()} (${String(
+            market_zona || 'Cusco'
+          )}): ${resumenClean}`,
+          monto_centavos,
+          metodo_pago,
+          cliente_nombre.trim(),
+          cliente_telefono.trim(),
+          docTipo,
+          docNum,
+          docVerif,
+          String(market_zona || 'Cusco'),
+          hash,
+          salt
+        );
+
+      logWhatsAppNotification(
+        db,
+        cliente_telefono.trim(),
+        'pedido_market',
+        codigo,
+        `Tu pedido ${codigo} en ${market_nombre.trim()} (${resumenClean}) está sincronizado. PIN de entrega: ${pin}.`
       );
 
       const created = db
@@ -742,7 +1061,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   // Emergencias SOS
   app.post('/api/public/emergencias', publicLimiter, (req, res, next) => {
     try {
-      const { cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje } =
+      const { cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, entidad_objetivo } =
         req.body || {};
       if (typeof cliente_nombre !== 'string' || cliente_nombre.trim().length < 2) {
         throw new HttpError(400, 'Nombre obligatorio');
@@ -750,11 +1069,16 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       if (typeof cliente_telefono !== 'string' || cliente_telefono.trim().length < 6) {
         throw new HttpError(400, 'Teléfono obligatorio');
       }
+      const rawEntidad = String(entidad_objetivo || 'SAMU').trim().toUpperCase();
+      const targetEntity: EntidadEmergencia = (ENTIDADES_EMERGENCIA as readonly string[]).includes(rawEntidad)
+        ? (rawEntidad as EntidadEmergencia)
+        : 'SAMU';
+
       const codigo = generateCode('SOS-CUSCO');
       const resInsert = db
         .prepare(`
-          INSERT INTO alertas_emergencias (codigo, cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, estado)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVA')
+          INSERT INTO alertas_emergencias (codigo, cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVA')
         `)
         .run(
           codigo,
@@ -765,7 +1089,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             : 'Cusco, Perú',
           typeof lat === 'number' ? lat : -13.5167,
           typeof lng === 'number' ? lng : -71.9788,
-          typeof mensaje === 'string' && mensaje.trim() ? mensaje.trim() : 'Asistencia inmediata requerida'
+          typeof mensaje === 'string' && mensaje.trim() ? mensaje.trim() : 'Asistencia inmediata requerida',
+          targetEntity
         );
 
       logWhatsAppNotification(
@@ -773,12 +1098,13 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         cliente_telefono.trim(),
         'alerta_sos',
         codigo,
-        `Alerta ${codigo} activada. Centro de control La Chuspa y contactos de confianza notificados.`
+        `Alerta ${codigo} activada hacia ${targetEntity}. Centro de control La Chuspa y central notificados.`
       );
 
       res.status(201).json({
         id: Number(resInsert.lastInsertRowid),
         codigo,
+        entidad_objetivo: targetEntity,
         estado: 'ACTIVA',
       });
     } catch (err) {
@@ -789,7 +1115,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.get('/api/public/emergencias', publicLimiter, (_req, res) => {
     const emergencias = db
       .prepare(`
-        SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, estado, atendida_por, created_at
+        SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por, created_at
         FROM alertas_emergencias
         ORDER BY id DESC
         LIMIT 50
@@ -822,7 +1148,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
 
       const updated = db
         .prepare(
-          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, estado, atendida_por, created_at FROM alertas_emergencias WHERE codigo = ?'
+          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por, created_at FROM alertas_emergencias WHERE codigo = ?'
         )
         .get(codigo);
 
@@ -864,7 +1190,20 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   // Auto-registro de nuevo negocio multirubro en La Chuspa
   app.post('/api/public/negocios/registro', authLimiter, (req, res, next) => {
     try {
-      const { rubro, nombre, telefono, zona, descripcion, pin } = req.body || {};
+      const {
+        rubro,
+        nombre,
+        telefono,
+        zona,
+        descripcion,
+        pin,
+        tipo_persona,
+        documento_tipo,
+        documento_numero,
+        razon_social,
+        tipo_negocio,
+        modalidades_venta,
+      } = req.body || {};
       if (!RUBROS.includes(rubro)) throw new HttpError(400, 'Rubro inválido');
       if (typeof nombre !== 'string' || nombre.trim().length < 2) {
         throw new HttpError(400, 'Nombre comercial obligatorio');
@@ -877,13 +1216,40 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         throw new HttpError(400, 'Define un PIN numérico de 4 dígitos');
       }
 
+      const nextPersona = tipo_persona === 'NATURAL' ? 'NATURAL' : 'JURIDICA';
+      const nextDocTipo = documento_tipo === 'DNI' || nextPersona === 'NATURAL' ? 'DNI' : 'RUC';
+      let nextDocNum: string | null = null;
+      if (documento_numero && String(documento_numero).trim()) {
+        const cleanDoc = String(documento_numero).trim();
+        if (nextDocTipo === 'DNI' && !isValidDni(cleanDoc)) {
+          throw new HttpError(400, 'DNI del titular inválido (8 dígitos)');
+        }
+        if (nextDocTipo === 'RUC' && !isValidRuc(cleanDoc)) {
+          throw new HttpError(400, 'RUC del negocio inválido según dígito verificador SUNAT');
+        }
+        nextDocNum = cleanDoc;
+      }
+
+      const nextTipoNegocio =
+        typeof tipo_negocio === 'string' && tipo_negocio.trim()
+          ? tipo_negocio.trim().slice(0, 80)
+          : 'Comercio Multirubro';
+      const nextModalidades = Array.isArray(modalidades_venta)
+        ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
+        : typeof modalidades_venta === 'string' && modalidades_venta.trim()
+          ? modalidades_venta.trim().slice(0, 160)
+          : 'Unidad,Servicio';
+
       const codigo = generateCode(`NEG-${rubro.slice(0, 2)}`);
       const { hash, salt } = hashPin(cleanPin);
 
       const insertRes = db
         .prepare(`
-          INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido)
-          VALUES (?, ?, ?, ?, ?, -13.5167, -71.9788, ?, 1, 1, 0, 0)
+          INSERT INTO negocios (
+            codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido,
+            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, estado_regla
+          )
+          VALUES (?, ?, ?, ?, ?, -13.5167, -71.9788, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, 'ACTIVO')
         `)
         .run(
           codigo,
@@ -893,7 +1259,13 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           typeof descripcion === 'string' && descripcion.trim()
             ? descripcion.trim()
             : `Negocio verificado en ${rubro.toLowerCase()} en Cusco`,
-          typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco'
+          typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco',
+          nextPersona,
+          nextDocTipo,
+          nextDocNum,
+          typeof razon_social === 'string' && razon_social.trim() ? razon_social.trim().slice(0, 140) : null,
+          nextTipoNegocio,
+          nextModalidades
         );
       const id = Number(insertRes.lastInsertRowid);
       db.prepare('INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)').run(
@@ -949,7 +1321,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         throw new HttpError(401, 'Credenciales inválidas');
       }
       if (!negocio.activo) {
-        throw new HttpError(403, 'Este negocio se encuentra suspendido por administración');
+        const regla = negocio.estado_regla && negocio.estado_regla !== 'ACTIVO' ? negocio.estado_regla : 'INCUMPLIMIENTO';
+        const detalle = negocio.motivo_estado ? `: ${negocio.motivo_estado}` : ' por administración';
+        throw new HttpError(403, `Negocio suspendido (${regla})${detalle}`);
       }
 
       const cred = db
@@ -1115,6 +1489,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         alerta_voz_activa,
         tarifa_minima_centavos,
         radio_cobertura_km,
+        tipo_persona,
+        documento_tipo,
+        documento_numero,
+        razon_social,
+        tipo_negocio,
+        modalidades_venta,
       } = req.body || {};
 
       const nextNombre =
@@ -1165,11 +1545,52 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           ? Number(radio_cobertura_km.toFixed(1))
           : current.radio_cobertura_km ?? 8.0;
 
+      const nextPersona =
+        tipo_persona === 'NATURAL' || tipo_persona === 'JURIDICA'
+          ? tipo_persona
+          : current.tipo_persona || 'JURIDICA';
+      const nextDocTipo =
+        documento_tipo === 'DNI' || documento_tipo === 'RUC'
+          ? documento_tipo
+          : nextPersona === 'NATURAL'
+            ? 'DNI'
+            : 'RUC';
+      let nextDocNumero = current.documento_numero ?? null;
+      if (documento_numero !== undefined) {
+        const cleanDoc = String(documento_numero || '').trim();
+        if (!cleanDoc) {
+          nextDocNumero = null;
+        } else {
+          if (nextDocTipo === 'DNI' && !isValidDni(cleanDoc)) {
+            throw new HttpError(400, 'DNI inválido (debe tener 8 dígitos)');
+          }
+          if (nextDocTipo === 'RUC' && !isValidRuc(cleanDoc)) {
+            throw new HttpError(400, 'RUC inválido según dígito verificador SUNAT');
+          }
+          nextDocNumero = cleanDoc;
+        }
+      }
+      const nextRazonSocial =
+        typeof razon_social === 'string'
+          ? razon_social.trim().slice(0, 140) || null
+          : current.razon_social ?? null;
+      const nextTipoNegocio =
+        typeof tipo_negocio === 'string' && tipo_negocio.trim()
+          ? tipo_negocio.trim().slice(0, 80)
+          : current.tipo_negocio || 'Comercio Multirubro';
+      const nextModalidades = Array.isArray(modalidades_venta)
+        ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
+        : typeof modalidades_venta === 'string' && modalidades_venta.trim()
+          ? modalidades_venta.trim().slice(0, 160)
+          : current.modalidades_venta || 'Unidad,Servicio';
+
       db.prepare(`
         UPDATE negocios
         SET nombre = ?, telefono = ?, descripcion = ?, zona = ?, lat = ?, lng = ?, en_linea = ?,
             horario_apertura = ?, horario_cierre = ?, abierto_24h = ?, metodos_pago_aceptados = ?,
-            auto_aceptar_pedidos = ?, alerta_voz_activa = ?, tarifa_minima_centavos = ?, radio_cobertura_km = ?
+            auto_aceptar_pedidos = ?, alerta_voz_activa = ?, tarifa_minima_centavos = ?, radio_cobertura_km = ?,
+            tipo_persona = ?, documento_tipo = ?, documento_numero = ?, razon_social = ?,
+            tipo_negocio = ?, modalidades_venta = ?
         WHERE id = ?
       `).run(
         nextNombre,
@@ -1187,6 +1608,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nextVoz,
         nextTarifaMin,
         nextRadio,
+        nextPersona,
+        nextDocTipo,
+        nextDocNumero,
+        nextRazonSocial,
+        nextTipoNegocio,
+        nextModalidades,
         negocioId
       );
 
@@ -1549,17 +1976,21 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     try {
       const negocioId = Number(req.params.negocioId);
       const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as NegocioRow;
-      const { nombre, descripcion, precio_centavos, duracion_min, stock } = req.body || {};
+      const { nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida } = req.body || {};
       if (typeof nombre !== 'string' || nombre.trim().length < 2) {
         throw new HttpError(400, 'Nombre del servicio obligatorio');
       }
       if (!Number.isInteger(precio_centavos) || precio_centavos <= 0) {
         throw new HttpError(400, 'Precio inválido');
       }
+      const nextUnidad =
+        typeof unidad_medida === 'string' && unidad_medida.trim()
+          ? unidad_medida.trim().slice(0, 32)
+          : 'Unidad';
       const insertRes = db
         .prepare(`
-          INSERT INTO servicios_catalogo (negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, disponible)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+          INSERT INTO servicios_catalogo (negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida, disponible)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
         `)
         .run(
           negocioId,
@@ -1568,7 +1999,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           typeof descripcion === 'string' ? descripcion.trim() : '',
           precio_centavos,
           Number.isInteger(duracion_min) ? duracion_min : 30,
-          Number.isInteger(stock) ? stock : 20
+          Number.isInteger(stock) ? stock : 20,
+          nextUnidad
         );
       res.status(201).json({
         servicio: db
@@ -1593,7 +2025,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           .get(servicioId, negocioId, negocio.rubro);
         if (!item) throw new HttpError(404, 'Servicio no encontrado en este negocio');
 
-        const { nombre, descripcion, duracion_min, stock, disponible, precio_centavos } = req.body || {};
+        const { nombre, descripcion, duracion_min, stock, disponible, precio_centavos, unidad_medida } = req.body || {};
         if (stock !== undefined && (!Number.isInteger(stock) || stock < 0)) {
           throw new HttpError(400, 'Stock inválido');
         }
@@ -1607,7 +2039,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
               duracion_min = COALESCE(?, duracion_min),
               stock = COALESCE(?, stock),
               disponible = COALESCE(?, disponible),
-              precio_centavos = COALESCE(?, precio_centavos)
+              precio_centavos = COALESCE(?, precio_centavos),
+              unidad_medida = COALESCE(?, unidad_medida)
           WHERE id = ? AND negocio_id = ? AND categoria = ?
         `).run(
           typeof nombre === 'string' && nombre.trim().length >= 2 ? nombre.trim() : null,
@@ -1616,6 +2049,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           stock ?? null,
           disponible === undefined ? null : disponible ? 1 : 0,
           precio_centavos ?? null,
+          typeof unidad_medida === 'string' && unidad_medida.trim() ? unidad_medida.trim().slice(0, 32) : null,
           servicioId,
           negocioId,
           negocio.rubro
@@ -2059,7 +2493,19 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
 
   app.post('/api/admin/negocios', requireAdminAuth, (req, res, next) => {
     try {
-      const { rubro, nombre, telefono, zona, descripcion } = req.body || {};
+      const {
+        rubro,
+        nombre,
+        telefono,
+        zona,
+        descripcion,
+        tipo_persona,
+        documento_tipo,
+        documento_numero,
+        razon_social,
+        tipo_negocio,
+        modalidades_venta,
+      } = req.body || {};
       if (!RUBROS.includes(rubro)) throw new HttpError(400, 'Rubro inválido');
       if (typeof nombre !== 'string' || nombre.trim().length < 2) {
         throw new HttpError(400, 'Nombre obligatorio');
@@ -2067,14 +2513,42 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       if (typeof telefono !== 'string' || telefono.trim().length < 6) {
         throw new HttpError(400, 'Teléfono obligatorio');
       }
+
+      const nextPersona = tipo_persona === 'NATURAL' ? 'NATURAL' : 'JURIDICA';
+      const nextDocTipo = documento_tipo === 'DNI' || nextPersona === 'NATURAL' ? 'DNI' : 'RUC';
+      let nextDocNum: string | null = null;
+      if (documento_numero && String(documento_numero).trim()) {
+        const cleanDoc = String(documento_numero).trim();
+        if (nextDocTipo === 'DNI' && !isValidDni(cleanDoc)) {
+          throw new HttpError(400, 'DNI inválido (8 dígitos)');
+        }
+        if (nextDocTipo === 'RUC' && !isValidRuc(cleanDoc)) {
+          throw new HttpError(400, 'RUC inválido según dígito verificador SUNAT');
+        }
+        nextDocNum = cleanDoc;
+      }
+
+      const nextTipoNegocio =
+        typeof tipo_negocio === 'string' && tipo_negocio.trim()
+          ? tipo_negocio.trim().slice(0, 80)
+          : 'Comercio Multirubro';
+      const nextModalidades = Array.isArray(modalidades_venta)
+        ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
+        : typeof modalidades_venta === 'string' && modalidades_venta.trim()
+          ? modalidades_venta.trim().slice(0, 160)
+          : 'Unidad,Servicio';
+
       const codigo = generateCode(`NEG-${rubro.slice(0, 2)}`);
       const pinInicial = generateOrderPin();
       const { hash, salt } = hashPin(pinInicial);
 
       const insertRes = db
         .prepare(`
-          INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido)
-          VALUES (?, ?, ?, ?, ?, -13.5167, -71.9788, ?, 1, 1, 0, 0)
+          INSERT INTO negocios (
+            codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido,
+            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, estado_regla
+          )
+          VALUES (?, ?, ?, ?, ?, -13.5167, -71.9788, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, 'ACTIVO')
         `)
         .run(
           codigo,
@@ -2082,7 +2556,13 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           nombre.trim(),
           telefono.trim(),
           typeof descripcion === 'string' ? descripcion.trim() : '',
-          typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco'
+          typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco',
+          nextPersona,
+          nextDocTipo,
+          nextDocNum,
+          typeof razon_social === 'string' && razon_social.trim() ? razon_social.trim().slice(0, 140) : null,
+          nextTipoNegocio,
+          nextModalidades
         );
       const id = Number(insertRes.lastInsertRowid);
       db.prepare('INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)').run(
@@ -2101,9 +2581,40 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.patch('/api/admin/negocios/:id/estado', requireAdminAuth, (req, res, next) => {
     try {
       const id = Number(req.params.id);
-      const activo = req.body?.activo ? 1 : 0;
-      db.prepare('UPDATE negocios SET activo = ? WHERE id = ?').run(activo, id);
-      res.json({ ok: true, activo: activo === 1 });
+      const { activo, estado_regla, motivo_estado } = req.body || {};
+
+      let nextEstadoRegla: EstadoRegla;
+      let nextActivo: number;
+
+      if (typeof estado_regla === 'string' && (ESTADOS_REGLA as readonly string[]).includes(estado_regla.toUpperCase())) {
+        nextEstadoRegla = estado_regla.toUpperCase() as EstadoRegla;
+        nextActivo = nextEstadoRegla === 'ACTIVO' ? 1 : 0;
+      } else {
+        nextActivo = activo ? 1 : 0;
+        nextEstadoRegla = nextActivo === 1 ? 'ACTIVO' : 'INCUMPLIMIENTO';
+      }
+
+      const nextMotivo =
+        nextEstadoRegla === 'ACTIVO'
+          ? null
+          : typeof motivo_estado === 'string' && motivo_estado.trim()
+            ? motivo_estado.trim().slice(0, 240)
+            : nextEstadoRegla === 'ESTAFA'
+              ? 'Suspendido por reporte de estafa o cobro fraudulento'
+              : 'Suspendido por incumplimiento de reglas de servicio';
+
+      db.prepare('UPDATE negocios SET activo = ?, estado_regla = ?, motivo_estado = ? WHERE id = ?').run(
+        nextActivo,
+        nextEstadoRegla,
+        nextMotivo,
+        id
+      );
+      res.json({
+        ok: true,
+        activo: nextActivo === 1,
+        estado_regla: nextEstadoRegla,
+        motivo_estado: nextMotivo,
+      });
     } catch (err) {
       next(err);
     }

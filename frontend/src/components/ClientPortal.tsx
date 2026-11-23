@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  BadgeCheck,
   CarFront,
   Compass,
   Hotel,
@@ -27,6 +28,11 @@ import {
   type RequestedMarketItem,
 } from '../lib/cuscoMarkets.ts';
 import { apiFetch, speakSpanish, stopSpeaking } from '../lib/api.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
+import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
 import {
   formatSoles,
   RUBRO_LABELS,
@@ -50,6 +56,7 @@ import { TaxiInDriveFlow } from './TaxiInDriveFlow.tsx';
 interface ClientPortalProps {
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
   openAssistantSignal: number;
+  openSosSignal?: number;
 }
 
 type ClientTab =
@@ -90,6 +97,7 @@ interface SeatRoute {
 export const ClientPortal: React.FC<ClientPortalProps> = ({
   onOrderCreated,
   openAssistantSignal,
+  openSosSignal = 0,
 }) => {
   const [subTab, setSubTab] = useState<ClientTab>('CONCIERGE');
   const [conciergeMode, setConciergeMode] = useState<ConciergeMode>('SPHERE_IDLE');
@@ -107,8 +115,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [voiceActive, setVoiceActive] = useState(false);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
   const [speakReplies, setSpeakReplies] = useState(true);
+  const [lastResponseMs, setLastResponseMs] = useState<number | null>(null);
   const [replyText, setReplyText] = useState<string>(
-    'Presiona la esfera y dime qué necesitas: taxi, restaurante, botica, tour o market.'
+    'Presiona el rostro digital y dime qué necesitas: taxi, restaurante, botica, tour o market.'
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
@@ -121,6 +130,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [selectedOption, setSelectedOption] = useState<ConciergeOpcion | null>(null);
   const [clienteNombre, setClienteNombre] = useState('');
   const [clienteTelefono, setClienteTelefono] = useState('');
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>('DNI');
+  const [docNumero, setDocNumero] = useState('');
+  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
+  const [docLookupLoading, setDocLookupLoading] = useState(false);
+  const [docLookupError, setDocLookupError] = useState<string | null>(null);
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
   const [promotorCodigo, setPromotorCodigo] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
@@ -178,6 +192,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   }, [openAssistantSignal]);
 
   useEffect(() => {
+    if (openSosSignal > 0) {
+      setSubTab('CONCIERGE');
+      setSosOpen(true);
+    }
+  }, [openSosSignal]);
+
+  useEffect(() => {
     if (subTab === 'DIVISAS') {
       apiFetch<{ tasas?: DivisaRate[] }>('/api/public/divisas')
         .then((res) => setDivisas(Array.isArray(res?.tasas) ? res.tasas : []))
@@ -209,6 +230,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   }
 
   async function handleSearch(customQuery?: string, forcedCat?: Rubro, silent = false) {
+    const t0 = performance.now();
     const q = (customQuery ?? query).trim();
     setSubTab('CONCIERGE');
     setErrorMsg(null);
@@ -225,9 +247,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     const intent = forcedCat ? (forcedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER') : detectIntentFromQuery(q);
     if (intent === 'DIVISAS' || forcedCat === 'CASA_CAMBIO') {
       setSubTab('DIVISAS');
+      const ms = Math.max(1, Math.round(performance.now() - t0));
+      setLastResponseMs(ms);
       const msg = 'Mostrando casas de cambio verificadas en Cusco para cotizar y bloquear tu tasa.';
       setReplyText(msg);
-      if (!silent && speakReplies) speakSpanish(msg);
+      if (!silent) {
+        emitCenterNotification({
+          id: `concierge-divisas-${Date.now()}`,
+          title: 'Cotizador de Divisas en Cusco',
+          subtitle: 'Casas de cambio verificadas listas',
+          detail: msg,
+          tone: 'ai',
+          responseMs: ms,
+          speakText: speakReplies ? msg : undefined,
+        });
+      }
       return;
     }
 
@@ -235,10 +269,22 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       const parsed = parseMarketQuery(q);
       setRequestedMarketItems(parsed);
       setConciergeMode('MARKET_MAP');
+      const ms = Math.max(1, Math.round(performance.now() - t0));
+      setLastResponseMs(ms);
       const itemsText = parsed.map((p) => p.label.split(' ')[0]).join(', ');
       const msg = `Mostrando markets abiertos en Cusco con ${itemsText} para comparar precios.`;
       setReplyText(msg);
-      if (!silent && speakReplies) speakSpanish(msg);
+      if (!silent) {
+        emitCenterNotification({
+          id: `concierge-market-${Date.now()}`,
+          title: 'Comparador Facilito · Markets Abiertos',
+          subtitle: `${parsed.length} productos comparados en mapa GPS`,
+          detail: msg,
+          tone: 'ai',
+          responseMs: ms,
+          speakText: speakReplies ? msg : undefined,
+        });
+      }
       return;
     }
 
@@ -246,6 +292,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     if (intent === 'TAXI' || forcedCat === 'TRANSPORTE') {
       setConciergeMode('TAXI_INDRIVE');
       setActiveCategory('TRANSPORTE');
+      if (gpsStatus !== 'live') requestGps();
       if (q.toLowerCase().includes('aeropuerto')) setDestino('Aeropuerto Velasco Astete');
       else if (q.toLowerCase().includes('real plaza')) setDestino('Real Plaza Cusco');
       else if (q.toLowerCase().includes('terminal')) setDestino('Terminal Terrestre Cusco');
@@ -267,12 +314,32 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             destino: destino || undefined,
           },
         });
-        setOpciones(Array.isArray(res?.opciones) ? res.opciones : []);
+        const opts = Array.isArray(res?.opciones) ? res.opciones : [];
+        setOpciones(opts);
         if (res.destino_sugerido && !destino) setDestino(res.destino_sugerido);
-        const msg = 'Taxistas cercanos listos en el mapa. Propón tu tarifa o acepta la mejor oferta.';
+        const ms = Math.max(1, Math.round(performance.now() - t0));
+        setLastResponseMs(ms);
+        const bestTaxi = opts.find((o) => o.mejor_precio) || opts[0];
+        const msg = bestTaxi
+          ? `Mejor precio recomendado: ${bestTaxi.titulo} (${bestTaxi.negocio_nombre}) por ${formatSoles(bestTaxi.precio_centavos)}. Revisa los pines en el mapa.`
+          : 'Taxistas cercanos listos en el mapa. Propón tu tarifa o acepta la mejor oferta.';
         setReplyText(msg);
-        if (!silent && speakReplies) speakSpanish(msg);
+        if (!silent) {
+          emitCenterNotification({
+            id: `concierge-taxi-${Date.now()}`,
+            title: 'Mejor Taxi Recomendado en Cusco',
+            subtitle: bestTaxi
+              ? `${bestTaxi.titulo} · ${formatSoles(bestTaxi.precio_centavos)}`
+              : 'Taxistas geolocalizados en mapa',
+            detail: msg,
+            tone: 'ai',
+            responseMs: ms,
+            speakText: speakReplies ? msg : undefined,
+          });
+        }
       } catch {
+        const ms = Math.max(1, Math.round(performance.now() - t0));
+        setLastResponseMs(ms);
         setReplyText('Mapa de taxistas listo en Cusco. Propón tu tarifa estilo InDrive.');
       } finally {
         setLoading(false);
@@ -302,13 +369,25 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       const safeOpciones = Array.isArray(res?.opciones) ? res.opciones : [];
       setActiveCategory(res.categoria || 'RESTAURANTE');
       setOpciones(safeOpciones);
+      const ms = Math.max(1, Math.round(performance.now() - t0));
+      setLastResponseMs(ms);
       const top = safeOpciones[0];
       const richVoice = top
         ? `${res.respuesta_voz} Mejor opción: ${top.titulo} en ${top.negocio_nombre} por ${formatSoles(top.precio_centavos)}.`
         : res.respuesta_voz;
       setReplyText(richVoice);
-      if (!silent && speakReplies) {
-        speakSpanish(richVoice);
+      if (!silent) {
+        emitCenterNotification({
+          id: `concierge-cat-${Date.now()}`,
+          title: `Agente La Chuspa · ${RUBRO_LABELS[res.categoria || 'RESTAURANTE']}`,
+          subtitle: top
+            ? `${top.titulo} · ${formatSoles(top.precio_centavos)}`
+            : `${safeOpciones.length} opciones encontradas`,
+          detail: richVoice,
+          tone: 'ai',
+          responseMs: ms,
+          speakText: speakReplies ? richVoice : undefined,
+        });
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo consultar el catálogo');
@@ -375,11 +454,38 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     }
   }
 
+  async function handleVerifyCustomerDoc() {
+    const clean = docNumero.replace(/\D/g, '');
+    setDocLookupError(null);
+    if (!clean) {
+      setDocLookupError('Ingresa tu DNI (8 dígitos) o RUC (11 dígitos).');
+      return;
+    }
+    setDocLookupLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      setDocVerificado(res);
+      if (res.nombre_completo && !clienteNombre.trim()) {
+        setClienteNombre(res.nombre_completo);
+      } else if (res.nombre_completo) {
+        setClienteNombre(res.nombre_completo);
+      }
+    } catch (err) {
+      setDocVerificado(null);
+      setDocLookupError(formatPeruLookupError(err));
+    } finally {
+      setDocLookupLoading(false);
+    }
+  }
+
   async function handleConfirmOrder(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedOption) return;
     setSubmittingOrder(true);
     setSheetError(null);
+    const t0 = performance.now();
     try {
       if (selectedOption.tipo === 'TAXI' && selectedOption.unidad_id) {
         const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
@@ -399,7 +505,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             },
           }
         );
+        const ms = Math.max(1, Math.round(performance.now() - t0));
         setSelectedOption(null);
+        emitCenterNotification({
+          id: `order-confirm-${res.pedido.codigo}`,
+          title: `Taxi Confirmado · ${res.pedido.codigo}`,
+          subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
+          detail: `Conductor asignado en ruta. Entrega tu PIN de seguridad al finalizar.`,
+          tone: 'success',
+          responseMs: ms,
+          speakText: speakReplies
+            ? `Taxi confirmado. Código ${res.pedido.codigo}. Tu PIN es ${res.cliente_pin.split('').join(' ')}.`
+            : undefined,
+        });
         onOrderCreated(res.pedido, res.cliente_pin);
       } else if (selectedOption.servicio_id) {
         const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
@@ -413,12 +531,27 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               metodo_pago: metodoPago,
               cliente_nombre: clienteNombre,
               cliente_telefono: clienteTelefono,
+              cliente_documento_tipo: docVerificado?.validado ? docVerificado.tipo : undefined,
+              cliente_documento_numero: docVerificado?.validado ? docVerificado.numero : undefined,
+              cliente_documento_verificado: Boolean(docVerificado?.validado),
               transcripcion: query || selectedOption.titulo,
               promotor_codigo: promotorCodigo || undefined,
             },
           }
         );
+        const ms = Math.max(1, Math.round(performance.now() - t0));
         setSelectedOption(null);
+        emitCenterNotification({
+          id: `order-confirm-${res.pedido.codigo}`,
+          title: `Pedido Enviado · ${res.pedido.codigo}`,
+          subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
+          detail: `${selectedOption.titulo} enviado en tiempo real al panel del negocio.`,
+          tone: 'success',
+          responseMs: ms,
+          speakText: speakReplies
+            ? `Pedido confirmado en ${selectedOption.negocio_nombre}. Tu PIN de entrega es ${res.cliente_pin.split('').join(' ')}.`
+            : undefined,
+        });
         onOrderCreated(res.pedido, res.cliente_pin);
       }
     } catch (err) {
@@ -526,7 +659,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   return (
     <div className="space-y-6 pb-24 md:pb-12">
       {/* ==================================================================== */}
-      {/* ESFERA INTERACTIVA "LA CHUSPA" (NÚCLEO DEL AGENTE)                   */}
+      {/* CARA HUMANOIDE DIGITAL "LA CHUSPA" (NÚCLEO DEL AGENTE EN TIEMPO REAL) */}
       {/* ==================================================================== */}
       <section
         className={`rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#0D1117] transition-all shadow-xl ${
@@ -540,7 +673,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               : 'flex-col items-center text-center gap-6'
           }`}
         >
-          {/* La Esfera Interactiva */}
+          {/* Cara Humanoide Digital Interactiva */}
           <div
             className={`flex items-center gap-4 ${
               isCompactSphere ? 'flex-row' : 'flex-col'
@@ -549,55 +682,54 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             <button
               type="button"
               onClick={handleSpherePress}
-              aria-label="Presionar esfera La Chuspa para pedir"
-              className={`relative group flex items-center justify-center rounded-full focus:outline-none focus-visible:ring-4 focus-visible:ring-[#D4AF37]/50 transition-transform active:scale-95 ${
-                isCompactSphere ? 'w-16 h-16 shrink-0' : 'w-32 h-32 sm:w-36 sm:h-36'
+              aria-label="Presionar rostro digital La Chuspa para pedir por voz"
+              className={`relative group flex items-center justify-center rounded-full focus:outline-none transition-transform active:scale-95 ${
+                isCompactSphere ? 'w-16 h-16 shrink-0' : 'w-36 h-36 sm:w-40 sm:h-40'
               }`}
             >
-              {/* Anillo acústico pulsante */}
+              {/* Halo resplandeciente estilo Google AI Studio */}
               <span
                 aria-hidden="true"
-                className={`absolute inset-0 rounded-full chuspa-sphere-ring ${
-                  voiceActive
-                    ? 'bg-[#C81E5B]/45'
-                    : 'bg-[#D4AF37]/30'
+                className={`chuspa-aistudio-glow p-[3px] rounded-full ${
+                  voiceActive ? 'scale-105' : ''
                 }`}
               />
-              {/* Halo orbital */}
+              {/* Anillo de escaneo biométrico */}
               <span
                 aria-hidden="true"
-                className="absolute -inset-2 rounded-full border border-[#D4AF37]/30 border-dashed"
-              />
-              {/* Núcleo esférico 3D */}
-              <span
-                className={`relative w-full h-full rounded-full flex flex-col items-center justify-center shadow-[0_0_45px_rgba(212,175,55,0.38)] border border-white/25 transition-all ${
-                  voiceActive
-                    ? 'bg-gradient-to-br from-[#C81E5B] via-[#881337] to-[#0B0E14]'
-                    : 'bg-gradient-to-br from-[#F4D06F] via-[#B8860B] to-[#14213D] group-hover:scale-105'
+                className={`absolute -inset-2 rounded-full border border-dashed ${
+                  voiceActive ? 'border-cyan-400 animate-spin' : 'border-sky-400/40'
                 }`}
-              >
-                {voiceActive ? (
-                  <div className="flex items-center gap-1" aria-hidden="true">
-                    <span className="w-1.5 h-4 rounded-full bg-white animate-bounce" />
-                    <span className="w-1.5 h-7 rounded-full bg-white animate-pulse" />
-                    <span className="w-1.5 h-5 rounded-full bg-white animate-bounce" />
-                  </div>
-                ) : (
-                  <Mic className={`${isCompactSphere ? 'w-6 h-6' : 'w-9 h-9'} text-white drop-shadow`} />
-                )}
-                {!isCompactSphere && (
-                  <span className="mt-1.5 text-[10px] font-extrabold uppercase tracking-[0.22em] text-white/95">
-                    {voiceActive ? 'Escuchando' : 'La Chuspa'}
+              />
+              {/* Avatar Cara Humanoide Digital */}
+              <span className="relative w-full h-full rounded-full overflow-hidden bg-[#05080F] border border-cyan-400/40 shadow-[0_0_40px_rgba(34,211,238,0.35)] flex items-center justify-center">
+                <img
+                  src={`${import.meta.env.BASE_URL}assets/aistudio/verificacion-biometrica-cara_1023984-56309_85734ea9.jpg`}
+                  alt="Agente Humanoide Digital La Chuspa"
+                  className={`w-full h-full object-cover transition-transform duration-500 ${
+                    voiceActive ? 'scale-110 brightness-125' : 'group-hover:scale-105'
+                  }`}
+                />
+                {voiceActive && (
+                  <span className="absolute inset-x-0 bottom-2 flex items-center justify-center gap-1 bg-black/55 py-1">
+                    <span className="w-1.5 h-3.5 rounded-full bg-cyan-300 animate-bounce" />
+                    <span className="w-1.5 h-5 rounded-full bg-sky-400 animate-pulse" />
+                    <span className="w-1.5 h-3.5 rounded-full bg-cyan-300 animate-bounce" />
                   </span>
                 )}
               </span>
             </button>
 
-            <div className={isCompactSphere ? 'text-left' : 'space-y-1 max-w-xl'}>
-              <div className="flex items-center gap-2 justify-center sm:justify-start">
-                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-                  Esfera La Chuspa · Cusco
+            <div className={isCompactSphere ? 'text-left' : 'space-y-1.5 max-w-xl'}>
+              <div className="flex flex-wrap items-center gap-2 justify-center sm:justify-start">
+                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-cyan-600 dark:text-cyan-400">
+                  Agente Digital La Chuspa · Cusco
                 </p>
+                {lastResponseMs !== null && (
+                  <span className="text-[10px] font-mono-tabular px-2 py-0.5 rounded-full border border-cyan-500/35 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 font-semibold">
+                    ⚡ {lastResponseMs} ms
+                  </span>
+                )}
                 {conciergeMode !== 'SPHERE_IDLE' && subTab === 'CONCIERGE' && (
                   <button
                     type="button"
@@ -605,11 +737,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       setConciergeMode('SPHERE_IDLE');
                       setSphereExpanded(false);
                       setLastTranscript(null);
-                      setReplyText('Presiona la esfera y dime qué necesitas: taxi, restaurante, botica, tour o market.');
+                      setReplyText(
+                        'Presiona el rostro digital y dime qué necesitas: taxi, restaurante, botica, tour o market.'
+                      );
                     }}
-                    className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-[#D4AF37]"
+                    className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-cyan-400"
                   >
-                    Volver a esfera
+                    Volver al inicio
                   </button>
                 )}
               </div>
@@ -630,7 +764,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   type="button"
                   onClick={() => speakSpanish(replyText)}
                   aria-label="Escuchar voz"
-                  className="w-8 h-8 rounded-full border border-[#D4AF37]/40 bg-[#D4AF37]/10 text-[#9A7B2C] dark:text-[#E5C158] flex items-center justify-center shrink-0"
+                  className="w-8 h-8 rounded-full border border-cyan-400/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 flex items-center justify-center shrink-0"
                 >
                   <Volume2 className="w-3.5 h-3.5" />
                 </button>
@@ -924,6 +1058,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           requestedItems={requestedMarketItems}
           onChangeItems={setRequestedMarketItems}
           speakEnabled={speakReplies}
+          onOrderCreated={onOrderCreated}
         />
       )}
 
@@ -1003,7 +1138,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   <div className="flex items-center justify-between gap-4 pt-4 border-t border-black/8 dark:border-white/8">
                     <div>
                       <p className="text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
-                        Tarifa verificada
+                        Tarifa verificada {op.unidad_medida ? `· por ${op.unidad_medida}` : ''}
                       </p>
                       <p className="font-mono-tabular text-xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
                         {op.tipo === 'DIVISA' && op.tasa_compra
@@ -1563,6 +1698,55 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Validación DNI / RUC sincronizada con RENIEC / SUNAT */}
+              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
+                    Documento Cliente (RENIEC / SUNAT)
+                  </span>
+                  {docVerificado?.validado && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <select
+                    value={docTipo}
+                    onChange={(e) => {
+                      setDocTipo(e.target.value as 'DNI' | 'RUC');
+                      setDocVerificado(null);
+                      setDocLookupError(null);
+                    }}
+                    className="min-h-[40px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
+                  >
+                    <option value="DNI">DNI (8)</option>
+                    <option value="RUC">RUC (11)</option>
+                  </select>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={docTipo === 'DNI' ? 8 : 11}
+                    value={docNumero}
+                    onChange={(e) => {
+                      setDocNumero(e.target.value.replace(/\D/g, ''));
+                      setDocVerificado(null);
+                    }}
+                    placeholder={docTipo === 'DNI' ? 'Ej: 44556677' : 'Ej: 20601234561'}
+                    className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleVerifyCustomerDoc}
+                    disabled={docLookupLoading}
+                    className="min-h-[40px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                  >
+                    {docLookupLoading ? 'Validando...' : 'Validar'}
+                  </button>
+                </div>
+                {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>

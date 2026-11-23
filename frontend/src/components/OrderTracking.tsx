@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '../lib/api.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   ESTADO_LABELS,
   formatSoles,
@@ -43,10 +44,13 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
   const [riderPinInput, setRiderPinInput] = useState('');
   const [riderFeedback, setRiderFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
+  const prevEstadoRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (initialCodigo) {
       setCodigoInput(initialCodigo);
-      fetchOrder(initialCodigo);
+      prevEstadoRef.current = null;
+      void fetchOrder(initialCodigo);
     }
   }, [initialCodigo]);
 
@@ -54,7 +58,7 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
     if (!pedido || pedido.estado === 'ENTREGADO_PAGADO' || pedido.estado === 'CANCELADO') {
       return;
     }
-    const id = setInterval(() => fetchOrder(pedido.codigo, true), 5000);
+    const id = setInterval(() => void fetchOrder(pedido.codigo, true), 2500);
     const unsubPedido = subscribeFirebaseRtdbPath(`pedidos/${pedido.codigo}`, () => {
       void fetchOrder(pedido.codigo, true);
     });
@@ -69,6 +73,7 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
     if (!clean) return;
     if (!silent) setLoading(true);
     setErrorMsg(null);
+    const t0 = performance.now();
     try {
       const res = await apiFetch<{
         pedido: PedidoPublico;
@@ -76,6 +81,31 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
         resena: unknown;
         puntos_cliente: number;
       }>(`/api/public/pedidos/${encodeURIComponent(clean)}`);
+
+      if (
+        prevEstadoRef.current &&
+        prevEstadoRef.current !== res.pedido.estado
+      ) {
+        const ms = Math.max(1, Math.round(performance.now() - t0));
+        emitCenterNotification({
+          id: `track-${res.pedido.codigo}-${res.pedido.estado}`,
+          title: `Actualización · ${res.pedido.codigo}`,
+          subtitle: `${ESTADO_LABELS[res.pedido.estado]} · ${res.pedido.negocio_nombre}`,
+          detail:
+            res.pedido.eta_min && res.pedido.estado === 'CONFIRMADO_PREPARACION'
+              ? `Tiempo estimado de llegada: ${res.pedido.eta_min} minutos.`
+              : `Tu solicitud cambió a ${ESTADO_LABELS[res.pedido.estado]}.`,
+          tone:
+            res.pedido.estado === 'CANCELADO'
+              ? 'warning'
+              : res.pedido.estado === 'ENTREGADO_PAGADO'
+              ? 'success'
+              : 'info',
+          responseMs: ms,
+          speakText: `Tu pedido ${res.pedido.codigo} pasó a ${ESTADO_LABELS[res.pedido.estado]}.`,
+        });
+      }
+      prevEstadoRef.current = res.pedido.estado;
       setPedido(res.pedido);
       setLogs(res.notificaciones_whatsapp);
       setHasReview(Boolean(res.resena));

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Briefcase, Compass, MapPinned, Moon, Shield, Sparkles, Sun } from 'lucide-react';
+import { Briefcase, Compass, MapPinned, Moon, Shield, Siren, Sun } from 'lucide-react';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { BusinessPanel } from './components/BusinessPanel.tsx';
 import { ClientPortal } from './components/ClientPortal.tsx';
+import { GlowingNotificationCardHost } from './components/GlowingNotificationCard.tsx';
 import { OrderTracking } from './components/OrderTracking.tsx';
 import { isFirebaseRtdbMode, subscribeFirebaseRtdbMode } from './lib/firebaseRtdb.ts';
 import type { PedidoPublico } from './types.ts';
@@ -15,6 +16,7 @@ export default function App() {
   const [lastOrderCodigo, setLastOrderCodigo] = useState<string | null>(null);
   const [lastOrderPin, setLastOrderPin] = useState<string | null>(null);
   const [assistantSignal, setAssistantSignal] = useState(0);
+  const [sosSignal, setSosSignal] = useState(0);
   const [rtdbMode, setRtdbMode] = useState(() => isFirebaseRtdbMode());
 
   useEffect(() => subscribeFirebaseRtdbMode(setRtdbMode), []);
@@ -37,6 +39,11 @@ export default function App() {
   function triggerAssistantSphere() {
     setView('CONCIERGE');
     setAssistantSignal((n) => n + 1);
+  }
+
+  function triggerSosModal() {
+    setView('CONCIERGE');
+    setSosSignal((n) => n + 1);
   }
 
   const navItems: Array<{ id: ViewMode; label: string; icon: React.ReactNode }> = [
@@ -84,14 +91,25 @@ export default function App() {
             })}
           </nav>
 
-          {/* Zona 3: 1 acción primaria */}
-          <button
-            type="button"
-            onClick={triggerAssistantSphere}
-            className="min-h-[40px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
-          >
-            Asistente
-          </button>
+          {/* Zona 3: Acciones rápidas SOS + Asistente Digital */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={triggerSosModal}
+              aria-label="Solicitar emergencia SOS"
+              className="min-h-[40px] px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black tracking-wide whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-sm"
+            >
+              <Siren className="w-3.5 h-3.5 animate-pulse" />
+              <span>SOS</span>
+            </button>
+            <button
+              type="button"
+              onClick={triggerAssistantSphere}
+              className="min-h-[40px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
+            >
+              Asistente
+            </button>
+          </div>
         </div>
       </header>
 
@@ -116,12 +134,16 @@ export default function App() {
         </div>
       )}
 
+      {/* Tarjeta Central Resplandeciente de Notificaciones en Tiempo Real */}
+      <GlowingNotificationCardHost />
+
       {/* Contenido Principal */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-4">
         {view === 'CONCIERGE' && (
           <ClientPortal
             onOrderCreated={handleOrderCreated}
             openAssistantSignal={assistantSignal}
+            openSosSignal={sosSignal}
           />
         )}
         {view === 'SEGUIMIENTO' && (
@@ -131,23 +153,29 @@ export default function App() {
         {view === 'ADMIN' && <AdminPanel />}
       </main>
 
-      {/* Esfera Flotante del Asistente */}
+      {/* Acceso Flotante Cara Humanoide Digital del Asistente */}
       {view !== 'NEGOCIO' && view !== 'ADMIN' && (
         <button
           type="button"
           onClick={triggerAssistantSphere}
-          aria-label="Abrir esfera del asistente La Chuspa"
-          title="Abrir asistente La Chuspa"
-          className="fixed bottom-20 right-4 md:bottom-8 md:right-8 z-40 w-14 h-14 rounded-full bg-gradient-to-br from-[#14213D] via-[#1C2A4D] to-[#C81E5B] dark:from-[#D4AF37] dark:via-[#B8860B] dark:to-[#14213D] text-white shadow-xl border border-white/20 flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+          aria-label="Abrir agente humanoide digital La Chuspa"
+          title="Abrir agente digital La Chuspa"
+          className="fixed bottom-20 right-4 md:bottom-8 md:right-8 z-40 w-14 h-14 rounded-full p-[2px] chuspa-aistudio-glow shadow-xl hover:scale-105 active:scale-95 transition-transform"
         >
-          <Sparkles className="w-5 h-5" />
+          <span className="relative block w-full h-full rounded-full overflow-hidden bg-[#05080F]">
+            <img
+              src={`${import.meta.env.BASE_URL}assets/aistudio/verificacion-biometrica-cara_1023984-56309_85734ea9.jpg`}
+              alt="Agente Digital La Chuspa"
+              className="w-full h-full object-cover"
+            />
+          </span>
         </button>
       )}
 
-      {/* Navegación Inferior Móvil (Zona de pulgar) */}
+      {/* Navegación Inferior Móvil (Zona de pulgar con icono SOS directo) */}
       <nav
         aria-label="Navegación principal móvil"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#F8F7F4]/95 dark:bg-[#0B0E14]/95 backdrop-blur-md border-t border-black/10 dark:border-white/10 grid grid-cols-4 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#F8F7F4]/95 dark:bg-[#0B0E14]/95 backdrop-blur-md border-t border-black/10 dark:border-white/10 grid grid-cols-5 items-center"
       >
         {navItems.map((item) => {
           const active = view === item.id;
@@ -161,12 +189,21 @@ export default function App() {
               }`}
             >
               {item.icon}
-              <span className="truncate max-w-[72px]">
+              <span className="truncate max-w-[68px]">
                 {item.id === 'NEGOCIO' ? 'Negocio' : item.id === 'ADMIN' ? 'Admin' : item.label}
               </span>
             </button>
           );
         })}
+        <button
+          type="button"
+          onClick={triggerSosModal}
+          aria-label="Solicitar emergencia SOS"
+          className="h-full flex flex-col items-center justify-center gap-0.5 text-[10px] font-extrabold text-rose-500"
+        >
+          <Siren className="w-5 h-5" />
+          <span>SOS</span>
+        </button>
       </nav>
     </div>
   );

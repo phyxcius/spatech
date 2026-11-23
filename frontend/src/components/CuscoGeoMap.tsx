@@ -1,7 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-import { Crosshair, Maximize2 } from 'lucide-react';
+import { Crosshair, Maximize2, Minimize2, Navigation, Scan } from 'lucide-react';
 
 export interface GeoMapPin {
   id: string;
@@ -9,6 +9,7 @@ export interface GeoMapPin {
   lng: number;
   priceText: string;
   sublabel?: string;
+  detailTitle?: string;
   tier: 'cheapest' | 'mid' | 'high' | 'closed';
   kind: 'DRIVER' | 'MARKET';
   isOpen?: boolean;
@@ -26,6 +27,8 @@ interface CuscoGeoMapProps {
   pins: GeoMapPin[];
   selectedPinId?: string | null;
   onSelectPin?: (id: string) => void;
+  onRequestPinAction?: (id: string) => void;
+  onRouteComputed?: (info: { km: number; etaMin: number }) => void;
   onRequestGps?: () => void;
   gpsLive?: boolean;
   heightClass?: string;
@@ -40,6 +43,29 @@ function escapeHtml(raw: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function buildCuscoStreetGridFallback(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): Array<[number, number]> {
+  const steps = 6;
+  const pts: Array<[number, number]> = [[lat1, lng1]];
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    const prev = pts[pts.length - 1];
+    const targetLat = lat1 + (lat2 - lat1) * t;
+    const targetLng = lng1 + (lng2 - lng1) * t;
+    if (i % 2 === 1) {
+      pts.push([targetLat, prev[1]]);
+    } else {
+      pts.push([prev[0], targetLng]);
+    }
+  }
+  pts.push([lat2, lng2]);
+  return pts;
+}
+
 export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
   mode,
   userLat,
@@ -52,6 +78,8 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
   pins,
   selectedPinId,
   onSelectPin,
+  onRequestPinAction,
+  onRouteComputed,
   onRequestGps,
   gpsLive,
   heightClass = 'h-[360px] sm:h-[430px]',
@@ -61,6 +89,11 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
   const onSelectPinRef = useRef(onSelectPin);
   onSelectPinRef.current = onSelectPin;
+  const onRouteComputedRef = useRef(onRouteComputed);
+  onRouteComputedRef.current = onRouteComputed;
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [streetCoords, setStreetCoords] = useState<Array<[number, number]>>([]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -97,6 +130,51 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
     };
   }, []);
 
+  // Re-evaluate Leaflet tile geometry cleanly after fullscreen toggle
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      mapRef.current?.invalidateSize({ pan: false });
+      fitAllBounds();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [isFullscreen]);
+
+  // Real street-following route via OSRM (falls back cleanly to orthogonal street segments)
+  useEffect(() => {
+    if (mode !== 'TAXI' || destLat === undefined || destLng === undefined) {
+      setStreetCoords([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const fallback = buildCuscoStreetGridFallback(userLat, userLng, destLat, destLng);
+    setStreetCoords(fallback);
+
+    const url = `https://router.project-osrm.org/route/v1/driving/${userLng},${userLat};${destLng},${destLat}?overview=full&geometries=geojson`;
+
+    fetch(url, { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const route = data?.routes?.[0];
+        const coords = route?.geometry?.coordinates;
+        if (Array.isArray(coords) && coords.length >= 2) {
+          const leafletPts = coords.map(([lng, lat]: [number, number]) => [lat, lng] as [number, number]);
+          setStreetCoords(leafletPts);
+          if (typeof route.distance === 'number' && typeof route.duration === 'number') {
+            onRouteComputedRef.current?.({
+              km: Math.max(0.8, Number((route.distance / 1000).toFixed(1))),
+              etaMin: Math.max(3, Math.round(route.duration / 60)),
+            });
+          }
+        }
+      })
+      .catch(() => {
+        // Keep street-grid fallback on network error/abort
+      });
+
+    return () => controller.abort();
+  }, [mode, userLat, userLng, destLat, destLng]);
+
   function fitAllBounds() {
     const map = mapRef.current;
     if (!map) return;
@@ -120,7 +198,6 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
 
     group.clearLayers();
 
-    // 1. User GPS / Origin marker
     if (mode === 'TAXI') {
       const originIcon = L.divIcon({
         className: 'cusco-leaflet-pin',
@@ -135,49 +212,42 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
       });
       L.marker([userLat, userLng], { icon: originIcon, zIndexOffset: 500 }).addTo(group);
 
-      // Destination B marker + curved route polyline
       if (destLat !== undefined && destLng !== undefined) {
-        const midLat = (userLat + destLat) / 2 + 0.0022;
-        const midLng = (userLng + destLng) / 2 - 0.0018;
-        L.polyline(
-          [
-            [userLat, userLng],
-            [midLat, midLng],
-            [destLat, destLng],
-          ],
-          {
-            color: '#111827',
-            weight: 4.5,
-            opacity: 0.85,
-          }
-        ).addTo(group);
+        const linePts: L.LatLngExpression[] =
+          streetCoords.length >= 2
+            ? streetCoords
+            : buildCuscoStreetGridFallback(userLat, userLng, destLat, destLng);
 
-        L.polyline(
-          [
-            [userLat, userLng],
-            [midLat, midLng],
-            [destLat, destLng],
-          ],
-          {
-            color: '#C2F238',
-            weight: 2,
-            dashArray: '6 6',
-            opacity: 0.95,
-          }
-        ).addTo(group);
+        L.polyline(linePts, {
+          color: '#0F172A',
+          weight: 6.5,
+          opacity: 0.85,
+          lineJoin: 'round',
+        }).addTo(group);
+
+        L.polyline(linePts, {
+          color: '#84CC16',
+          weight: 3.5,
+          opacity: 0.98,
+          lineJoin: 'round',
+        }).addTo(group);
 
         if (routeSummary) {
+          const midPt = linePts[Math.floor(linePts.length / 2)] || [
+            (userLat + destLat) / 2,
+            (userLng + destLng) / 2,
+          ];
           const midIcon = L.divIcon({
             className: 'cusco-leaflet-pin',
-            iconSize: [120, 26],
-            iconAnchor: [60, 13],
+            iconSize: [132, 26],
+            iconAnchor: [66, 13],
             html: `
               <div style="background:#0B0E14;color:#FACC15;padding:3px 9px;border-radius:999px;border:1px solid rgba(250,204,21,0.5);font-size:10px;font-weight:700;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);white-space:nowrap;">
                 ${escapeHtml(routeSummary)}
               </div>
             `,
           });
-          L.marker([midLat, midLng], { icon: midIcon, interactive: false }).addTo(group);
+          L.marker(midPt, { icon: midIcon, interactive: false }).addTo(group);
         }
 
         const destIcon = L.divIcon({
@@ -194,7 +264,6 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
         L.marker([destLat, destLng], { icon: destIcon, zIndexOffset: 500 }).addTo(group);
       }
     } else {
-      // MARKET mode: blue GPS dot
       const gpsIcon = L.divIcon({
         className: 'cusco-leaflet-pin',
         iconSize: [26, 26],
@@ -209,7 +278,6 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
       L.marker([userLat, userLng], { icon: gpsIcon, zIndexOffset: 450 }).addTo(group);
     }
 
-    // 2. Price Tag Markers (Facilito / InDrive style)
     pins.forEach((pin) => {
       const selected = pin.id === selectedPinId;
       const bg =
@@ -260,18 +328,63 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
         onSelectPinRef.current?.(pin.id);
       });
     });
-  }, [mode, userLat, userLng, originLabel, destLat, destLng, destLabel, routeSummary, pins, selectedPinId]);
+  }, [
+    mode,
+    userLat,
+    userLng,
+    originLabel,
+    destLat,
+    destLng,
+    destLabel,
+    routeSummary,
+    streetCoords,
+    pins,
+    selectedPinId,
+  ]);
 
   useEffect(() => {
     fitAllBounds();
   }, [mode, destLat, destLng, pins.length]);
 
-  return (
-    <div className="relative rounded-3xl overflow-hidden border border-black/15 dark:border-white/15 bg-slate-200 dark:bg-[#0D1117] shadow-xl">
-      <div ref={containerRef} className={`w-full ${heightClass} cusco-osm-tiles`} />
+  const selectedPin = useMemo(
+    () => pins.find((p) => p.id === selectedPinId) || null,
+    [pins, selectedPinId]
+  );
 
-      {/* Controles flotantes de mapa (GPS + Reencuadrar) */}
+  return (
+    <div
+      className={
+        isFullscreen
+          ? 'fixed inset-0 z-[100] bg-slate-200 dark:bg-[#0D1117]'
+          : 'relative rounded-3xl overflow-hidden border border-black/15 dark:border-white/15 bg-slate-200 dark:bg-[#0D1117] shadow-xl'
+      }
+    >
+      <div
+        ref={containerRef}
+        className={`w-full ${isFullscreen ? 'h-full' : heightClass} cusco-osm-tiles`}
+      />
+
+      {/* Controles flotantes de mapa (GPS + Reencuadrar + Agrandar/Encoger) */}
       <div className="absolute top-3 right-3 z-[400] flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={() => setIsFullscreen((f) => !f)}
+          title={isFullscreen ? 'Encoger mapa' : 'Agrandar mapa'}
+          className="min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white/95 dark:bg-[#0D1117]/95 text-[#14171F] dark:text-white text-xs font-semibold flex items-center gap-1.5 shadow-lg backdrop-blur-md"
+        >
+          {isFullscreen ? (
+            <>
+              <Minimize2 className="w-3.5 h-3.5 text-[#D4AF37]" />
+              <span>Encoger</span>
+            </>
+          ) : (
+            <>
+              <Maximize2 className="w-3.5 h-3.5 text-[#D4AF37]" />
+              <span>Agrandar</span>
+            </>
+          )}
+        </button>
+
         {onRequestGps && (
           <button
             type="button"
@@ -287,24 +400,53 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
             <span>{gpsLive ? 'GPS Activo' : 'Mi GPS'}</span>
           </button>
         )}
+
         <button
           type="button"
           onClick={fitAllBounds}
           title="Ver todos los puntos en Cusco"
           className="min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white/95 dark:bg-[#0D1117]/95 text-[#14171F] dark:text-white text-xs font-semibold flex items-center gap-1.5 shadow-lg backdrop-blur-md"
         >
-          <Maximize2 className="w-3.5 h-3.5 text-[#D4AF37]" />
+          <Scan className="w-3.5 h-3.5 text-[#D4AF37]" />
           <span>Encuadrar</span>
         </button>
       </div>
 
+      {/* Tarjeta interactiva en mapa cuando el cliente toca un pin de taxista o market */}
+      {selectedPin && (
+        <div className="absolute bottom-3 left-14 sm:left-16 right-3 sm:right-auto sm:max-w-xs z-[400] rounded-2xl border border-black/15 dark:border-white/15 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md p-3 shadow-2xl flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
+              {selectedPin.kind === 'DRIVER' ? 'Taxista en mapa' : 'Minimarket en mapa'}
+            </p>
+            <p className="text-xs font-bold text-[#14171F] dark:text-white truncate">
+              {selectedPin.detailTitle || selectedPin.sublabel || selectedPin.priceText}
+            </p>
+            <p className="text-[11px] font-mono-tabular font-semibold text-emerald-600 dark:text-emerald-400">
+              {selectedPin.priceText}
+              {selectedPin.sublabel ? ` · ${selectedPin.sublabel}` : ''}
+            </p>
+          </div>
+          {onRequestPinAction && (
+            <button
+              type="button"
+              onClick={() => onRequestPinAction(selectedPin.id)}
+              className="min-h-[38px] px-3 rounded-xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] text-xs font-bold flex items-center gap-1 shrink-0 shadow"
+            >
+              <Navigation className="w-3.5 h-3.5" />
+              <span>{selectedPin.kind === 'DRIVER' ? 'Solicitar' : 'Elegir'}</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Leyenda estilo Facilito */}
-      <div className="absolute bottom-3 right-3 z-[400] flex items-center gap-2 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md border border-black/10 dark:border-white/15 rounded-xl px-3 py-1.5 text-[10px] font-semibold shadow-md">
+      <div className="hidden sm:flex absolute bottom-3 right-3 z-[400] items-center gap-2 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md border border-black/10 dark:border-white/15 rounded-xl px-3 py-1.5 text-[10px] font-semibold shadow-md">
         <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Más económico
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Mejor tarifa
         </span>
         <span className="flex items-center gap-1 text-amber-700 dark:text-amber-300">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> Intermedio
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> Estándar
         </span>
       </div>
     </div>

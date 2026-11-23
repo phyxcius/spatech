@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  BadgeCheck,
   Bell,
   Check,
   KeyRound,
@@ -15,10 +16,17 @@ import {
 } from 'lucide-react';
 import { apiFetch, ApiError, playLuxuryChime, speakSpanish } from '../lib/api.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
 import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
+import {
+  BUSINESS_CATEGORIES,
   ESTADO_LABELS,
   formatSoles,
   RUBRO_LABELS,
+  SALE_MODALITIES,
   type DirectorioNegocio,
   type MetodoPago,
   type MetodoRecarga,
@@ -62,6 +70,12 @@ interface ResumenData {
     alerta_voz_activa?: boolean | number;
     tarifa_minima_centavos?: number;
     radio_cobertura_km?: number;
+    tipo_persona?: 'NATURAL' | 'JURIDICA';
+    documento_tipo?: 'DNI' | 'RUC';
+    documento_numero?: string;
+    razon_social?: string;
+    tipo_negocio?: string;
+    modalidades_venta?: string[];
     saldo: number;
     saldo_retenido: number;
     saldo_libre: number;
@@ -93,6 +107,7 @@ interface ResumenData {
     id: number;
     nombre: string;
     precio_centavos: number;
+    unidad_medida?: string;
     stock: number;
     disponible: number;
   }>;
@@ -131,8 +146,15 @@ export const BusinessPanel: React.FC = () => {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [showDemoGuide, setShowDemoGuide] = useState(false);
 
-  // Registro de nuevo negocio multirubro
+  // Registro de nuevo negocio multirubro con RUC/DNI + Categoría + Modalidades
   const [regRubro, setRegRubro] = useState<Rubro>('RESTAURANTE');
+  const [regTipoPersona, setRegTipoPersona] = useState<'NATURAL' | 'JURIDICA'>('JURIDICA');
+  const [regDocNumero, setRegDocNumero] = useState('');
+  const [regRazonSocial, setRegRazonSocial] = useState('');
+  const [regDocVerificado, setRegDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
+  const [regDocLoading, setRegDocLoading] = useState(false);
+  const [regTipoNegocio, setRegTipoNegocio] = useState<string>(BUSINESS_CATEGORIES[0]);
+  const [regModalidades, setRegModalidades] = useState<string[]>(['Unidad', 'Kilo']);
   const [regNombre, setRegNombre] = useState('');
   const [regTelefono, setRegTelefono] = useState('');
   const [regZona, setRegZona] = useState('Centro Histórico, Cusco');
@@ -144,7 +166,8 @@ export const BusinessPanel: React.FC = () => {
   const [pinInputs, setPinInputs] = useState<Record<number, string>>({});
   const [actionMsg, setActionMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const prevPendingCountRef = useRef<number>(0);
+  const seenPendingIdsRef = useRef<Set<number>>(new Set());
+  const seededOrdersRef = useRef(false);
 
   // Recarga modal
   const [recargaOpen, setRecargaOpen] = useState(false);
@@ -172,6 +195,7 @@ export const BusinessPanel: React.FC = () => {
   const [newServNombre, setNewServNombre] = useState('');
   const [newServPrecioSoles, setNewServPrecioSoles] = useState('');
   const [newServDesc, setNewServDesc] = useState('');
+  const [newServUnidadMedida, setNewServUnidadMedida] = useState('Unidad');
 
   async function refreshDirectorio() {
     try {
@@ -189,20 +213,29 @@ export const BusinessPanel: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!session) return;
-    loadWorkspace(true);
-    const id = setInterval(() => loadWorkspace(true), 6000);
+    if (!session) {
+      seededOrdersRef.current = false;
+      seenPendingIdsRef.current.clear();
+      return;
+    }
+    void loadWorkspace(true);
+    const id = setInterval(() => void loadWorkspace(true), 2500);
     const unsubPedidos = subscribeFirebaseRtdbPath('pedidos', () => {
+      void loadWorkspace(true);
+    });
+    const unsubNegocios = subscribeFirebaseRtdbPath('negocios', () => {
       void loadWorkspace(true);
     });
     return () => {
       clearInterval(id);
       unsubPedidos();
+      unsubNegocios();
     };
   }, [session?.negocioId, session?.token]);
 
   async function loadWorkspace(silent = false) {
     if (!session) return;
+    const t0 = performance.now();
     try {
       const [resRes, pedRes, guiasRes] = await Promise.all([
         apiFetch<ResumenData>(`/api/negocio/${session.negocioId}/resumen`, {
@@ -234,25 +267,39 @@ export const BusinessPanel: React.FC = () => {
         setRefGuiaKey(`${g.negocio_id}:${g.servicio_id}`);
       }
 
-      const pendingCount = nextPedidos.filter(
+      const pendingItems = nextPedidos.filter(
         (p) => p.estado === 'PENDIENTE_CONFIRMACION' && p.negocio_id === session.negocioId
-      ).length;
-      if (resRes?.negocio && soundEnabled && pendingCount > prevPendingCountRef.current) {
-        playLuxuryChime();
-        if (resRes.negocio.alerta_voz_activa !== false) {
-          const newest = nextPedidos.find(
-            (p) => p.estado === 'PENDIENTE_CONFIRMACION' && p.negocio_id === session.negocioId
-          );
-          if (newest) {
-            speakSpanish(
-              `Nuevo pedido para ${resRes.negocio.nombre}: ${newest.item_nombre}, por ${(
-                newest.monto_centavos / 100
-              ).toFixed(2)} soles.`
-            );
+      );
+      if (!seededOrdersRef.current) {
+        seededOrdersRef.current = true;
+        seenPendingIdsRef.current = new Set(pendingItems.map((p) => p.id));
+      } else {
+        const ms = Math.max(1, Math.round(performance.now() - t0));
+        for (const newest of pendingItems) {
+          if (!seenPendingIdsRef.current.has(newest.id)) {
+            if (soundEnabled) playLuxuryChime();
+            const docLabel =
+              newest.cliente_documento_numero && newest.cliente_documento_tipo
+                ? ` · ${newest.cliente_documento_tipo} ${newest.cliente_documento_numero}`
+                : '';
+            emitCenterNotification({
+              id: `biz-ord-${newest.id}-${newest.estado}`,
+              title: `Nuevo Pedido · ${newest.codigo}`,
+              subtitle: `${newest.item_nombre} · ${formatSoles(newest.monto_centavos)}`,
+              detail: `Cliente: ${newest.cliente_nombre}${docLabel}`,
+              tone: 'ai',
+              responseMs: ms,
+              speakText:
+                soundEnabled && resRes?.negocio?.alerta_voz_activa !== false
+                  ? `Nuevo pedido para ${resRes.negocio.nombre}: ${newest.item_nombre}, por ${(
+                      newest.monto_centavos / 100
+                    ).toFixed(2)} soles.`
+                  : undefined,
+            });
           }
         }
+        seenPendingIdsRef.current = new Set(pendingItems.map((p) => p.id));
       }
-      prevPendingCountRef.current = pendingCount;
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setSession(null);
@@ -296,9 +343,36 @@ export const BusinessPanel: React.FC = () => {
     }
   }
 
+  async function handleLookupRegDoc() {
+    const docTipo = regTipoPersona === 'NATURAL' ? 'DNI' : 'RUC';
+    const clean = regDocNumero.replace(/\D/g, '');
+    setLoginError(null);
+    if (!clean) {
+      setLoginError(`Ingresa el ${docTipo} para validar con RENIEC/SUNAT.`);
+      return;
+    }
+    setRegDocLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      setRegDocVerificado(res);
+      if (res.nombre_completo) {
+        setRegRazonSocial(res.nombre_completo);
+        if (!regNombre.trim()) setRegNombre(res.nombre_completo);
+      }
+    } catch (err) {
+      setRegDocVerificado(null);
+      setLoginError(formatPeruLookupError(err));
+    } finally {
+      setRegDocLoading(false);
+    }
+  }
+
   async function handleRegisterBusiness(e: React.FormEvent) {
     e.preventDefault();
     setLoginError(null);
+    const docTipo = regTipoPersona === 'NATURAL' ? 'DNI' : 'RUC';
     try {
       const res = await apiFetch<{
         token: string;
@@ -316,6 +390,12 @@ export const BusinessPanel: React.FC = () => {
           telefono: regTelefono,
           zona: regZona,
           pin: regPin,
+          tipo_persona: regTipoPersona,
+          documento_tipo: docTipo,
+          documento_numero: regDocNumero.replace(/\D/g, ''),
+          razon_social: regRazonSocial || regNombre,
+          tipo_negocio: regTipoNegocio,
+          modalidades_venta: regModalidades,
         },
       });
       setSession({
@@ -512,6 +592,7 @@ export const BusinessPanel: React.FC = () => {
           nombre: newServNombre,
           descripcion: newServDesc,
           precio_centavos: Math.round((Number(newServPrecioSoles) || 0) * 100),
+          unidad_medida: newServUnidadMedida,
           stock: 20,
           duracion_min: 45,
         },
@@ -520,7 +601,7 @@ export const BusinessPanel: React.FC = () => {
       setNewServNombre('');
       setNewServPrecioSoles('');
       setNewServDesc('');
-      setActionMsg({ type: 'ok', text: 'Servicio agregado a tu catálogo.' });
+      setActionMsg({ type: 'ok', text: `Servicio publicado (${newServUnidadMedida}) en tu catálogo.` });
       await loadWorkspace(true);
     } catch (err) {
       setActionMsg({
@@ -666,30 +747,131 @@ export const BusinessPanel: React.FC = () => {
             </form>
           ) : (
             <form onSubmit={handleRegisterBusiness} className="space-y-3.5">
-              <div>
-                <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                  Rubro del negocio
-                </label>
-                <select
-                  value={regRubro}
-                  onChange={(e) => setRegRubro(e.target.value as Rubro)}
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                >
-                  {(['TRANSPORTE', 'RESTAURANTE', 'FARMACIA', 'TURISMO', 'HOTEL', 'CASA_CAMBIO'] as Rubro[]).map(
-                    (r) => (
-                      <option key={r} value={r}>
-                        {RUBRO_LABELS[r]}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                    Rubro principal
+                  </label>
+                  <select
+                    value={regRubro}
+                    onChange={(e) => setRegRubro(e.target.value as Rubro)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                  >
+                    {(['TRANSPORTE', 'RESTAURANTE', 'FARMACIA', 'TURISMO', 'HOTEL', 'CASA_CAMBIO'] as Rubro[]).map(
+                      (r) => (
+                        <option key={r} value={r}>
+                          {RUBRO_LABELS[r]}
+                        </option>
+                      )
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                    Categoría de Negocio
+                  </label>
+                  <select
+                    value={regTipoNegocio}
+                    onChange={(e) => setRegTipoNegocio(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+                  >
+                    {BUSINESS_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
                       </option>
-                    )
-                  )}
-                </select>
+                    ))}
+                  </select>
+                </div>
               </div>
+
+              {/* Persona Natural DNI o Jurídica RUC */}
+              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <select
+                    value={regTipoPersona}
+                    onChange={(e) => {
+                      setRegTipoPersona(e.target.value as 'NATURAL' | 'JURIDICA');
+                      setRegDocVerificado(null);
+                    }}
+                    className="min-h-[36px] px-2.5 rounded-lg border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
+                  >
+                    <option value="JURIDICA">Persona Jurídica (RUC)</option>
+                    <option value="NATURAL">Persona Natural (DNI)</option>
+                  </select>
+                  {regDocVerificado?.validado && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                      <BadgeCheck className="w-3.5 h-3.5" /> Verificado
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={regTipoPersona === 'NATURAL' ? 8 : 11}
+                    value={regDocNumero}
+                    onChange={(e) => {
+                      setRegDocNumero(e.target.value.replace(/\D/g, ''));
+                      setRegDocVerificado(null);
+                    }}
+                    placeholder={regTipoPersona === 'NATURAL' ? 'DNI (8 dígitos)' : 'RUC (11 dígitos)'}
+                    className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleLookupRegDoc}
+                    disabled={regDocLoading}
+                    className="min-h-[40px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                  >
+                    {regDocLoading ? 'Validando...' : 'Validar RENIEC/SUNAT'}
+                  </button>
+                </div>
+                {regRazonSocial && (
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    Titular: {regRazonSocial}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <span className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                  Modalidades de venta (Kilos, Arrobas, Unidades, etc.)
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {SALE_MODALITIES.map((mod) => {
+                    const active = regModalidades.includes(mod);
+                    return (
+                      <button
+                        key={mod}
+                        type="button"
+                        onClick={() =>
+                          setRegModalidades((prev) =>
+                            prev.includes(mod)
+                              ? prev.length > 1
+                                ? prev.filter((x) => x !== mod)
+                                : prev
+                              : [...prev, mod]
+                          )
+                        }
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${
+                          active
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'border-black/15 dark:border-white/15 text-[#6A717E]'
+                        }`}
+                      >
+                        {mod}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <input
                 type="text"
                 required
                 value={regNombre}
                 onChange={(e) => setRegNombre(e.target.value)}
-                placeholder="Nombre comercial (ej. Taxis Imperiales Cusco)"
+                placeholder="Nombre comercial (ej. Minimarket Imperial Cusco)"
                 className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -929,6 +1111,13 @@ export const BusinessPanel: React.FC = () => {
                     <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
                       Cliente: {p.cliente_nombre} · {p.transcripcion}
                     </p>
+                    {p.cliente_documento_numero && (
+                      <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full border border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-mono-tabular font-semibold">
+                        <BadgeCheck className="w-3.5 h-3.5" />
+                        {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}{' '}
+                        {p.cliente_documento_verificado ? '· RENIEC/SUNAT Verificado' : ''}
+                      </p>
+                    )}
                   </div>
                   <p className="font-mono-tabular text-xl font-semibold shrink-0">
                     {formatSoles(p.monto_centavos)}
@@ -981,6 +1170,11 @@ export const BusinessPanel: React.FC = () => {
                     <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
                       Cliente: {p.cliente_nombre} · {p.cliente_telefono}
                     </p>
+                    {p.cliente_documento_numero && (
+                      <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
+                        <BadgeCheck className="w-3.5 h-3.5" /> {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
+                      </p>
+                    )}
                   </div>
                   <p className="font-mono-tabular text-xl font-semibold shrink-0">
                     {formatSoles(p.monto_centavos)}
@@ -1219,16 +1413,29 @@ export const BusinessPanel: React.FC = () => {
                   placeholder="Nombre del producto o servicio"
                   className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
                 />
-                <input
-                  type="number"
-                  step="0.5"
-                  min="1"
-                  required
-                  value={newServPrecioSoles}
-                  onChange={(e) => setNewServPrecioSoles(e.target.value)}
-                  placeholder="Precio en Soles (ej. 85)"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
-                />
+                <div className="grid grid-cols-2 gap-2.5">
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="1"
+                    required
+                    value={newServPrecioSoles}
+                    onChange={(e) => setNewServPrecioSoles(e.target.value)}
+                    placeholder="Precio S/ (ej. 85)"
+                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
+                  />
+                  <select
+                    value={newServUnidadMedida}
+                    onChange={(e) => setNewServUnidadMedida(e.target.value)}
+                    className="w-full min-h-[44px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-semibold"
+                  >
+                    {SALE_MODALITIES.map((mod) => (
+                      <option key={mod} value={mod}>
+                        Por {mod}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <input
                   type="text"
                   value={newServDesc}

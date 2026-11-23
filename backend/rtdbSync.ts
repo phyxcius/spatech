@@ -100,9 +100,11 @@ export async function hydrateDatabaseFromFirebaseRtdb(db: DatabaseSync): Promise
               codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo,
               saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h,
               metodos_pago_aceptados, auto_aceptar_pedidos, alerta_voz_activa,
-              tarifa_minima_centavos, radio_cobertura_km
+              tarifa_minima_centavos, radio_cobertura_km,
+              tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio,
+              modalidades_venta, estado_regla, motivo_estado
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `)
           .run(
             n.codigo,
@@ -125,7 +127,15 @@ export async function hydrateDatabaseFromFirebaseRtdb(db: DatabaseSync): Promise
             n.auto_aceptar_pedidos ? 1 : 0,
             n.alerta_voz_activa === 0 ? 0 : 1,
             Number(n.tarifa_minima_centavos) || 600,
-            Number(n.radio_cobertura_km) || 8.0
+            Number(n.radio_cobertura_km) || 8.0,
+            n.tipo_persona === 'NATURAL' ? 'NATURAL' : 'JURIDICA',
+            n.documento_tipo === 'DNI' ? 'DNI' : 'RUC',
+            n.documento_numero || null,
+            n.razon_social || null,
+            n.tipo_negocio || 'Comercio Multirubro',
+            n.modalidades_venta || 'UNIDAD,SERVICIO',
+            n.estado_regla || 'ACTIVO',
+            n.motivo_estado || null
           );
         const newBizId = Number(insertBiz.lastInsertRowid);
         // Set temporary PIN credential in SQLite if business was created from Firebase RTDB directly
@@ -147,9 +157,9 @@ export async function hydrateDatabaseFromFirebaseRtdb(db: DatabaseSync): Promise
       if (!e || typeof e.codigo !== 'string') continue;
       db.prepare(`
         INSERT OR IGNORE INTO alertas_emergencias (
-          codigo, cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, estado, atendida_por
+          codigo, cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         e.codigo,
         e.cliente_nombre || 'Huésped La Chuspa',
@@ -158,6 +168,7 @@ export async function hydrateDatabaseFromFirebaseRtdb(db: DatabaseSync): Promise
         typeof e.lat === 'number' ? e.lat : -13.5167,
         typeof e.lng === 'number' ? e.lng : -71.9788,
         e.mensaje || 'Asistencia prioritaria',
+        e.entidad_objetivo || 'SAMU',
         e.estado === 'ATENDIDA' ? 'ATENDIDA' : 'ACTIVA',
         e.atendida_por || null
       );
@@ -189,7 +200,8 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
         .prepare(
           `SELECT id, codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo,
                   saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h,
-                  metodos_pago_aceptados, auto_aceptar_pedidos, alerta_voz_activa, tarifa_minima_centavos, radio_cobertura_km
+                  metodos_pago_aceptados, auto_aceptar_pedidos, alerta_voz_activa, tarifa_minima_centavos, radio_cobertura_km,
+                  tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, estado_regla, motivo_estado
            FROM negocios`
         )
         .all() as Array<Record<string, any>>;
@@ -206,7 +218,7 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
       const servicios = db
         .prepare(
           `SELECT s.id, s.negocio_id, n.nombre AS negocio_nombre, n.zona, n.calificacion, s.categoria,
-                  s.nombre, s.descripcion, s.precio_centavos, s.duracion_min, s.stock, s.disponible
+                  s.nombre, s.descripcion, s.precio_centavos, s.duracion_min, s.stock, s.disponible, s.unidad_medida
            FROM servicios_catalogo s
            JOIN negocios n ON n.id = s.negocio_id`
         )
@@ -239,8 +251,9 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
       const pedidos = db
         .prepare(
           `SELECT p.id, p.codigo, p.negocio_id, p.referido_negocio_id, p.categoria, p.item_nombre, p.transcripcion,
-                  p.monto_centavos, p.metodo_pago, p.estado, p.cliente_nombre, p.cliente_telefono, p.origen_texto,
-                  p.destino_texto, p.intentos_pin, p.pin_bloqueado, p.comision_plataforma_centavos,
+                  p.monto_centavos, p.metodo_pago, p.estado, p.cliente_nombre, p.cliente_telefono,
+                  p.cliente_documento_tipo, p.cliente_documento_numero, p.cliente_documento_verificado,
+                  p.origen_texto, p.destino_texto, p.intentos_pin, p.pin_bloqueado, p.comision_plataforma_centavos,
                   p.comision_referido_centavos, p.comision_retenida_centavos, p.created_at,
                   n.nombre AS negocio_nombre, n.zona AS negocio_zona
            FROM pedidos_ordenes p
@@ -259,7 +272,7 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
 
       const emergencias = db
         .prepare(
-          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, estado, atendida_por, created_at FROM alertas_emergencias ORDER BY id DESC LIMIT 50'
+          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por, created_at FROM alertas_emergencias ORDER BY id DESC LIMIT 50'
         )
         .all() as Array<Record<string, any>>;
 

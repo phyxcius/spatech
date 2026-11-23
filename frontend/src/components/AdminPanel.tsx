@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  BadgeCheck,
   CheckCircle2,
   KeyRound,
   LockOpen,
@@ -10,7 +11,20 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiFetch, ApiError } from '../lib/api.ts';
-import { formatSoles, RUBRO_LABELS, type Rubro } from '../types.ts';
+import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
+import {
+  formatPeruLookupError,
+  type PeruDocumentLookupResult,
+} from '../lib/peruDocs.ts';
+import {
+  BUSINESS_CATEGORIES,
+  formatSoles,
+  RUBRO_LABELS,
+  SALE_MODALITIES,
+  type EstadoRegla,
+  type Rubro,
+} from '../types.ts';
 
 type AdminTab = 'RECARGAS' | 'LIBRO' | 'COMISIONES' | 'NEGOCIOS' | 'ALERTAS';
 
@@ -35,6 +49,14 @@ interface AdminPanelData {
     nombre: string;
     telefono: string;
     activo: number;
+    estado_regla?: EstadoRegla;
+    motivo_estado?: string | null;
+    tipo_persona?: 'NATURAL' | 'JURIDICA';
+    documento_tipo?: 'DNI' | 'RUC';
+    documento_numero?: string;
+    razon_social?: string;
+    tipo_negocio?: string;
+    modalidades_venta?: string[];
     saldo: number;
     saldo_retenido: number;
     saldo_libre: number;
@@ -60,6 +82,7 @@ interface AdminPanelData {
     cliente_telefono: string;
     ubicacion_texto: string;
     mensaje: string;
+    entidad_objetivo?: string;
     estado: string;
     atendida_por: string | null;
     created_at: string;
@@ -110,16 +133,24 @@ export const AdminPanel: React.FC = () => {
   const [data, setData] = useState<AdminPanelData | null>(null);
   const [statusMsg, setStatusMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
-  // Rechazo motivo
+  // Rechazo motivo y motivos de regla de negocio
   const [rejectMotivos, setRejectMotivos] = useState<Record<number, string>>({});
+  const [estadoMotivos, setEstadoMotivos] = useState<Record<number, string>>({});
 
   // Ajuste manual
   const [adjNegId, setAdjNegId] = useState<number>(1);
   const [adjSoles, setAdjSoles] = useState('');
   const [adjMotivo, setAdjMotivo] = useState('');
 
-  // Registro nuevo negocio
+  // Registro nuevo negocio con RUC/DNI + categoría + modalidades
   const [newNegRubro, setNewNegRubro] = useState<Rubro>('RESTAURANTE');
+  const [newNegTipoPersona, setNewNegTipoPersona] = useState<'NATURAL' | 'JURIDICA'>('JURIDICA');
+  const [newNegDocNumero, setNewNegDocNumero] = useState('');
+  const [newNegRazonSocial, setNewNegRazonSocial] = useState('');
+  const [newNegDocVerified, setNewNegDocVerified] = useState<PeruDocumentLookupResult | null>(null);
+  const [newNegDocLoading, setNewNegDocLoading] = useState(false);
+  const [newNegTipoNegocio, setNewNegTipoNegocio] = useState<string>(BUSINESS_CATEGORIES[0]);
+  const [newNegModalidades, setNewNegModalidades] = useState<string[]>(['Unidad', 'Kilo']);
   const [newNegNombre, setNewNegNombre] = useState('');
   const [newNegTel, setNewNegTel] = useState('');
   const [newNegZona, setNewNegZona] = useState('Plaza de Armas, Cusco');
@@ -130,6 +161,10 @@ export const AdminPanel: React.FC = () => {
   const [partnerName, setPartnerName] = useState('');
   const [partnerPct, setPartnerPct] = useState('10');
 
+  const seenRechargeIdsRef = useRef<Set<number>>(new Set());
+  const seenSosIdsRef = useRef<Set<number>>(new Set());
+  const seededAdminRef = useRef(false);
+
   useEffect(() => {
     apiFetch<{ configured: boolean; requires_claim: boolean }>('/api/admin/bootstrap-status')
       .then((res) => setRequiresClaim(res.requires_claim))
@@ -137,16 +172,78 @@ export const AdminPanel: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (token) loadPanel();
+    if (!token) {
+      seededAdminRef.current = false;
+      seenRechargeIdsRef.current.clear();
+      seenSosIdsRef.current.clear();
+      return;
+    }
+    void loadPanel();
+    const id = setInterval(() => void loadPanel(), 4000);
+    const unsubRec = subscribeFirebaseRtdbPath('recargas', () => void loadPanel());
+    const unsubSos = subscribeFirebaseRtdbPath('emergencias', () => void loadPanel());
+    return () => {
+      clearInterval(id);
+      unsubRec();
+      unsubSos();
+    };
   }, [token]);
 
   async function loadPanel() {
     if (!token) return;
+    const t0 = performance.now();
     try {
       const res = await apiFetch<AdminPanelData>('/api/admin/panel', { token });
-      setData(res);
-      if (res.negocios.length > 0 && !res.negocios.some((n) => n.id === adjNegId)) {
-        setAdjNegId(res.negocios[0].id);
+      const safeRecargas = Array.isArray(res.recargas) ? res.recargas : [];
+      const safeNegocios = Array.isArray(res.negocios) ? res.negocios : [];
+      const safeEmergencias = Array.isArray(res.emergencias) ? res.emergencias : [];
+      setData({
+        ...res,
+        recargas: safeRecargas,
+        negocios: safeNegocios,
+        reglas_comision: Array.isArray(res.reglas_comision) ? res.reglas_comision : [],
+        unidades: Array.isArray(res.unidades) ? res.unidades : [],
+        emergencias: safeEmergencias,
+        partners: Array.isArray(res.partners) ? res.partners : [],
+      });
+      if (safeNegocios.length > 0 && !safeNegocios.some((n) => n.id === adjNegId)) {
+        setAdjNegId(safeNegocios[0].id);
+      }
+
+      const pendingRec = safeRecargas.filter((r) => r.estado === 'PENDIENTE');
+      const activeSos = safeEmergencias.filter((e) => e.estado === 'ACTIVA');
+      if (!seededAdminRef.current) {
+        seededAdminRef.current = true;
+        seenRechargeIdsRef.current = new Set(pendingRec.map((r) => r.id));
+        seenSosIdsRef.current = new Set(activeSos.map((e) => e.id));
+      } else {
+        const ms = Math.max(1, Math.round(performance.now() - t0));
+        for (const r of pendingRec) {
+          if (!seenRechargeIdsRef.current.has(r.id)) {
+            emitCenterNotification({
+              id: `admin-rec-${r.id}`,
+              title: `Nueva Recarga Pendiente · ${r.negocio_nombre}`,
+              subtitle: `${formatSoles(r.monto_centavos)} · ${r.metodo} (${r.codigo_operacion})`,
+              detail: 'Lista para verificación y aprobación contable en Panel Admin.',
+              tone: 'ai',
+              responseMs: ms,
+            });
+          }
+        }
+        for (const e of activeSos) {
+          if (!seenSosIdsRef.current.has(e.id)) {
+            emitCenterNotification({
+              id: `admin-sos-${e.id}`,
+              title: `🚨 Nueva Alerta SOS · ${e.codigo}`,
+              subtitle: `${e.cliente_nombre} · ${e.ubicacion_texto}`,
+              detail: e.mensaje,
+              tone: 'emergency',
+              responseMs: ms,
+            });
+          }
+        }
+        seenRechargeIdsRef.current = new Set(pendingRec.map((r) => r.id));
+        seenSosIdsRef.current = new Set(activeSos.map((e) => e.id));
       }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -237,10 +334,38 @@ export const AdminPanel: React.FC = () => {
     }
   }
 
+  async function handleLookupNewNegDoc() {
+    const docTipo = newNegTipoPersona === 'NATURAL' ? 'DNI' : 'RUC';
+    const clean = newNegDocNumero.replace(/\D/g, '');
+    setStatusMsg(null);
+    if (!clean) {
+      setStatusMsg({ type: 'err', text: `Ingresa el ${docTipo} para validar con RENIEC/SUNAT.` });
+      return;
+    }
+    setNewNegDocLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+      );
+      setNewNegDocVerified(res);
+      if (res.nombre_completo) {
+        setNewNegRazonSocial(res.nombre_completo);
+        if (!newNegNombre.trim()) setNewNegNombre(res.nombre_completo);
+      }
+      setStatusMsg({ type: 'ok', text: `${res.tipo} ${res.numero} verificado (${res.fuente}).` });
+    } catch (err) {
+      setNewNegDocVerified(null);
+      setStatusMsg({ type: 'err', text: formatPeruLookupError(err) });
+    } finally {
+      setNewNegDocLoading(false);
+    }
+  }
+
   async function handleCreateBusiness(e: React.FormEvent) {
     e.preventDefault();
     if (!token) return;
     setStatusMsg(null);
+    const docTipo = newNegTipoPersona === 'NATURAL' ? 'DNI' : 'RUC';
     try {
       const res = await apiFetch<{
         negocio: { nombre: string; codigo: string };
@@ -252,6 +377,12 @@ export const AdminPanel: React.FC = () => {
           nombre: newNegNombre,
           telefono: newNegTel,
           zona: newNegZona,
+          tipo_persona: newNegTipoPersona,
+          documento_tipo: docTipo,
+          documento_numero: newNegDocNumero.replace(/\D/g, ''),
+          razon_social: newNegRazonSocial || newNegNombre,
+          tipo_negocio: newNegTipoNegocio,
+          modalidades_venta: newNegModalidades,
         },
         token,
       });
@@ -262,9 +393,56 @@ export const AdminPanel: React.FC = () => {
       });
       setNewNegNombre('');
       setNewNegTel('');
+      setNewNegDocNumero('');
+      setNewNegRazonSocial('');
+      setNewNegDocVerified(null);
       await loadPanel();
     } catch (err) {
       setStatusMsg({ type: 'err', text: err instanceof Error ? err.message : 'Error creando negocio' });
+    }
+  }
+
+  async function handleChangeBusinessEstado(
+    negocioId: number,
+    negocioNombre: string,
+    estadoRegla: EstadoRegla
+  ) {
+    if (!token) return;
+    setStatusMsg(null);
+    const motivo = (estadoMotivos[negocioId] || '').trim();
+    const defaultMotivo =
+      estadoRegla === 'ACTIVO'
+        ? 'Cumplimiento verificado y habilitado'
+        : estadoRegla === 'INCUMPLIMIENTO'
+        ? 'Incumplimiento de tiempos o condiciones del servicio'
+        : 'Reporte crítico por estafa o cobro irregular';
+    try {
+      await apiFetch(`/api/admin/negocios/${negocioId}/estado`, {
+        method: 'PATCH',
+        body: {
+          activo: estadoRegla === 'ACTIVO',
+          estado_regla: estadoRegla,
+          motivo_estado: motivo || defaultMotivo,
+        },
+        token,
+      });
+      setStatusMsg({
+        type: 'ok',
+        text: `${negocioNombre} actualizado a ${estadoRegla}.`,
+      });
+      emitCenterNotification({
+        id: `admin-rule-${negocioId}-${estadoRegla}-${Date.now()}`,
+        title: `Estado Regla: ${estadoRegla}`,
+        subtitle: negocioNombre,
+        detail: motivo || defaultMotivo,
+        tone: estadoRegla === 'ACTIVO' ? 'success' : estadoRegla === 'INCUMPLIMIENTO' ? 'warning' : 'emergency',
+      });
+      await loadPanel();
+    } catch (err) {
+      setStatusMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error cambiando estado del negocio',
+      });
     }
   }
 
@@ -642,12 +820,12 @@ export const AdminPanel: React.FC = () => {
             >
               <h2 className="font-display text-2xl font-semibold">Registrar Negocio</h2>
               <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                Nace con saldo S/ 0.00 y un PIN aleatorio mostrado una sola vez.
+                Incluye RUC/DNI SUNAT-RENIEC, categoría y modalidades de venta.
               </p>
               <select
                 value={newNegRubro}
                 onChange={(e) => setNewNegRubro(e.target.value as Rubro)}
-                className="w-full min-h-[44px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+                className="w-full min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
               >
                 {(Object.keys(RUBRO_LABELS) as Rubro[]).map((r) => (
                   <option key={r} value={r}>
@@ -655,13 +833,100 @@ export const AdminPanel: React.FC = () => {
                   </option>
                 ))}
               </select>
+
+              <select
+                value={newNegTipoNegocio}
+                onChange={(e) => setNewNegTipoNegocio(e.target.value)}
+                className="w-full min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+              >
+                {BUSINESS_CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+
+              <div className="rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <select
+                    value={newNegTipoPersona}
+                    onChange={(e) => {
+                      setNewNegTipoPersona(e.target.value as 'NATURAL' | 'JURIDICA');
+                      setNewNegDocVerified(null);
+                    }}
+                    className="min-h-[34px] px-2 rounded-lg border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-[11px] font-semibold"
+                  >
+                    <option value="JURIDICA">Persona Jurídica (RUC)</option>
+                    <option value="NATURAL">Persona Natural (DNI)</option>
+                  </select>
+                  {newNegDocVerified?.validado && (
+                    <BadgeCheck className="w-4 h-4 text-emerald-500" />
+                  )}
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={newNegTipoPersona === 'NATURAL' ? 8 : 11}
+                    value={newNegDocNumero}
+                    onChange={(e) => {
+                      setNewNegDocNumero(e.target.value.replace(/\D/g, ''));
+                      setNewNegDocVerified(null);
+                    }}
+                    placeholder={newNegTipoPersona === 'NATURAL' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+                    className="flex-1 min-h-[38px] px-2.5 rounded-lg border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleLookupNewNegDoc}
+                    disabled={newNegDocLoading}
+                    className="min-h-[38px] px-2.5 rounded-lg bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-[11px] font-bold"
+                  >
+                    {newNegDocLoading ? '...' : 'Validar'}
+                  </button>
+                </div>
+                {newNegRazonSocial && (
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 truncate">
+                    {newNegRazonSocial}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-1">
+                {SALE_MODALITIES.map((mod) => {
+                  const active = newNegModalidades.includes(mod);
+                  return (
+                    <button
+                      key={mod}
+                      type="button"
+                      onClick={() =>
+                        setNewNegModalidades((prev) =>
+                          prev.includes(mod)
+                            ? prev.length > 1
+                              ? prev.filter((x) => x !== mod)
+                              : prev
+                            : [...prev, mod]
+                        )
+                      }
+                      className={`px-2 py-1 rounded-lg text-[10px] font-semibold border ${
+                        active
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'border-black/15 dark:border-white/15 text-[#6A717E]'
+                      }`}
+                    >
+                      {mod}
+                    </button>
+                  );
+                })}
+              </div>
+
               <input
                 type="text"
                 required
                 value={newNegNombre}
                 onChange={(e) => setNewNegNombre(e.target.value)}
                 placeholder="Nombre comercial"
-                className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                className="w-full min-h-[42px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
               <input
                 type="tel"
@@ -669,14 +934,14 @@ export const AdminPanel: React.FC = () => {
                 value={newNegTel}
                 onChange={(e) => setNewNegTel(e.target.value)}
                 placeholder="Teléfono WhatsApp"
-                className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                className="w-full min-h-[42px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
               <input
                 type="text"
                 value={newNegZona}
                 onChange={(e) => setNewNegZona(e.target.value)}
                 placeholder="Zona / Dirección"
-                className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                className="w-full min-h-[42px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
               <button
                 type="submit"
@@ -702,67 +967,149 @@ export const AdminPanel: React.FC = () => {
             </form>
 
             <div className="lg:col-span-8 space-y-4">
-              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-3 overflow-x-auto">
-                <h2 className="font-display text-2xl font-semibold">Negocios Registrados</h2>
-                <table className="w-full text-left text-xs">
-                  <thead className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
-                    <tr>
-                      <th className="py-2 pr-3">Negocio</th>
-                      <th className="py-2 pr-3">Rubro</th>
-                      <th className="py-2 pr-3 text-right">Saldo</th>
-                      <th className="py-2 text-right">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-black/8 dark:divide-white/8">
-                    {data.negocios.map((n) => (
-                      <tr key={n.id}>
-                        <td className="py-2.5 pr-3">
-                          <div className="font-medium">{n.nombre}</div>
-                          <div className="font-mono-tabular text-[11px] text-[#6A717E]">
-                            {n.codigo}
+              <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="font-display text-2xl font-semibold">
+                    Negocios Registrados y Reglas de Cumplimiento
+                  </h2>
+                  <div className="flex flex-wrap gap-1.5 text-[10px] font-bold">
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/35">
+                      ● ACTIVO
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 border border-amber-500/35">
+                      ● INCUMPLIMIENTO
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/35">
+                      ● ESTAFA
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {data.negocios.map((n) => {
+                    const rule: EstadoRegla =
+                      n.estado_regla || (n.activo === 1 ? 'ACTIVO' : 'INCUMPLIMIENTO');
+                    const cardTone =
+                      rule === 'ACTIVO'
+                        ? 'border-emerald-500/45 bg-emerald-500/5'
+                        : rule === 'ESTAFA'
+                        ? 'border-rose-500/60 bg-rose-500/10'
+                        : 'border-amber-500/55 bg-amber-500/10';
+                    const badgeTone =
+                      rule === 'ACTIVO'
+                        ? 'bg-emerald-600 text-white'
+                        : rule === 'ESTAFA'
+                        ? 'bg-rose-600 text-white'
+                        : 'bg-amber-500 text-[#0B0E14]';
+                    const mods = Array.isArray(n.modalidades_venta) ? n.modalidades_venta : [];
+
+                    return (
+                      <div
+                        key={n.id}
+                        className={`rounded-2xl border-2 p-4 space-y-3 transition-colors ${cardTone}`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span
+                                className={`text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full ${badgeTone}`}
+                              >
+                                {rule === 'ACTIVO'
+                                  ? 'ACTIVO · HABILITADO'
+                                  : rule === 'ESTAFA'
+                                  ? 'DESACTIVADO · ESTAFA'
+                                  : 'DESACTIVADO · INCUMPLIMIENTO'}
+                              </span>
+                              <span className="font-mono-tabular text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                                {n.codigo} · {RUBRO_LABELS[n.rubro]}
+                              </span>
+                            </div>
+                            <h3 className="text-base font-bold text-[#14171F] dark:text-white">
+                              {n.nombre}
+                            </h3>
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
+                              {n.documento_numero && (
+                                <span className="font-mono-tabular">
+                                  {n.documento_tipo || 'RUC'}: {n.documento_numero}
+                                </span>
+                              )}
+                              {n.tipo_negocio && <span>· {n.tipo_negocio}</span>}
+                              {mods.length > 0 && <span>· Venta: {mods.join(', ')}</span>}
+                            </div>
+                            {n.motivo_estado && (
+                              <p className="text-xs font-medium text-[#14171F] dark:text-[#F4F1EA]">
+                                Regla aplicada: {n.motivo_estado}
+                              </p>
+                            )}
                           </div>
-                        </td>
-                        <td className="py-2.5 pr-3">{RUBRO_LABELS[n.rubro]}</td>
-                        <td className="py-2.5 pr-3 font-mono-tabular text-right">
-                          {formatSoles(n.saldo)}
-                        </td>
-                        <td className="py-2.5 text-right space-x-2">
-                          {n.bloqueado && (
+
+                          <div className="text-left sm:text-right shrink-0">
+                            <p className="text-[10px] uppercase text-[#6A717E] dark:text-[#98A0AD]">
+                              Saldo Total
+                            </p>
+                            <p className="font-mono-tabular text-lg font-bold">
+                              {formatSoles(n.saldo)}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-black/8 dark:border-white/10">
+                          <input
+                            type="text"
+                            value={estadoMotivos[n.id] || ''}
+                            onChange={(e) =>
+                              setEstadoMotivos((prev) => ({ ...prev, [n.id]: e.target.value }))
+                            }
+                            placeholder="Motivo de activación o suspensión (ej. Demora o estafa)"
+                            className="flex-1 min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs"
+                          />
+                          <div className="flex flex-wrap gap-1.5">
+                            {n.bloqueado && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  await apiFetch(`/api/admin/negocios/${n.id}/unlock`, {
+                                    method: 'POST',
+                                    body: {},
+                                    token: token!,
+                                  });
+                                  await loadPanel();
+                                }}
+                                className="min-h-[38px] px-2.5 rounded-xl border border-[#D4AF37] text-[#D4AF37] text-xs font-bold inline-flex items-center gap-1"
+                              >
+                                <LockOpen className="w-3.5 h-3.5" />
+                                <span>Desbloquear PIN</span>
+                              </button>
+                            )}
                             <button
                               type="button"
-                              onClick={async () => {
-                                await apiFetch(`/api/admin/negocios/${n.id}/unlock`, {
-                                  method: 'POST',
-                                  body: {},
-                                  token: token!,
-                                });
-                                loadPanel();
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg border border-[#D4AF37] text-[#D4AF37] inline-flex items-center gap-1"
+                              onClick={() => handleChangeBusinessEstado(n.id, n.nombre, 'ACTIVO')}
+                              className="min-h-[38px] px-3 rounded-xl bg-emerald-600 text-white text-xs font-bold"
                             >
-                              <LockOpen className="w-3 h-3" />
-                              <span>Desbloquear PIN</span>
+                              Activar
                             </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              await apiFetch(`/api/admin/negocios/${n.id}/estado`, {
-                                method: 'PATCH',
-                                body: { activo: n.activo !== 1 },
-                                token: token!,
-                              });
-                              loadPanel();
-                            }}
-                            className="px-2.5 py-1.5 rounded-lg border border-black/15 dark:border-white/15"
-                          >
-                            {n.activo === 1 ? 'Desactivar' : 'Activar'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleChangeBusinessEstado(n.id, n.nombre, 'INCUMPLIMIENTO')
+                              }
+                              className="min-h-[38px] px-3 rounded-xl bg-amber-500 text-[#0B0E14] text-xs font-bold"
+                            >
+                              Incumplimiento
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleChangeBusinessEstado(n.id, n.nombre, 'ESTAFA')}
+                              className="min-h-[38px] px-3 rounded-xl bg-rose-600 text-white text-xs font-bold"
+                            >
+                              Estafa
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-3">
