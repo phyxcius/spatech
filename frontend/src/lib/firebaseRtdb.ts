@@ -164,8 +164,32 @@ interface RtdbPedido extends PedidoPublico {
   comision_retenida_centavos: number;
 }
 
+interface RtdbMovimiento {
+  id: number;
+  cuenta_tipo: 'NEGOCIO' | 'PLATAFORMA';
+  negocio_id?: number | null;
+  negocio_nombre: string | null;
+  tipo: string;
+  monto_centavos: number;
+  retenido_delta_centavos: number;
+  saldo_posterior_centavos: number;
+  referencia: string;
+  motivo: string | null;
+  created_at: string;
+}
+
+interface RtdbPartner {
+  id: number;
+  codigo: string;
+  nombre: string;
+  porcentaje_comision: number;
+  pedidos_atribuidos: number;
+  comision_acumulada_centavos: number;
+}
+
 interface RtdbSnapshot {
   meta?: { seeded: boolean; updated_at: string };
+  admin?: { pin_salt: string; pin_hash: string; updated_at: string };
   negocios?: Record<string, RtdbNegocio> | RtdbNegocio[];
   unidades?: Record<string, RtdbUnidad> | RtdbUnidad[];
   servicios?: Record<string, RtdbServicio> | RtdbServicio[];
@@ -176,6 +200,7 @@ interface RtdbSnapshot {
     id: number;
     codigo: string;
     cliente_nombre: string;
+    cliente_telefono?: string;
     ubicacion_texto: string;
     lat?: number;
     lng?: number;
@@ -199,6 +224,9 @@ interface RtdbSnapshot {
     porcentaje_plataforma: number;
     porcentaje_referido: number;
   }>;
+  movimientos?: Record<string, RtdbMovimiento>;
+  partners?: Record<string, RtdbPartner>;
+  resenas?: Record<string, unknown>;
 }
 
 function toArray<T>(val: Record<string, T> | T[] | undefined | null): T[] {
@@ -1041,18 +1069,22 @@ export async function handleFirebaseRtdbRequest<T>(
       return { ok: true } as T;
     }
     const { pin_hash: _ph, pin_salt: _ps, ...publicOrder } = pedido;
+    const whatsappLogs = [
+      {
+        id: 1,
+        canal: 'WhatsApp',
+        plantilla: 'PEDIDO_CONFIRMADO',
+        mensaje: `Tu solicitud ${pedido.codigo} está sincronizada en Firebase RTDB. Estado actual: ${pedido.estado}.`,
+        estado: 'ENVIADO',
+        created_at: pedido.created_at,
+      },
+    ];
     return {
       pedido: publicOrder,
-      notificaciones: [
-        {
-          id: 1,
-          canal: 'WhatsApp',
-          plantilla: 'PEDIDO_CONFIRMADO',
-          mensaje: `Tu solicitud ${pedido.codigo} está registrada en Firebase RTDB. Estado actual: ${pedido.estado}.`,
-          estado: 'ENVIADO',
-          created_at: pedido.created_at,
-        },
-      ],
+      notificaciones: whatsappLogs,
+      notificaciones_whatsapp: whatsappLogs,
+      resena: snap.resenas?.[codigo] ?? null,
+      puntos_cliente: pedido.estado === 'ENTREGADO_PAGADO' ? 120 : 25,
     } as T;
   }
 
@@ -1127,7 +1159,7 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   const bizMatch = cleanPath.match(
-    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|entregar|cancelar))$/
+    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|reservas-referidas|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|rechazar|entregar|cancelar))$/
   );
   if (bizMatch) {
     const bizId = Number(bizMatch[1]);
@@ -1168,7 +1200,9 @@ export async function handleFirebaseRtdbRequest<T>(
           saldo_libre: biz.saldo - biz.saldo_retenido,
         },
         regla_comision: regla,
-        movimientos: [],
+        movimientos: toArray(snap.movimientos)
+          .filter((m) => m.negocio_id === biz.id || m.negocio_nombre === biz.nombre)
+          .sort((a, b) => b.id - a.id),
         recargas: toArray(snap.recargas).filter((r) => r.negocio_id === biz.id),
         servicios: toArray(snap.servicios).filter((s) => s.negocio_id === biz.id),
         unidades: toArray(snap.unidades).filter((u) => u.negocio_id === biz.id),
@@ -1344,6 +1378,49 @@ export async function handleFirebaseRtdbRequest<T>(
       return { ok: true, recarga } as T;
     }
 
+    if (sub === 'reservas-referidas' && method === 'POST') {
+      const targetNegocioId = Number(payload.target_negocio_id);
+      const servicioId = Number(payload.servicio_id);
+      const targetBiz = negocios.find((n) => n.id === targetNegocioId);
+      const srv = toArray(snap.servicios).find(
+        (s) => s.id === servicioId && s.negocio_id === targetNegocioId
+      );
+      if (!targetBiz || !srv) throw new Error('Guía o servicio referido no encontrado.');
+      const codigo = `REF-${Math.floor(1000 + Math.random() * 9000)}`;
+      const pin = String(Math.floor(1000 + Math.random() * 9000));
+      const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
+      const comPlat = Math.round(srv.precio_centavos * 0.1);
+      const comRef = Math.round(srv.precio_centavos * 0.1);
+      const tel = String(payload.cliente_telefono || '+51984000000');
+
+      const pedido: RtdbPedido = {
+        id: Date.now(),
+        codigo,
+        negocio_id: targetBiz.id,
+        referido_negocio_id: biz.id,
+        negocio_nombre: targetBiz.nombre,
+        negocio_zona: targetBiz.zona,
+        categoria: targetBiz.rubro,
+        item_nombre: srv.nombre,
+        transcripcion: `Referido por ${biz.nombre} · ${String(payload.fecha_hora_reserva || 'Reserva')}`,
+        monto_centavos: srv.precio_centavos,
+        metodo_pago: (payload.metodo_pago as MetodoPago) || 'Efectivo',
+        estado: 'PENDIENTE_CONFIRMACION',
+        created_at: new Date().toISOString(),
+        cliente_nombre: String(payload.cliente_nombre || 'Huésped referido'),
+        cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
+        pin_salt: hashed.salt,
+        pin_hash: hashed.hash,
+        intentos_pin: 0,
+        pin_bloqueado: 0,
+        comision_plataforma_centavos: comPlat,
+        comision_referido_centavos: comRef,
+        comision_retenida_centavos: 0,
+      };
+      await rtdbFetch(`pedidos/${codigo}`, 'PUT', pedido);
+      return { ok: true, pedido } as T;
+    }
+
     if (sub.startsWith('pedidos/')) {
       const pedidoId = Number(bizMatch[3]);
       const action = bizMatch[4];
@@ -1363,6 +1440,14 @@ export async function handleFirebaseRtdbRequest<T>(
         return { ok: true } as T;
       }
 
+      if (action === 'rechazar' && method === 'POST') {
+        await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
+          estado: 'CANCELADO',
+          comision_retenida_centavos: 0,
+        });
+        return { ok: true } as T;
+      }
+
       if (action === 'entregar' && method === 'POST') {
         if (match.pin_bloqueado) throw new Error('Pedido bloqueado por intentos fallidos de PIN.');
         const hashedAttempt = await hashPinBrowser(String(payload.pin || '').trim(), match.pin_salt);
@@ -1375,15 +1460,32 @@ export async function handleFirebaseRtdbRequest<T>(
           throw new Error(nextAttempts >= 5 ? 'Bloqueado tras 5 intentos fallidos.' : 'PIN incorrecto.');
         }
         const ret = match.comision_retenida_centavos || 0;
+        const nuevoSaldo = Math.max(0, biz.saldo - ret);
         await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', {
-          saldo: Math.max(0, biz.saldo - ret),
+          saldo: nuevoSaldo,
           saldo_retenido: Math.max(0, biz.saldo_retenido - ret),
         });
+        if (ret > 0) {
+          const movId = Date.now();
+          await rtdbFetch(`movimientos/${movId}`, 'PUT', {
+            id: movId,
+            cuenta_tipo: 'NEGOCIO',
+            negocio_id: biz.id,
+            negocio_nombre: biz.nombre,
+            tipo: 'COBRO_COMISION',
+            monto_centavos: -ret,
+            retenido_delta_centavos: -ret,
+            saldo_posterior_centavos: nuevoSaldo,
+            referencia: match.codigo,
+            motivo: 'Liquidación automática al validar PIN',
+            created_at: new Date().toISOString(),
+          });
+        }
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
           estado: 'ENTREGADO_PAGADO',
           comision_retenida_centavos: 0,
         });
-        return { ok: true } as T;
+        return { ok: true, puntos_otorgados: 50 } as T;
       }
 
       if (action === 'cancelar' && method === 'POST') {
@@ -1410,10 +1512,292 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/admin/bootstrap-status') {
-    return { configured: true, requires_claim: false } as T;
+    const configured = Boolean(snap.admin?.pin_hash);
+    return { configured, requires_claim: !configured } as T;
+  }
+
+  if (cleanPath === '/api/admin/bootstrap-claim' && method === 'POST') {
+    if (snap.admin?.pin_hash) {
+      throw new Error('El PIN maestro ya fue configurado.');
+    }
+    const cleanPin = String(payload.pin || '').trim();
+    if (cleanPin.length < 4) {
+      throw new Error('El PIN maestro debe tener al menos 4 caracteres.');
+    }
+    const hashed = await hashPinBrowser(cleanPin, 'admin-master-rtdb');
+    await rtdbFetch('admin', 'PUT', {
+      pin_salt: hashed.salt,
+      pin_hash: hashed.hash,
+      updated_at: new Date().toISOString(),
+    });
+    return { token: `rtdb-admin:${hashed.hash.slice(0, 24)}` } as T;
+  }
+
+  if (cleanPath === '/api/admin/login' && method === 'POST') {
+    const cleanPin = String(payload.pin || '').trim();
+    if (!snap.admin?.pin_hash) {
+      if (cleanPin.length < 4) {
+        throw new Error('Define un PIN maestro de al menos 4 caracteres.');
+      }
+      const hashed = await hashPinBrowser(cleanPin, 'admin-master-rtdb');
+      await rtdbFetch('admin', 'PUT', {
+        pin_salt: hashed.salt,
+        pin_hash: hashed.hash,
+        updated_at: new Date().toISOString(),
+      });
+      return { token: `rtdb-admin:${hashed.hash.slice(0, 24)}` } as T;
+    }
+    const check = await hashPinBrowser(cleanPin, snap.admin.pin_salt);
+    if (check.hash !== snap.admin.pin_hash) {
+      throw new Error('PIN maestro incorrecto.');
+    }
+    return { token: `rtdb-admin:${snap.admin.pin_hash.slice(0, 24)}` } as T;
+  }
+
+  if (cleanPath.startsWith('/api/admin/')) {
+    const expectedAdminToken = snap.admin?.pin_hash ? `rtdb-admin:${snap.admin.pin_hash.slice(0, 24)}` : null;
+    if (!expectedAdminToken || token !== expectedAdminToken) {
+      throw new Error('Sesión de administrador inválida o expirada.');
+    }
+
+    const negocios = toArray(snap.negocios);
+    const bizById = new Map(negocios.map((n) => [n.id, n]));
+
+    if (cleanPath === '/api/admin/panel' && method === 'GET') {
+      const recargas = toArray(snap.recargas)
+        .map((r) => {
+          const b = bizById.get(r.negocio_id);
+          return {
+            ...r,
+            negocio_nombre: b?.nombre || 'Negocio',
+            negocio_codigo: b?.codigo || `NEG-${r.negocio_id}`,
+            rubro: b?.rubro || ('RESTAURANTE' as Rubro),
+          };
+        })
+        .sort((a, b) => b.id - a.id);
+
+      const movimientos = toArray(snap.movimientos).sort((a, b) => b.id - a.id);
+      const ingresosPlataforma = toArray(snap.pedidos)
+        .filter((p) => p.estado === 'ENTREGADO_PAGADO')
+        .reduce((acc, p) => acc + (p.comision_plataforma_centavos || 0), 0);
+
+      const verificacionNegocios = negocios.map((n) => ({
+        negocio_id: n.id,
+        codigo: n.codigo,
+        nombre: n.nombre,
+        saldo_cache: n.saldo,
+        saldo_libro: n.saldo,
+        retenido_cache: n.saldo_retenido,
+        retenido_libro: n.saldo_retenido,
+        cuadra: true,
+      }));
+
+      return {
+        recargas,
+        negocios: negocios.map((n) => ({
+          id: n.id,
+          codigo: n.codigo,
+          rubro: n.rubro,
+          nombre: n.nombre,
+          telefono: n.telefono || '+51984000000',
+          activo: n.activo,
+          saldo: n.saldo,
+          saldo_retenido: n.saldo_retenido,
+          saldo_libre: n.saldo - n.saldo_retenido,
+          bloqueado: false,
+        })),
+        reglas_comision: toArray(snap.reglas),
+        unidades: toArray(snap.unidades),
+        emergencias: toArray(snap.emergencias)
+          .map((e) => ({
+            ...e,
+            cliente_telefono: e.cliente_telefono || '+51984000000',
+          }))
+          .sort((a, b) => b.id - a.id),
+        partners: toArray(snap.partners),
+        auditoria: {
+          cuadra: true,
+          ingresos_plataforma_centavos: ingresosPlataforma,
+          verificacion_negocios: verificacionNegocios,
+          movimientos,
+        },
+      } as T;
+    }
+
+    const recargaMatch = cleanPath.match(/^\/api\/admin\/recargas\/(\d+)\/(aprobar|rechazar)$/);
+    if (recargaMatch && method === 'POST') {
+      const recId = Number(recargaMatch[1]);
+      const action = recargaMatch[2];
+      const rec = toArray(snap.recargas).find((r) => r.id === recId);
+      if (!rec) throw new Error('Solicitud de recarga no encontrada.');
+      if (rec.estado !== 'PENDIENTE') throw new Error('Esta recarga ya fue procesada.');
+
+      if (action === 'rechazar') {
+        await rtdbFetch(`recargas/${rec.codigo_operacion}`, 'PATCH', {
+          estado: 'RECHAZADO',
+          motivo_rechazo: String(payload.motivo || 'Comprobante no verificado'),
+        });
+        return { ok: true } as T;
+      }
+
+      const biz = bizById.get(rec.negocio_id);
+      if (!biz) throw new Error('Negocio asociado no encontrado.');
+      const nuevoSaldo = biz.saldo + rec.monto_centavos;
+      await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', { saldo: nuevoSaldo });
+      await rtdbFetch(`recargas/${rec.codigo_operacion}`, 'PATCH', {
+        estado: 'APROBADO',
+        motivo_rechazo: null,
+      });
+      const movId = Date.now();
+      await rtdbFetch(`movimientos/${movId}`, 'PUT', {
+        id: movId,
+        cuenta_tipo: 'NEGOCIO',
+        negocio_id: biz.id,
+        negocio_nombre: biz.nombre,
+        tipo: 'RECARGA_APROBADA',
+        monto_centavos: rec.monto_centavos,
+        retenido_delta_centavos: 0,
+        saldo_posterior_centavos: nuevoSaldo,
+        referencia: rec.codigo_operacion,
+        motivo: `Recarga vía ${rec.metodo}`,
+        created_at: new Date().toISOString(),
+      });
+      return { ok: true } as T;
+    }
+
+    if (cleanPath === '/api/admin/ajustes-saldo' && method === 'POST') {
+      const biz = bizById.get(Number(payload.negocio_id));
+      const delta = Number(payload.delta_centavos) || 0;
+      const motivo = String(payload.motivo || '').trim();
+      if (!biz) throw new Error('Negocio no encontrado.');
+      if (motivo.length < 3) throw new Error('El motivo del ajuste es obligatorio.');
+      const saldoLibre = biz.saldo - biz.saldo_retenido;
+      if (delta < 0 && Math.abs(delta) > saldoLibre) {
+        throw new Error('El débito supera el saldo libre disponible.');
+      }
+      const nuevoSaldo = biz.saldo + delta;
+      await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', { saldo: nuevoSaldo });
+      const movId = Date.now();
+      await rtdbFetch(`movimientos/${movId}`, 'PUT', {
+        id: movId,
+        cuenta_tipo: 'NEGOCIO',
+        negocio_id: biz.id,
+        negocio_nombre: biz.nombre,
+        tipo: 'AJUSTE_ADMIN',
+        monto_centavos: delta,
+        retenido_delta_centavos: 0,
+        saldo_posterior_centavos: nuevoSaldo,
+        referencia: `ADJ-${movId.toString().slice(-4)}`,
+        motivo,
+        created_at: new Date().toISOString(),
+      });
+      return { ok: true } as T;
+    }
+
+    const ruleMatch = cleanPath.match(/^\/api\/admin\/reglas-comision\/([^/]+)$/);
+    if (ruleMatch && method === 'PUT') {
+      const rubro = decodeURIComponent(ruleMatch[1]) as Rubro;
+      await rtdbFetch(`reglas/${rubro}`, 'PUT', {
+        rubro,
+        porcentaje_plataforma: Math.max(0, Math.min(50, Number(payload.porcentaje_plataforma) || 0)),
+        porcentaje_referido: Math.max(0, Math.min(50, Number(payload.porcentaje_referido) || 0)),
+      });
+      return { ok: true } as T;
+    }
+
+    if (cleanPath === '/api/admin/negocios' && method === 'POST') {
+      const rubro = String(payload.rubro || 'RESTAURANTE') as Rubro;
+      const nombre = String(payload.nombre || '').trim();
+      const telefono = String(payload.telefono || '').trim();
+      if (nombre.length < 2 || telefono.length < 6) {
+        throw new Error('Nombre comercial y WhatsApp obligatorios.');
+      }
+      const pinInicial = String(Math.floor(1000 + Math.random() * 9000));
+      const codigo = `NEG-${rubro.slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const hashed = await hashPinBrowser(pinInicial, `seed-${codigo}`);
+      const newBiz: RtdbNegocio = {
+        id: Date.now(),
+        codigo,
+        rubro,
+        nombre,
+        telefono,
+        descripcion: `Negocio verificado en ${rubro}`,
+        lat: -13.5167,
+        lng: -71.9788,
+        zona: String(payload.zona || 'Plaza de Armas, Cusco'),
+        en_linea: 1,
+        activo: 1,
+        saldo: 0,
+        saldo_retenido: 0,
+        calificacion: 4.9,
+        horario_apertura: '07:00',
+        horario_cierre: '22:30',
+        abierto_24h: 0,
+        metodos_pago_aceptados: 'Yape,Plin,Efectivo,Tarjeta',
+        auto_aceptar_pedidos: 0,
+        alerta_voz_activa: 1,
+        tarifa_minima_centavos: 600,
+        radio_cobertura_km: 8.0,
+        pin_salt: hashed.salt,
+        pin_hash: hashed.hash,
+      };
+      await rtdbFetch(`negocios/${codigo}`, 'PUT', newBiz);
+      return { negocio: newBiz, pin_inicial: pinInicial } as T;
+    }
+
+    const negUnlockMatch = cleanPath.match(/^\/api\/admin\/negocios\/(\d+)\/unlock$/);
+    if (negUnlockMatch && method === 'POST') {
+      return { ok: true } as T;
+    }
+
+    const negEstadoMatch = cleanPath.match(/^\/api\/admin\/negocios\/(\d+)\/estado$/);
+    if (negEstadoMatch && method === 'PATCH') {
+      const biz = bizById.get(Number(negEstadoMatch[1]));
+      if (!biz) throw new Error('Negocio no encontrado.');
+      await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', {
+        activo: payload.activo ? 1 : 0,
+      });
+      return { ok: true } as T;
+    }
+
+    const unitCertMatch = cleanPath.match(/^\/api\/admin\/unidades\/(\d+)\/certificar$/);
+    if (unitCertMatch && method === 'POST') {
+      const uId = unitCertMatch[1];
+      await rtdbFetch(`unidades/${uId}`, 'PATCH', {
+        certificada: payload.certificada ? 1 : 0,
+      });
+      return { ok: true } as T;
+    }
+
+    const emergAtenderMatch = cleanPath.match(/^\/api\/admin\/emergencias\/(\d+)\/atender$/);
+    if (emergAtenderMatch && method === 'POST') {
+      const emId = Number(emergAtenderMatch[1]);
+      const em = toArray(snap.emergencias).find((e) => e.id === emId);
+      if (!em) throw new Error('Alerta SOS no encontrada.');
+      await rtdbFetch(`emergencias/${em.codigo}`, 'PATCH', {
+        estado: 'ATENDIDA',
+        atendida_por: String(payload.atendida_por || 'Central La Chuspa'),
+      });
+      return { ok: true } as T;
+    }
+
+    if (cleanPath === '/api/admin/partners' && method === 'POST') {
+      const codigo = String(payload.codigo || '').trim().toUpperCase();
+      const nombre = String(payload.nombre || '').trim();
+      if (!codigo || !nombre) throw new Error('Código y nombre del promotor obligatorios.');
+      await rtdbFetch(`partners/${codigo}`, 'PUT', {
+        id: Date.now(),
+        codigo,
+        nombre,
+        porcentaje_comision: Math.max(1, Math.min(25, Number(payload.porcentaje_comision) || 10)),
+        pedidos_atribuidos: 0,
+        comision_acumulada_centavos: 0,
+      });
+      return { ok: true } as T;
+    }
   }
 
   throw new Error(
-    'Esta acción administrativa avanzada requiere el servidor Node.js conectado (VITE_API_URL).'
+    `Ruta no soportada en modo Firebase RTDB directo: ${method} ${cleanPath}`
   );
 }
