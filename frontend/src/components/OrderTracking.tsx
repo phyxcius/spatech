@@ -1,5 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, MessageSquare, RefreshCw, Search, ShieldCheck, Star } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  KeyRound,
+  MessageSquare,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Star,
+} from 'lucide-react';
 import { apiFetch } from '../lib/api.ts';
 import {
   ESTADO_LABELS,
@@ -8,6 +17,7 @@ import {
   type PedidoPublico,
   type WhatsAppLog,
 } from '../types.ts';
+import { PinKeypadCard } from './DispatchAndRouteModules.tsx';
 
 interface OrderTrackingProps {
   initialCodigo: string | null;
@@ -28,6 +38,9 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
   const [reviewScore, setReviewScore] = useState(5);
   const [reviewText, setReviewText] = useState('');
   const [reviewPhone, setReviewPhone] = useState('');
+  const [showRiderPreview, setShowRiderPreview] = useState(false);
+  const [riderPinInput, setRiderPinInput] = useState('');
+  const [riderFeedback, setRiderFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
 
   useEffect(() => {
     if (initialCodigo) {
@@ -195,23 +208,90 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                   </button>
                 </div>
 
-                {/* PIN secreto solo visible para el cliente en su sesión de creación */}
+                {/* PIN secreto 4 cajas + advertencia + simulador Vista Rider */}
                 {clientPin && initialCodigo === pedido.codigo && pedido.estado !== 'CANCELADO' && (
-                  <div className="rounded-2xl border border-[#D4AF37]/60 bg-[#D4AF37]/10 p-4 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <ShieldCheck className="w-5 h-5 text-[#D4AF37] shrink-0" />
-                      <div>
-                        <p className="text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158]">
-                          Tu PIN privado de entrega / abordaje
-                        </p>
-                        <p className="text-xs text-[#555B66] dark:text-[#A3A9B5]">
-                          Compártelo únicamente al finalizar o recibir el servicio.
-                        </p>
+                  <div className="rounded-2xl border-2 border-[#D4AF37]/60 bg-[#0D1117] text-slate-100 p-5 space-y-4 shadow-xl">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-[#D4AF37]/15 border border-[#D4AF37]/40 flex items-center justify-center shrink-0">
+                          <ShieldCheck className="w-5 h-5 text-[#D4AF37]" />
+                        </div>
+                        <div>
+                          <p className="text-[11px] uppercase tracking-widest font-bold text-[#D4AF37]">
+                            Código de Entrega (4 Dígitos)
+                          </p>
+                          <p className="text-xs text-slate-300">
+                            {pedido.conductor_nombre
+                              ? `Unidad asignada: ${pedido.conductor_nombre} (${pedido.placa || 'Cusco'})`
+                              : `Repartidor verificado · ${pedido.negocio_nombre}`}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-2">
+                        {clientPin.split('').slice(0, 4).map((digit, i) => (
+                          <div
+                            key={i}
+                            className="w-11 h-12 rounded-xl bg-[#07090E] border-2 border-[#D4AF37]/60 flex items-center justify-center font-mono-tabular text-2xl font-black text-amber-300"
+                          >
+                            {digit}
+                          </div>
+                        ))}
                       </div>
                     </div>
-                    <div className="font-mono-tabular text-3xl font-bold tracking-[0.2em] text-[#14171F] dark:text-[#F4F1EA]">
-                      {clientPin}
+
+                    <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs text-amber-200">
+                      <span className="flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span>⚠️ No des este código antes de revisar tu entrega o completar el viaje.</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowRiderPreview((v) => !v);
+                          setRiderFeedback(null);
+                        }}
+                        className="text-[11px] font-bold text-amber-300 hover:underline shrink-0 flex items-center gap-1"
+                      >
+                        <KeyRound className="w-3.5 h-3.5" />
+                        <span>{showRiderPreview ? 'Ocultar Rider' : 'Vista Rider'}</span>
+                      </button>
                     </div>
+
+                    {showRiderPreview && (
+                      <div className="space-y-2.5 pt-1">
+                        <PinKeypadCard
+                          value={riderPinInput}
+                          onChange={setRiderPinInput}
+                          submitLabel="Simular Validación del Rider"
+                          attemptsInfo="Modo Demostración Cliente ↔ Rider"
+                          onSubmit={() => {
+                            if (riderPinInput === clientPin) {
+                              setRiderFeedback({
+                                ok: true,
+                                msg: '✓ PIN correcto. El socio puede liquidar y liberar el fondo en garantía.',
+                              });
+                            } else {
+                              setRiderFeedback({
+                                ok: false,
+                                msg: '✕ PIN incorrecto. Verifica los 4 dígitos con el cliente.',
+                              });
+                            }
+                          }}
+                        />
+                        {riderFeedback && (
+                          <div
+                            className={`rounded-xl px-3.5 py-2 text-xs font-semibold border ${
+                              riderFeedback.ok
+                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                                : 'border-red-500/40 bg-red-500/10 text-red-300'
+                            }`}
+                          >
+                            {riderFeedback.msg}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 

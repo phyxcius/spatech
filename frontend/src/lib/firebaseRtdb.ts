@@ -127,8 +127,11 @@ interface RtdbSnapshot {
     codigo: string;
     cliente_nombre: string;
     ubicacion_texto: string;
+    lat?: number;
+    lng?: number;
     mensaje: string;
     estado: 'ACTIVA' | 'ATENDIDA';
+    atendida_por?: string | null;
     created_at: string;
   }>;
   recargas?: Record<string, {
@@ -838,6 +841,11 @@ export async function handleFirebaseRtdbRequest<T>(
     } as T;
   }
 
+  if (cleanPath === '/api/public/emergencias' && method === 'GET') {
+    const emergencias = toArray(snap.emergencias).sort((a, b) => (b.id || 0) - (a.id || 0));
+    return { emergencias } as T;
+  }
+
   if (cleanPath === '/api/public/emergencias' && method === 'POST') {
     const codigo = `SOS-${Math.floor(1000 + Math.random() * 9000)}`;
     await rtdbFetch(`emergencias/${codigo}`, 'PUT', {
@@ -845,11 +853,32 @@ export async function handleFirebaseRtdbRequest<T>(
       codigo,
       cliente_nombre: String(payload.cliente_nombre || 'Huésped La Chuspa'),
       ubicacion_texto: String(payload.ubicacion_texto || 'Centro Histórico, Cusco'),
+      lat: typeof payload.lat === 'number' ? payload.lat : -13.5167,
+      lng: typeof payload.lng === 'number' ? payload.lng : -71.9788,
       mensaje: String(payload.mensaje || 'Asistencia prioritaria'),
       estado: 'ACTIVA',
+      atendida_por: null,
       created_at: new Date().toISOString(),
     });
     return { codigo } as T;
+  }
+
+  const dispatchMatch = cleanPath.match(/^\/api\/public\/emergencias\/([^/]+)\/despachar$/);
+  if (dispatchMatch && method === 'POST') {
+    const codigo = decodeURIComponent(dispatchMatch[1]).toUpperCase();
+    const unidad = String(payload.atendida_por || 'Cía. Bomberos Santiago N° 116');
+    const existing = snap.emergencias?.[codigo];
+    if (!existing) {
+      throw new Error('Alerta de emergencia no encontrada en Firebase RTDB.');
+    }
+    await rtdbFetch(`emergencias/${codigo}`, 'PATCH', {
+      estado: 'ATENDIDA',
+      atendida_por: unidad,
+    });
+    return {
+      ok: true,
+      emergencia: { ...existing, estado: 'ATENDIDA', atendida_por: unidad },
+    } as T;
   }
 
   if (cleanPath === '/api/public/taxi/pedir' && method === 'POST') {

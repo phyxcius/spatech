@@ -22,8 +22,13 @@ import {
   type PedidoNegocio,
   type Rubro,
 } from '../types.ts';
+import {
+  ColectivoSeatControl,
+  EmergencyDispatchCenter,
+  PinKeypadCard,
+} from './DispatchAndRouteModules.tsx';
 
-type BizTab = 'NUEVOS' | 'EN_CURSO' | 'HISTORIAL' | 'REFERIDOS' | 'GESTION';
+type BizTab = 'NUEVOS' | 'EN_CURSO' | 'HISTORIAL' | 'REFERIDOS' | 'RUTAS_SOS' | 'GESTION';
 
 interface NegocioSession {
   token: string;
@@ -272,8 +277,7 @@ export const BusinessPanel: React.FC = () => {
     }
   }
 
-  async function handleValidatePin(e: React.FormEvent, pedidoId: number) {
-    e.preventDefault();
+  async function submitPinValidation(pedidoId: number) {
     if (!session) return;
     setActionMsg(null);
     try {
@@ -298,6 +302,11 @@ export const BusinessPanel: React.FC = () => {
       });
       await loadWorkspace(true);
     }
+  }
+
+  async function handleValidatePin(e: React.FormEvent, pedidoId: number) {
+    e.preventDefault();
+    await submitPinValidation(pedidoId);
   }
 
   async function handleRequestRecharge(e: React.FormEvent) {
@@ -608,6 +617,7 @@ export const BusinessPanel: React.FC = () => {
               { id: 'EN_CURSO', label: `En curso (${enCurso.length})` },
               { id: 'HISTORIAL', label: `Historial (${historial.length})` },
               { id: 'REFERIDOS', label: `Reservas Referidas (${referidosPorMi.length})` },
+              { id: 'RUTAS_SOS', label: 'Ruta Colectivo & Despacho' },
               { id: 'GESTION', label: 'Catálogo y Movimientos' },
             ] as Array<{ id: BizTab; label: string }>
           ).map((t) => (
@@ -736,29 +746,18 @@ export const BusinessPanel: React.FC = () => {
                     PIN bloqueado tras 5 intentos fallidos. Solo el cliente puede cancelar el pedido.
                   </p>
                 ) : (
-                  <form onSubmit={(e) => handleValidatePin(e, p.id)} className="flex gap-2">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      maxLength={4}
-                      required
-                      value={pinInputs[p.id] || ''}
-                      onChange={(e) =>
-                        setPinInputs((prev) => ({
-                          ...prev,
-                          [p.id]: e.target.value.replace(/\D/g, '').slice(0, 4),
-                        }))
-                      }
-                      placeholder="PIN 4 dígitos"
-                      className="flex-1 min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] font-mono-tabular text-sm tracking-[0.2em]"
-                    />
-                    <button
-                      type="submit"
-                      className="min-h-[44px] px-5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap"
-                    >
-                      Validar y Cobrar
-                    </button>
-                  </form>
+                  <PinKeypadCard
+                    value={pinInputs[p.id] || ''}
+                    onChange={(next) =>
+                      setPinInputs((prev) => ({
+                        ...prev,
+                        [p.id]: next.replace(/\D/g, '').slice(0, 4),
+                      }))
+                    }
+                    onSubmit={() => void submitPinValidation(p.id)}
+                    submitLabel="Validar PIN y Cobrar"
+                    attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
+                  />
                 )}
               </article>
             ))
@@ -922,6 +921,14 @@ export const BusinessPanel: React.FC = () => {
               ))
             )}
           </div>
+        </div>
+      )}
+
+      {/* TAB RUTA COLECTIVO & DESPACHO SOS */}
+      {tab === 'RUTAS_SOS' && (
+        <div className="space-y-6">
+          <ColectivoSeatControl />
+          <EmergencyDispatchCenter />
         </div>
       )}
 

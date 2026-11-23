@@ -97,7 +97,7 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
 
       const emergencias = db
         .prepare(
-          'SELECT id, codigo, cliente_nombre, ubicacion_texto, mensaje, estado, created_at FROM alertas_emergencias ORDER BY id DESC LIMIT 50'
+          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, estado, atendida_por, created_at FROM alertas_emergencias ORDER BY id DESC LIMIT 50'
         )
         .all() as Array<Record<string, any>>;
 

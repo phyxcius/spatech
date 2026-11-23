@@ -767,6 +767,52 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  app.get('/api/public/emergencias', publicLimiter, (_req, res) => {
+    const emergencias = db
+      .prepare(`
+        SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, estado, atendida_por, created_at
+        FROM alertas_emergencias
+        ORDER BY id DESC
+        LIMIT 50
+      `)
+      .all();
+    res.json({ emergencias });
+  });
+
+  app.post('/api/public/emergencias/:codigo/despachar', publicLimiter, (req, res, next) => {
+    try {
+      const codigo = String(req.params.codigo || '').trim().toUpperCase();
+      const { atendida_por } = req.body || {};
+      const unidad =
+        typeof atendida_por === 'string' && atendida_por.trim()
+          ? atendida_por.trim().slice(0, 80)
+          : 'Cía. Bomberos Santiago N° 116';
+
+      const existing = db
+        .prepare('SELECT id, codigo, estado FROM alertas_emergencias WHERE codigo = ?')
+        .get(codigo) as { id: number; codigo: string; estado: string } | undefined;
+      if (!existing) {
+        throw new HttpError(404, 'Alerta de emergencia no encontrada');
+      }
+
+      db.prepare(`
+        UPDATE alertas_emergencias
+        SET estado = 'ATENDIDA', atendida_por = ?
+        WHERE codigo = ?
+      `).run(unidad, codigo);
+
+      const updated = db
+        .prepare(
+          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, estado, atendida_por, created_at FROM alertas_emergencias WHERE codigo = ?'
+        )
+        .get(codigo);
+
+      res.json({ ok: true, emergencia: updated });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Webhook WhatsApp Business Cloud API (Meta)
   app.get('/api/whatsapp/webhook', (req, res) => {
     const mode = req.query['hub.mode'];

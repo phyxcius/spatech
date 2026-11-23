@@ -9,10 +9,14 @@ import {
   Pill,
   Search,
   ShieldAlert,
+  ShoppingBasket,
+  Siren,
   Sparkles,
+  Sprout,
   Ticket,
   Utensils,
   Volume2,
+  Wrench,
   X,
 } from 'lucide-react';
 import { apiFetch, speakSpanish, stopSpeaking } from '../lib/api.ts';
@@ -24,13 +28,29 @@ import {
   type PedidoPublico,
   type Rubro,
 } from '../types.ts';
+import {
+  BodegaMinimarketModule,
+  CampoDirectoModule,
+  OficiosModule,
+} from './MarketplaceModules.tsx';
+import {
+  EmergencyDispatchCenter,
+  SosActiveModalCard,
+} from './DispatchAndRouteModules.tsx';
 
 interface ClientPortalProps {
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
   openAssistantSignal: number;
 }
 
-type ClientTab = 'CONCIERGE' | 'DIVISAS' | 'BUTACAS';
+type ClientTab =
+  | 'CONCIERGE'
+  | 'DIVISAS'
+  | 'BUTACAS'
+  | 'BODEGA'
+  | 'OFICIOS'
+  | 'CAMPO'
+  | 'DESPACHO';
 
 interface DivisaRate {
   id: number;
@@ -102,16 +122,17 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [rutasButacas, setRutasButacas] = useState<SeatRoute[]>([]);
   const [selectedSeatRoute, setSelectedSeatRoute] = useState<SeatRoute | null>(null);
   const [selectedSeatNum, setSelectedSeatNum] = useState<number | null>(null);
+  const [tourPackage, setTourPackage] = useState<'DIRECTO' | 'AGENCY'>('DIRECTO');
+  const [vinicuncaOcupados, setVinicuncaOcupados] = useState<number[]>([1, 2, 5, 6, 9, 12]);
   const [seatSuccess, setSeatSuccess] = useState<{
     codigo_ruta: string;
     asiento_numero: number;
     cliente_pin: string;
+    nota?: string;
   } | null>(null);
 
   // SOS modal
   const [sosOpen, setSosOpen] = useState(false);
-  const [sosMensaje, setSosMensaje] = useState('Asistencia de seguridad o médica en ruta');
-  const [sosResult, setSosResult] = useState<{ codigo: string } | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -312,6 +333,23 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     e.preventDefault();
     if (!selectedSeatRoute || !selectedSeatNum) return;
     setErrorMsg(null);
+    if (selectedSeatRoute.id === 999) {
+      const pin = String(Math.floor(1000 + Math.random() * 9000));
+      setVinicuncaOcupados((prev) =>
+        prev.includes(selectedSeatNum) ? prev : [...prev, selectedSeatNum]
+      );
+      setSeatSuccess({
+        codigo_ruta: tourPackage === 'DIRECTO' ? 'VIN-CORDILLERA' : 'VIN-QESWACHAKA',
+        asiento_numero: selectedSeatNum,
+        cliente_pin: pin,
+        nota:
+          tourPackage === 'DIRECTO'
+            ? 'Transportes Cordillera Andina (Solo Traslado S/ 45.00)'
+            : "Q'eswachaka Perú Tours (Full Agency S/ 85.00)",
+      });
+      setSelectedSeatNum(null);
+      return;
+    }
     try {
       const res = await apiFetch<{
         codigo_ruta: string;
@@ -337,27 +375,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     }
   }
 
-  async function handleTriggerSos(e: React.FormEvent) {
-    e.preventDefault();
-    setErrorMsg(null);
-    try {
-      const res = await apiFetch<{ codigo: string }>('/api/public/emergencias', {
-        method: 'POST',
-        body: {
-          cliente_nombre: clienteNombre || 'Huésped La Chuspa',
-          cliente_telefono: clienteTelefono || '+51984000000',
-          ubicacion_texto: gpsStatus === 'live' ? `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : 'Centro Histórico, Cusco',
-          lat: coords.lat,
-          lng: coords.lng,
-          mensaje: sosMensaje,
-        },
-      });
-      setSosResult(res);
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : 'Error enviando alerta SOS');
-    }
-  }
-
   const shortcutItems: Array<{ label: string; rubro?: Rubro; tab?: ClientTab; icon: React.ReactNode; prompt?: string }> = [
     { label: 'Taxi GPS', rubro: 'TRANSPORTE', icon: <Compass className="w-4 h-4" />, prompt: 'Quiero un taxi ejecutivo al aeropuerto' },
     { label: 'Gastronomía', rubro: 'RESTAURANTE', icon: <Utensils className="w-4 h-4" />, prompt: 'Ceviche gourmet y lomo saltado' },
@@ -366,6 +383,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     { label: 'Hoteles', rubro: 'HOTEL', icon: <Hotel className="w-4 h-4" />, prompt: 'Suite oxigenada o spa andino' },
     { label: 'Divisas', tab: 'DIVISAS', icon: <ArrowLeftRight className="w-4 h-4" /> },
     { label: 'Butacas VIP', tab: 'BUTACAS', icon: <Ticket className="w-4 h-4" /> },
+    { label: 'Bodega & Vivero', tab: 'BODEGA', icon: <ShoppingBasket className="w-4 h-4" /> },
+    { label: 'Oficios', tab: 'OFICIOS', icon: <Wrench className="w-4 h-4" /> },
+    { label: 'Campo B2B', tab: 'CAMPO', icon: <Sprout className="w-4 h-4" /> },
+    { label: 'Central SOS', tab: 'DESPACHO', icon: <Siren className="w-4 h-4" /> },
   ];
 
   return (
@@ -505,10 +526,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSosResult(null);
-                    setSosOpen(true);
-                  }}
+                  onClick={() => setSosOpen(true)}
                   className="min-h-[44px] px-3.5 rounded-xl border border-[#C81E5B]/40 text-xs font-medium text-[#C81E5B] flex items-center gap-1.5 whitespace-nowrap shrink-0 hover:bg-[#C81E5B]/10"
                 >
                   <ShieldAlert className="w-3.5 h-3.5" />
@@ -791,101 +809,333 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         </section>
       )}
 
-      {/* SUBVISTA: BUTACAS INTERPROVINCIALES */}
-      {subTab === 'BUTACAS' && (
-        <section className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 sm:p-8 space-y-6">
-          <div>
-            <h2 className="font-display text-2xl sm:text-3xl font-semibold">
-              Reserva de Butacas VIP · Valle Sagrado
-            </h2>
-            <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
-              Mapa en tiempo real con bloqueo atómico anti-choques (RSV-CUSCO)
-            </p>
-          </div>
+      {/* SUBVISTA: BUTACAS INTERPROVINCIALES & VAN TURÍSTICA VINICUNCA */}
+      {subTab === 'BUTACAS' && (() => {
+        const vinicuncaRoute: SeatRoute = {
+          id: 999,
+          negocio_id: 3,
+          negocio_nombre:
+            tourPackage === 'DIRECTO'
+              ? 'Transportes Cordillera Andina'
+              : "Q'eswachaka Perú Tours",
+          codigo_ruta: 'TOUR-VINICUNCA-15',
+          ruta: 'Tour: Montaña de 7 Colores (Vinicunca)',
+          unidad: 'Van Turística Panorámica · 15 Asientos',
+          salida_at: 'Diario · 04:30 AM',
+          precio_centavos: tourPackage === 'DIRECTO' ? 4500 : 8500,
+          total_asientos: 14,
+          asientos_ocupados: vinicuncaOcupados,
+        };
+        const allRoutes = [vinicuncaRoute, ...rutasButacas];
+        const activeRoute =
+          allRoutes.find((r) => r.id === (selectedSeatRoute?.id ?? 999)) || vinicuncaRoute;
 
-          <div className="flex flex-wrap gap-3">
-            {rutasButacas.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => {
-                  setSelectedSeatRoute(r);
-                  setSelectedSeatNum(null);
-                }}
-                className={`min-h-[44px] px-4 py-2 rounded-xl border text-left text-xs transition-colors ${
-                  selectedSeatRoute?.id === r.id
-                    ? 'border-[#D4AF37] bg-[#D4AF37]/10 text-[#14171F] dark:text-[#F4F1EA]'
-                    : 'border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]'
-                }`}
-              >
-                <div className="font-semibold">{r.ruta}</div>
-                <div className="font-mono-tabular">
-                  {r.codigo_ruta} · {r.salida_at} · {formatSoles(r.precio_centavos)}
-                </div>
-              </button>
-            ))}
-          </div>
+        const seatLabel = (num: number): string => {
+          if (num === 1) return 'Copiloto Panorámico';
+          if (num >= 11) return 'Fila Trasera (4 asientos)';
+          if (num === 2 || num === 5 || num === 8) return 'Ventana Izquierda';
+          if (num === 3 || num === 6 || num === 9) return 'Pasillo / Medio';
+          return 'Ventana Derecha';
+        };
 
-          {seatSuccess && (
-            <div className="rounded-2xl border border-[#1FA855]/40 bg-[#1FA855]/10 p-5 flex flex-wrap items-center justify-between gap-4">
+        return (
+          <section className="rounded-3xl border border-black/10 dark:border-white/10 bg-[#0D1117] text-slate-100 p-6 sm:p-8 space-y-6 shadow-2xl">
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
               <div>
-                <p className="text-xs text-[#1FA855] font-semibold">Butaca confirmada</p>
-                <p className="text-sm font-medium">
-                  Ruta {seatSuccess.codigo_ruta} · Asiento #{seatSuccess.asiento_numero}
+                <p className="text-[10px] uppercase tracking-[0.2em] text-amber-400 font-bold">
+                  Cotizador Turístico & Mapa de Cabina en Tiempo Real
+                </p>
+                <h2 className="font-display text-2xl sm:text-3xl font-semibold text-white mt-1">
+                  Reserva de Butacas VIP & Tours Cusco
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-400">
+                  Compara operador directo vs agencia completa y elige tu asiento exacto (Ventana / Pasillo).
                 </p>
               </div>
-              <div className="font-mono-tabular text-xl font-bold">
-                PIN de abordaje: {seatSuccess.cliente_pin}
+              <div className="flex items-center gap-3 text-[11px] bg-[#07090E] border border-white/10 px-3.5 py-2 rounded-xl">
+                <span className="flex items-center gap-1.5 text-emerald-300">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500/40 border border-emerald-400" /> Libre
+                </span>
+                <span className="flex items-center gap-1.5 text-amber-300">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-amber-400" /> Tu Elección
+                </span>
+                <span className="flex items-center gap-1.5 text-slate-400">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-slate-700" /> Ocupado
+                </span>
               </div>
             </div>
-          )}
 
-          {selectedSeatRoute && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              <div className="lg:col-span-6 rounded-2xl border border-black/10 dark:border-white/10 p-5 bg-[#F8F7F4] dark:bg-[#0B0E14]">
-                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mb-4">
-                  {selectedSeatRoute.unidad} · Selecciona una butaca libre
-                </p>
-                <div className="grid grid-cols-4 gap-3">
-                  {Array.from({ length: selectedSeatRoute.total_asientos }, (_, i) => i + 1).map(
-                    (num) => {
-                      const occupied = selectedSeatRoute.asientos_ocupados.includes(num);
-                      const chosen = selectedSeatNum === num;
-                      return (
-                        <button
-                          key={num}
-                          type="button"
-                          disabled={occupied}
-                          onClick={() => setSelectedSeatNum(num)}
-                          className={`min-h-[48px] rounded-xl font-mono-tabular text-xs font-semibold border transition-colors ${
-                            occupied
-                              ? 'bg-black/5 dark:bg-white/5 border-transparent text-[#8A8F99] cursor-not-allowed line-through'
-                              : chosen
-                              ? 'bg-[#D4AF37] border-[#D4AF37] text-[#0B0E14]'
-                              : 'bg-white dark:bg-[#121620] border-black/15 dark:border-white/15 hover:border-[#D4AF37]'
-                          }`}
-                        >
-                          #{num}
-                        </button>
-                      );
-                    }
-                  )}
+            {/* Comparador Tour Montaña de 7 Colores */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setTourPackage('DIRECTO');
+                  setSelectedSeatRoute(vinicuncaRoute);
+                  setSelectedSeatNum(null);
+                }}
+                className={`rounded-2xl border p-4 text-left transition-all ${
+                  tourPackage === 'DIRECTO' && activeRoute.id === 999
+                    ? 'border-emerald-500/70 bg-emerald-500/10'
+                    : 'border-white/10 bg-[#07090E] hover:border-white/25'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    Solo Traslado Directo
+                  </span>
+                  <span className="font-mono-tabular text-xl font-black text-emerald-400">
+                    S/ 45.00
+                  </span>
                 </div>
+                <p className="font-display text-lg font-semibold text-white mt-2">
+                  Transportes Cordillera Andina
+                </p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Ida y vuelta Plaza Regocijo ⇄ Cusipata · Van Sprinter reclinable · Ideal si llevas equipo propio.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setTourPackage('AGENCY');
+                  setSelectedSeatRoute(vinicuncaRoute);
+                  setSelectedSeatNum(null);
+                }}
+                className={`rounded-2xl border p-4 text-left transition-all ${
+                  tourPackage === 'AGENCY' && activeRoute.id === 999
+                    ? 'border-amber-500/70 bg-amber-500/10'
+                    : 'border-white/10 bg-[#07090E] hover:border-white/25'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Full Agency Todo Incluido
+                  </span>
+                  <span className="font-mono-tabular text-xl font-black text-amber-400">
+                    S/ 85.00
+                  </span>
+                </div>
+                <p className="font-display text-lg font-semibold text-white mt-2">
+                  Q&apos;eswachaka Perú Tours
+                </p>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Transporte VIP + Desayuno buffet + Almuerzo andino + Guía oficial + Bastones y oxígeno.
+                </p>
+              </button>
+            </div>
+
+            {/* Selector de rutas */}
+            <div className="flex flex-wrap gap-2.5">
+              {allRoutes.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedSeatRoute(r);
+                    setSelectedSeatNum(null);
+                  }}
+                  className={`min-h-[44px] px-4 py-2 rounded-xl border text-left text-xs transition-colors ${
+                    activeRoute.id === r.id
+                      ? 'border-[#D4AF37] bg-[#D4AF37]/15 text-amber-200'
+                      : 'border-white/10 bg-[#07090E] text-slate-400 hover:border-white/25'
+                  }`}
+                >
+                  <div className="font-semibold text-white">{r.ruta}</div>
+                  <div className="font-mono-tabular text-[11px]">
+                    {r.codigo_ruta} · {r.salida_at} · {formatSoles(r.precio_centavos)}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            {seatSuccess && (
+              <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs text-emerald-400 font-bold uppercase">
+                    ✓ Butaca apartada con garantía
+                  </p>
+                  <p className="text-sm font-semibold text-white">
+                    {seatSuccess.nota || `Ruta ${seatSuccess.codigo_ruta}`} · Asiento #{seatSuccess.asiento_numero}
+                  </p>
+                </div>
+                <div className="font-mono-tabular text-xl font-black text-amber-300 bg-[#07090E] px-4 py-2 rounded-xl border border-emerald-500/30">
+                  PIN Abordaje: {seatSuccess.cliente_pin}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+              {/* Plano Espacial de Cabina Van Turística / Sprinter */}
+              <div className="lg:col-span-6 rounded-3xl border border-white/10 p-5 bg-[#07090E] space-y-4">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>{activeRoute.unidad}</span>
+                  <span className="font-mono-tabular text-amber-300">
+                    {activeRoute.total_asientos - activeRoute.asientos_ocupados.length} libres
+                  </span>
+                </div>
+
+                {activeRoute.id === 999 ? (
+                  <div className="max-w-xs mx-auto space-y-2.5 border border-white/10 rounded-3xl p-4 bg-[#0D1117]">
+                    {/* Fila Chofer + Copiloto #1 */}
+                    <div className="grid grid-cols-4 gap-2 pb-2.5 border-b border-white/10">
+                      <div className="col-span-2 h-12 rounded-xl bg-slate-800/80 border border-slate-700 flex items-center justify-center text-[11px] font-bold text-slate-400">
+                        🧑‍✈️ Chofer
+                      </div>
+                      <div className="flex items-center justify-center text-[9px] text-slate-500">
+                        Guía
+                      </div>
+                      {[1].map((num) => {
+                        const occupied = activeRoute.asientos_ocupados.includes(num);
+                        const chosen = selectedSeatNum === num;
+                        return (
+                          <button
+                            key={num}
+                            type="button"
+                            disabled={occupied}
+                            onClick={() => setSelectedSeatNum(num)}
+                            className={`h-12 rounded-xl font-mono-tabular text-xs font-bold border transition-all ${
+                              occupied
+                                ? 'bg-slate-800/50 border-slate-700 text-slate-600 cursor-not-allowed line-through'
+                                : chosen
+                                ? 'bg-amber-400 border-amber-300 text-slate-950 scale-105'
+                                : 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25'
+                            }`}
+                          >
+                            #{num}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Filas 2..4 (Ventana | PASILLO | Medio + Ventana) */}
+                    {[
+                      [2, 3, 4],
+                      [5, 6, 7],
+                      [8, 9, 10],
+                    ].map((row, rIdx) => (
+                      <div key={rIdx} className="grid grid-cols-4 gap-2 items-center">
+                        {[row[0]].map((num) => {
+                          const occupied = activeRoute.asientos_ocupados.includes(num);
+                          const chosen = selectedSeatNum === num;
+                          return (
+                            <button
+                              key={num}
+                              type="button"
+                              disabled={occupied}
+                              onClick={() => setSelectedSeatNum(num)}
+                              className={`h-12 rounded-xl font-mono-tabular text-xs font-bold border transition-all ${
+                                occupied
+                                  ? 'bg-slate-800/50 border-slate-700 text-slate-600 cursor-not-allowed line-through'
+                                  : chosen
+                                  ? 'bg-amber-400 border-amber-300 text-slate-950 scale-105'
+                                  : 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25'
+                              }`}
+                            >
+                              #{num}
+                            </button>
+                          );
+                        })}
+                        <div className="text-center text-[9px] font-bold tracking-widest text-slate-500">
+                          PASILLO
+                        </div>
+                        {row.slice(1).map((num) => {
+                          const occupied = activeRoute.asientos_ocupados.includes(num);
+                          const chosen = selectedSeatNum === num;
+                          return (
+                            <button
+                              key={num}
+                              type="button"
+                              disabled={occupied}
+                              onClick={() => setSelectedSeatNum(num)}
+                              className={`h-12 rounded-xl font-mono-tabular text-xs font-bold border transition-all ${
+                                occupied
+                                  ? 'bg-slate-800/50 border-slate-700 text-slate-600 cursor-not-allowed line-through'
+                                  : chosen
+                                  ? 'bg-amber-400 border-amber-300 text-slate-950 scale-105'
+                                  : 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25'
+                              }`}
+                            >
+                              #{num}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+
+                    {/* Fila trasera de 4 asientos (11-14) */}
+                    <div className="grid grid-cols-4 gap-2 pt-2 border-t border-white/10">
+                      {[11, 12, 13, 14].map((num) => {
+                        const occupied = activeRoute.asientos_ocupados.includes(num);
+                        const chosen = selectedSeatNum === num;
+                        return (
+                          <button
+                            key={num}
+                            type="button"
+                            disabled={occupied}
+                            onClick={() => setSelectedSeatNum(num)}
+                            className={`h-12 rounded-xl font-mono-tabular text-xs font-bold border transition-all ${
+                              occupied
+                                ? 'bg-slate-800/50 border-slate-700 text-slate-600 cursor-not-allowed line-through'
+                                : chosen
+                                ? 'bg-amber-400 border-amber-300 text-slate-950 scale-105'
+                                : 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25'
+                            }`}
+                          >
+                            #{num}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-4 gap-3">
+                    {Array.from({ length: activeRoute.total_asientos }, (_, i) => i + 1).map(
+                      (num) => {
+                        const occupied = activeRoute.asientos_ocupados.includes(num);
+                        const chosen = selectedSeatNum === num;
+                        return (
+                          <button
+                            key={num}
+                            type="button"
+                            disabled={occupied}
+                            onClick={() => setSelectedSeatNum(num)}
+                            className={`min-h-[48px] rounded-xl font-mono-tabular text-xs font-semibold border transition-colors ${
+                              occupied
+                                ? 'bg-white/5 border-transparent text-slate-600 cursor-not-allowed line-through'
+                                : chosen
+                                ? 'bg-[#D4AF37] border-[#D4AF37] text-[#0B0E14]'
+                                : 'bg-[#0D1117] border-white/15 hover:border-[#D4AF37]'
+                            }`}
+                          >
+                            #{num}
+                          </button>
+                        );
+                      }
+                    )}
+                  </div>
+                )}
               </div>
 
               <form onSubmit={handleReserveSeat} className="lg:col-span-6 space-y-4">
-                <p className="text-sm font-medium">
-                  {selectedSeatNum
-                    ? `Butaca seleccionada: #${selectedSeatNum} (${formatSoles(selectedSeatRoute.precio_centavos)})`
-                    : 'Elige una butaca en el mapa para continuar'}
-                </p>
+                <div className="rounded-2xl bg-[#07090E] border border-white/10 p-4 space-y-1">
+                  <span className="text-[10px] uppercase tracking-wider text-amber-400 font-bold">
+                    Resumen de Butaca
+                  </span>
+                  <p className="text-sm font-semibold text-white">
+                    {selectedSeatNum
+                      ? `Asiento #${selectedSeatNum} (${activeRoute.id === 999 ? seatLabel(selectedSeatNum) : 'VIP Sprinter'}) · ${formatSoles(activeRoute.precio_centavos)}`
+                      : 'Toca un asiento libre en verde en el mapa de cabina'}
+                  </p>
+                </div>
                 <input
                   type="text"
                   required
                   value={clienteNombre}
                   onChange={(e) => setClienteNombre(e.target.value)}
-                  placeholder="Nombre del pasajero"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                  placeholder="Nombre completo del pasajero"
+                  className="w-full min-h-[44px] px-4 rounded-xl border border-white/15 bg-[#07090E] text-sm text-white"
                 />
                 <input
                   type="tel"
@@ -893,20 +1143,35 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   value={clienteTelefono}
                   onChange={(e) => setClienteTelefono(e.target.value)}
                   placeholder="WhatsApp (+51...)"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                  className="w-full min-h-[44px] px-4 rounded-xl border border-white/15 bg-[#07090E] text-sm text-white"
                 />
                 <button
                   type="submit"
                   disabled={!selectedSeatNum}
-                  className="w-full min-h-[48px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold disabled:opacity-40"
+                  onClick={() => {
+                    if (!selectedSeatRoute) setSelectedSeatRoute(activeRoute);
+                  }}
+                  className="w-full min-h-[48px] rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-bold uppercase tracking-wider disabled:opacity-40"
                 >
-                  Confirmar Butaca
+                  Apartar Butaca con PIN de Garantía
                 </button>
               </form>
             </div>
-          )}
-        </section>
-      )}
+          </section>
+        );
+      })()}
+
+      {/* SUBVISTA: BODEGA & MINIMARKET CON ZOOM HD Y CANASTA DINÁMICA */}
+      {subTab === 'BODEGA' && <BodegaMinimarketModule />}
+
+      {/* SUBVISTA: OFICIOS & TÉCNICOS VERIFICADOS */}
+      {subTab === 'OFICIOS' && <OficiosModule />}
+
+      {/* SUBVISTA: CAMPO DIRECTO B2B (PREVENTA MAYORISTA) */}
+      {subTab === 'CAMPO' && <CampoDirectoModule />}
+
+      {/* SUBVISTA: PANEL DE DESPACHO UNIFICADO (CENTRAL DE EMERGENCIAS CUSCO) */}
+      {subTab === 'DESPACHO' && <EmergencyDispatchCenter />}
 
       {/* HOJA DE CONFIRMACIÓN DE PEDIDO (Confirmar / Cancelar / Cerrar) */}
       {selectedOption && (
@@ -1047,79 +1312,16 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         </div>
       )}
 
-      {/* MODAL EMERGENCIA SOS */}
+      {/* MODAL EMERGENCIA CHUSPA SOS ACTIVO */}
       {sosOpen && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Emergencia SOS"
-          className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
-        >
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#121620] border border-[#C81E5B]/40 p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-display text-2xl font-semibold text-[#C81E5B]">
-                Asistencia Inmediata SOS
-              </h3>
-              <button
-                type="button"
-                onClick={() => setSosOpen(false)}
-                aria-label="Cerrar SOS"
-                className="min-h-[44px] min-w-[44px] rounded-xl border border-black/10 dark:border-white/10 flex items-center justify-center"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            {sosResult ? (
-              <div className="space-y-3 py-2">
-                <p className="text-sm">
-                  Alerta registrada con código{' '}
-                  <span className="font-mono-tabular font-bold text-[#C81E5B]">
-                    {sosResult.codigo}
-                  </span>
-                  . Central La Chuspa y tu contacto de confianza fueron notificados por WhatsApp.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setSosOpen(false)}
-                  className="w-full min-h-[44px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold"
-                >
-                  Entendido
-                </button>
-              </div>
-            ) : (
-              <form onSubmit={handleTriggerSos} className="space-y-3">
-                <input
-                  type="text"
-                  required
-                  value={clienteNombre}
-                  onChange={(e) => setClienteNombre(e.target.value)}
-                  placeholder="Tu nombre"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <input
-                  type="tel"
-                  required
-                  value={clienteTelefono}
-                  onChange={(e) => setClienteTelefono(e.target.value)}
-                  placeholder="Teléfono / WhatsApp"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <textarea
-                  rows={2}
-                  value={sosMensaje}
-                  onChange={(e) => setSosMensaje(e.target.value)}
-                  className="w-full p-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <button
-                  type="submit"
-                  className="w-full min-h-[48px] rounded-xl bg-[#C81E5B] text-white text-sm font-semibold"
-                >
-                  Enviar Alerta SOS Ahora
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
+        <SosActiveModalCard
+          onClose={() => setSosOpen(false)}
+          onOpenDispatchCenter={() => setSubTab('DESPACHO')}
+          coords={coords}
+          onRefreshGps={requestGps}
+          defaultNombre={clienteNombre}
+          defaultTelefono={clienteTelefono}
+        />
       )}
     </div>
   );
