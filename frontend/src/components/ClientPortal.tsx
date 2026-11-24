@@ -691,6 +691,22 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     const t0 = performance.now();
     try {
       if (selectedOption.tipo === 'TAXI' && selectedOption.unidad_id) {
+        const destLower = (destino || '').toLowerCase();
+        const isCuscoArea = Math.abs(coords.lat - -13.52) < 0.3 && Math.abs(coords.lng - -71.96) < 0.3;
+        const resolvedDest = destLower.includes('real plaza')
+          ? { lat: -13.5249, lng: -71.9508 }
+          : destLower.includes('terminal')
+            ? { lat: -13.5322, lng: -71.9642 }
+            : destLower.includes('hospital')
+              ? { lat: -13.5236, lng: -71.9577 }
+              : destLower.includes('armas')
+                ? { lat: -13.5167, lng: -71.9788 }
+                : isCuscoArea
+                  ? { lat: -13.5356, lng: -71.9388 }
+                  : {
+                      lat: Number((coords.lat - 0.0145).toFixed(5)),
+                      lng: Number((coords.lng + 0.0215).toFixed(5)),
+                    };
         const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
           '/api/public/taxi/pedir',
           {
@@ -707,6 +723,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               destino_texto: destino || 'Aeropuerto Velasco Astete',
               origen_lat: coords.lat,
               origen_lng: coords.lng,
+              destino_lat: resolvedDest.lat,
+              destino_lng: resolvedDest.lng,
               promotor_codigo: promotorCodigo || undefined,
             },
           }

@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, ApiError, playLuxuryChime, speakSpanish } from '../lib/api.ts';
+import { haversineKm } from '../lib/cuscoMarkets.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
@@ -490,8 +491,17 @@ export const BusinessPanel: React.FC = () => {
         body: {},
         token: session.token,
       });
-      setActionMsg({ type: 'ok', text: 'Pedido aceptado. Comisión retenida en garantía.' });
+      setActionMsg({
+        type: 'ok',
+        text:
+          session.rubro === 'TRANSPORTE'
+            ? 'Viaje aceptado. Sigue la ruta en el mapa hacia el Punto A para recoger al pasajero.'
+            : 'Pedido aceptado. Comisión retenida en garantía.',
+      });
       await loadWorkspace(true);
+      if (session.rubro === 'TRANSPORTE') {
+        setTab('EN_CURSO');
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 402) {
         setActionMsg({ type: 'err', text: err.message });
@@ -1634,63 +1644,233 @@ export const BusinessPanel: React.FC = () => {
               Sin servicios en curso.
             </div>
           ) : (
-            enCurso.map((p) => (
-              <article
-                key={p.id}
-                className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-4"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
-                      {p.codigo} · Retención: {formatSoles(p.comision_retenida_centavos)}
-                    </p>
-                    <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
-                      Cliente: {p.cliente_nombre} · {p.cliente_telefono}
-                    </p>
-                    {p.cliente_documento_numero && (
-                      <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
-                        <BadgeCheck className="w-3.5 h-3.5" /> {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
-                      </p>
-                    )}
-                  </div>
-                  <p className="font-mono-tabular text-xl font-semibold shrink-0">
-                    {formatSoles(p.monto_centavos)}
-                  </p>
-                </div>
+            enCurso.map((p) => {
+              const isTaxiOrder = p.categoria === 'TRANSPORTE' || session.rubro === 'TRANSPORTE';
+              if (isTaxiOrder) {
+                const activeUnit =
+                  resumen?.unidades.find((u) => u.id === activeUnitId) ||
+                  resumen?.unidades.find((u) => u.id === p.unidad_id) ||
+                  resumen?.unidades[0];
+                const oLat = p.origen_lat ?? -13.5167;
+                const oLng = p.origen_lng ?? -71.9788;
+                const dLat = p.destino_lat ?? -13.5356;
+                const dLng = p.destino_lng ?? -71.9388;
+                const drvLat =
+                  activeUnit?.lat ??
+                  p.conductor_lat ??
+                  p.unidad_lat ??
+                  resumen?.negocio.lat ??
+                  -13.5174;
+                const drvLng =
+                  activeUnit?.lng ??
+                  p.conductor_lng ??
+                  p.unidad_lng ??
+                  resumen?.negocio.lng ??
+                  -71.9765;
+                const pickupKm = Math.max(0.2, haversineKm(drvLat, drvLng, oLat, oLng));
+                const pickupEta = Math.max(1, Math.round(pickupKm * 3.2 + 1));
+                const tripKm = Math.max(0.8, p.distancia_km ?? haversineKm(oLat, oLng, dLat, dLng));
+                const tripEta = p.eta_min || Math.max(4, Math.round(tripKm * 3.1 + 2));
 
-                {p.referido_negocio_id ? (
-                  <div className="rounded-xl border border-[#D4AF37]/50 bg-[#D4AF37]/10 p-4 space-y-1">
-                    <p className="text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158]">
-                      Reserva referida por {p.referidor_nombre || `Socio #${p.referido_negocio_id}`}
-                    </p>
-                    <p className="text-xs text-[#555B66] dark:text-[#A3A9B5]">
-                      Entrega este PIN al referidor al terminar para que liquide tu comisión:
-                    </p>
-                    <p className="font-mono-tabular text-2xl font-bold tracking-[0.25em] pt-1">
-                      {p.pin_prestador || '----'}
+                return (
+                  <article
+                    key={p.id}
+                    className="md:col-span-2 rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 sm:p-6"
+                  >
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+                      {/* Izquierda: Mapa de Ruta del Taxista (Conductor -> Punto A -> Destino B) */}
+                      <div className="lg:col-span-7 flex flex-col gap-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                              Ruta en Vivo · Recoger en A y llevar a B
+                            </p>
+                            <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                              Para recoger: <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">{pickupEta} min ({pickupKm.toFixed(1)} km)</span> · Viaje A → B: <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">{tripEta} min ({tripKm.toFixed(1)} km)</span>
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={!activeUnit || driverGpsSending}
+                            onClick={() => void handleSendDriverGps()}
+                            className="min-h-[38px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                          >
+                            <Crosshair className="w-3.5 h-3.5" />
+                            <span>{driverGpsSending ? 'Enviando GPS...' : 'Actualizar Mi GPS'}</span>
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                          <div className="rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] px-3 py-2 flex items-start gap-2">
+                            <span className="w-5 h-5 rounded-md bg-[#2563EB] text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                              A
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">Punto de recojo</p>
+                              <p className="font-semibold truncate">{p.origen_texto || 'Ubicación GPS del pasajero'}</p>
+                            </div>
+                          </div>
+                          <div className="rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] px-3 py-2 flex items-start gap-2">
+                            <span className="w-5 h-5 rounded-md bg-[#16A34A] text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                              B
+                            </span>
+                            <div className="min-w-0">
+                              <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">Destino final</p>
+                              <p className="font-semibold truncate">{p.destino_texto || 'Destino en Cusco'}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <CuscoGeoMap
+                          mode="TAXI"
+                          userLat={oLat}
+                          userLng={oLng}
+                          originLabel={p.origen_texto || 'Recoger pasajero (A)'}
+                          destLat={dLat}
+                          destLng={dLng}
+                          destLabel={p.destino_texto || 'Destino (B)'}
+                          driverLat={drvLat}
+                          driverLng={drvLng}
+                          driverLabel={
+                            activeUnit
+                              ? `${activeUnit.conductor_nombre} (${activeUnit.placa})`
+                              : p.conductor_nombre
+                                ? `${p.conductor_nombre} (${p.placa || 'Taxi'})`
+                                : 'Mi Taxi GPS'
+                          }
+                          driverEtaBadge={`${pickupEta} min\n${pickupKm.toFixed(1)} km`}
+                          routeBadge={`${tripEta} min\n${tripKm.toFixed(1)} km`}
+                          gpsLive={Boolean(activeUnit?.lat && activeUnit?.lng)}
+                          onRequestGps={() => void handleSendDriverGps()}
+                          pins={[]}
+                          heightClass="h-[290px] sm:h-[340px]"
+                        />
+                      </div>
+
+                      {/* Derecha: Pasajero verificado + Teclado PIN */}
+                      <div className="lg:col-span-5 flex flex-col justify-between gap-4">
+                        <div className="space-y-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
+                                {p.codigo} · Retención: {formatSoles(p.comision_retenida_centavos)}
+                              </p>
+                              <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
+                              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
+                                Pasajero: {p.cliente_nombre} · {p.cliente_telefono}
+                              </p>
+                              {p.cliente_documento_numero && (
+                                <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
+                                  <BadgeCheck className="w-3.5 h-3.5" />
+                                  {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero} (Identidad verificada · Sin factura)
+                                </p>
+                              )}
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="font-mono-tabular text-xl font-semibold">
+                                {formatSoles(p.monto_centavos)}
+                              </p>
+                              <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                {p.metodo_pago}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {p.referido_negocio_id ? (
+                          <div className="rounded-xl border border-[#D4AF37]/50 bg-[#D4AF37]/10 p-4 space-y-1">
+                            <p className="text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158]">
+                              Reserva referida por {p.referidor_nombre || `Socio #${p.referido_negocio_id}`}
+                            </p>
+                            <p className="text-xs text-[#555B66] dark:text-[#A3A9B5]">
+                              Entrega este PIN al referidor al terminar para que liquide tu comisión:
+                            </p>
+                            <p className="font-mono-tabular text-2xl font-bold tracking-[0.25em] pt-1">
+                              {p.pin_prestador || '----'}
+                            </p>
+                          </div>
+                        ) : p.pin_bloqueado === 1 ? (
+                          <p className="text-xs text-[#C81E5B] font-medium">
+                            PIN bloqueado tras 5 intentos fallidos. Solo el pasajero puede cancelar el viaje.
+                          </p>
+                        ) : (
+                          <PinKeypadCard
+                            value={pinInputs[p.id] || ''}
+                            onChange={(next) =>
+                              setPinInputs((prev) => ({
+                                ...prev,
+                                [p.id]: next.replace(/\D/g, '').slice(0, 4),
+                              }))
+                            }
+                            onSubmit={() => void submitPinValidation(p.id)}
+                            submitLabel="Validar PIN y Finalizar Viaje"
+                            attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              }
+
+              return (
+                <article
+                  key={p.id}
+                  className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
+                        {p.codigo} · Retención: {formatSoles(p.comision_retenida_centavos)}
+                      </p>
+                      <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
+                      <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
+                        Cliente: {p.cliente_nombre} · {p.cliente_telefono}
+                      </p>
+                      {p.cliente_documento_numero && (
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
+                          <BadgeCheck className="w-3.5 h-3.5" /> {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
+                        </p>
+                      )}
+                    </div>
+                    <p className="font-mono-tabular text-xl font-semibold shrink-0">
+                      {formatSoles(p.monto_centavos)}
                     </p>
                   </div>
-                ) : p.pin_bloqueado === 1 ? (
-                  <p className="text-xs text-[#C81E5B] font-medium">
-                    PIN bloqueado tras 5 intentos fallidos. Solo el cliente puede cancelar el pedido.
-                  </p>
-                ) : (
-                  <PinKeypadCard
-                    value={pinInputs[p.id] || ''}
-                    onChange={(next) =>
-                      setPinInputs((prev) => ({
-                        ...prev,
-                        [p.id]: next.replace(/\D/g, '').slice(0, 4),
-                      }))
-                    }
-                    onSubmit={() => void submitPinValidation(p.id)}
-                    submitLabel="Validar PIN y Cobrar"
-                    attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
-                  />
-                )}
-              </article>
-            ))
+
+                  {p.referido_negocio_id ? (
+                    <div className="rounded-xl border border-[#D4AF37]/50 bg-[#D4AF37]/10 p-4 space-y-1">
+                      <p className="text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158]">
+                        Reserva referida por {p.referidor_nombre || `Socio #${p.referido_negocio_id}`}
+                      </p>
+                      <p className="text-xs text-[#555B66] dark:text-[#A3A9B5]">
+                        Entrega este PIN al referidor al terminar para que liquide tu comisión:
+                      </p>
+                      <p className="font-mono-tabular text-2xl font-bold tracking-[0.25em] pt-1">
+                        {p.pin_prestador || '----'}
+                      </p>
+                    </div>
+                  ) : p.pin_bloqueado === 1 ? (
+                    <p className="text-xs text-[#C81E5B] font-medium">
+                      PIN bloqueado tras 5 intentos fallidos. Solo el cliente puede cancelar el pedido.
+                    </p>
+                  ) : (
+                    <PinKeypadCard
+                      value={pinInputs[p.id] || ''}
+                      onChange={(next) =>
+                        setPinInputs((prev) => ({
+                          ...prev,
+                          [p.id]: next.replace(/\D/g, '').slice(0, 4),
+                        }))
+                      }
+                      onSubmit={() => void submitPinValidation(p.id)}
+                      submitLabel="Validar PIN y Cobrar"
+                      attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
+                    />
+                  )}
+                </article>
+              );
+            })
           )}
         </div>
       )}
