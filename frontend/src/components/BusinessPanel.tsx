@@ -2,15 +2,23 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   BadgeCheck,
   Bell,
+  CarFront,
   Check,
+  Crosshair,
+  FileCheck2,
+  Gauge,
   KeyRound,
+  ListChecks,
   LogOut,
+  MapPin,
+  Pencil,
   Plus,
   Power,
   Printer,
   RefreshCw,
   Send,
   Settings,
+  Star,
   UserPlus,
   Wallet,
   X,
@@ -36,6 +44,7 @@ import {
   type Rubro,
 } from '../types.ts';
 import { BusinessConfigTab } from './BusinessConfigTab.tsx';
+import { CuscoGeoMap } from './CuscoGeoMap.tsx';
 import {
   ColectivoSeatControl,
   EmergencyDispatchCenter,
@@ -119,6 +128,12 @@ interface ResumenData {
     conductor_nombre: string;
     placa: string;
     modelo: string;
+    color?: string;
+    lat?: number;
+    lng?: number;
+    calificacion?: number;
+    tarifa_base_centavos?: number;
+    tarifa_km_centavos?: number;
     estado: string;
     certificada: number;
   }>;
@@ -129,6 +144,7 @@ interface ResumenData {
     tasa_compra: number;
     tasa_venta: number;
   }>;
+  facturacion_apisperu_activa?: boolean;
 }
 
 const DEMO_ACCESS_GUIDE: Array<{ codigo: string; rubro: string; pin: string; nota: string }> = [
@@ -204,6 +220,15 @@ export const BusinessPanel: React.FC = () => {
   const [newServDesc, setNewServDesc] = useState('');
   const [newServUnidadMedida, setNewServUnidadMedida] = useState('Unidad');
 
+  // Modo Conductor (TRANSPORTE) & SUNAT (Otros rubros)
+  const [driverSubTab, setDriverSubTab] = useState<'SOLICITUDES' | 'DESEMPENO'>('SOLICITUDES');
+  const [activeUnitId, setActiveUnitId] = useState<number | null>(null);
+  const [selectedRideOrder, setSelectedRideOrder] = useState<PedidoNegocio | null>(null);
+  const [customCounterOpen, setCustomCounterOpen] = useState(false);
+  const [customCounterSoles, setCustomCounterSoles] = useState('');
+  const [driverGpsSending, setDriverGpsSending] = useState(false);
+  const [sunatSendingId, setSunatSendingId] = useState<number | null>(null);
+
   async function refreshDirectorio() {
     try {
       const res = await apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio');
@@ -256,18 +281,27 @@ export const BusinessPanel: React.FC = () => {
         }),
       ]);
       if (resRes?.negocio) {
+        const nextUnidades = Array.isArray(resRes.unidades) ? resRes.unidades : [];
         setResumen({
           ...resRes,
           movimientos: Array.isArray(resRes.movimientos) ? resRes.movimientos : [],
           recargas: Array.isArray(resRes.recargas) ? resRes.recargas : [],
           servicios: Array.isArray(resRes.servicios) ? resRes.servicios : [],
-          unidades: Array.isArray(resRes.unidades) ? resRes.unidades : [],
+          unidades: nextUnidades,
           tasas: Array.isArray(resRes.tasas) ? resRes.tasas : [],
         });
+        if (nextUnidades.length > 0) {
+          setActiveUnitId((prev) =>
+            prev && nextUnidades.some((u) => u.id === prev) ? prev : nextUnidades[0].id
+          );
+        }
       }
       const nextPedidos = Array.isArray(pedRes?.pedidos) ? pedRes.pedidos : [];
       const nextGuias = Array.isArray(guiasRes?.guias) ? guiasRes.guias : [];
       setPedidos(nextPedidos);
+      setSelectedRideOrder((prev) =>
+        prev ? nextPedidos.find((p) => p.id === prev.id && p.estado === 'PENDIENTE_CONFIRMACION') || null : null
+      );
       setGuias(nextGuias);
       if (nextGuias.length > 0 && !refGuiaKey) {
         const g = nextGuias[0];
@@ -490,6 +524,154 @@ export const BusinessPanel: React.FC = () => {
     }
   }
 
+  async function handleToggleDriverAvailability() {
+    if (!session || !resumen) return;
+    const unit =
+      resumen.unidades.find((u) => u.id === activeUnitId) || resumen.unidades[0];
+    if (!unit) {
+      await handleToggleOnline();
+      return;
+    }
+    const nextUnitEstado = unit.estado === 'DISPONIBLE' ? 'OCUPADO' : 'DISPONIBLE';
+    try {
+      await apiFetch(`/api/negocio/${session.negocioId}/unidades/${unit.id}`, {
+        method: 'PATCH',
+        body: { estado: nextUnitEstado },
+        token: session.token,
+      });
+      if (nextUnitEstado === 'DISPONIBLE' && !resumen.negocio.en_linea) {
+        await apiFetch(`/api/negocio/${session.negocioId}/estado`, {
+          method: 'PATCH',
+          body: { en_linea: true },
+          token: session.token,
+        });
+      }
+      setActionMsg({
+        type: 'ok',
+        text:
+          nextUnitEstado === 'DISPONIBLE'
+            ? `Unidad ${unit.placa} en modo DISPONIBLE recibiendo solicitudes.`
+            : `Unidad ${unit.placa} marcada como OCUPADA.`,
+      });
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error cambiando disponibilidad del conductor',
+      });
+    }
+  }
+
+  async function handleSendDriverGps() {
+    if (!session || !resumen) return;
+    const unit =
+      resumen.unidades.find((u) => u.id === activeUnitId) || resumen.unidades[0];
+    if (!unit) return;
+    setDriverGpsSending(true);
+    const pushCoords = async (lat: number, lng: number, sourceLabel: string) => {
+      try {
+        await apiFetch(`/api/negocio/${session.negocioId}/unidades/${unit.id}`, {
+          method: 'PATCH',
+          body: { lat, lng },
+          token: session.token,
+        });
+        setActionMsg({
+          type: 'ok',
+          text: `GPS de ${unit.placa} (${sourceLabel}) sincronizado en mapa en vivo: ${lat.toFixed(4)}, ${lng.toFixed(4)}.`,
+        });
+        await loadWorkspace(true);
+      } catch (err) {
+        setActionMsg({
+          type: 'err',
+          text: err instanceof Error ? err.message : 'Error enviando ubicación GPS',
+        });
+      } finally {
+        setDriverGpsSending(false);
+      }
+    };
+
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          void pushCoords(pos.coords.latitude, pos.coords.longitude, 'GPS del dispositivo');
+        },
+        () => {
+          const baseLat = unit.lat ?? resumen.negocio.lat ?? -13.5174;
+          const baseLng = unit.lng ?? resumen.negocio.lng ?? -71.9765;
+          void pushCoords(
+            Number((baseLat + 0.0008).toFixed(5)),
+            Number((baseLng - 0.0006).toFixed(5)),
+            'GPS Cusco Centro'
+          );
+        },
+        { timeout: 5000 }
+      );
+    } else {
+      const baseLat = unit.lat ?? resumen.negocio.lat ?? -13.5174;
+      const baseLng = unit.lng ?? resumen.negocio.lng ?? -71.9765;
+      await pushCoords(
+        Number((baseLat + 0.0008).toFixed(5)),
+        Number((baseLng - 0.0006).toFixed(5)),
+        'GPS Cusco Centro'
+      );
+    }
+  }
+
+  async function handleSendCounterOffer(pedidoId: number, montoCentavos: number) {
+    if (!session) return;
+    setActionMsg(null);
+    try {
+      await apiFetch(`/api/negocio/${session.negocioId}/pedidos/${pedidoId}/contraoferta`, {
+        method: 'POST',
+        body: { monto_centavos: montoCentavos },
+        token: session.token,
+      });
+      setCustomCounterOpen(false);
+      setCustomCounterSoles('');
+      setActionMsg({
+        type: 'ok',
+        text: `Contraoferta de ${formatSoles(montoCentavos)} enviada al pasajero en vivo.`,
+      });
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'No se pudo enviar la contraoferta',
+      });
+    }
+  }
+
+  async function handleEmitirSunat(pedidoId: number) {
+    if (!session || session.rubro === 'TRANSPORTE') return;
+    setSunatSendingId(pedidoId);
+    setActionMsg(null);
+    try {
+      const res = await apiFetch<{
+        ok: boolean;
+        enviado_apisperu: boolean;
+        mensaje?: string | null;
+        comprobante: ComprobanteElectronico;
+      }>(`/api/negocio/${session.negocioId}/pedidos/${pedidoId}/emitir-sunat`, {
+        method: 'POST',
+        body: {},
+        token: session.token,
+      });
+      setActionMsg({
+        type: 'ok',
+        text: `Comprobante ${res.comprobante.numero_completo} actualizado (${res.comprobante.sunat_estado || 'REGISTRADA_LOCAL'}).`,
+      });
+      setInvoiceModal({ comprobante: res.comprobante });
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error enviando comprobante a SUNAT',
+      });
+    } finally {
+      setSunatSendingId(null);
+    }
+  }
+
   async function submitPinValidation(pedidoId: number) {
     if (!session) return;
     setActionMsg(null);
@@ -506,12 +688,16 @@ export const BusinessPanel: React.FC = () => {
           token: session.token,
         }
       );
+      const isTaxi =
+        session.rubro === 'TRANSPORTE' || res.pedido?.categoria === 'TRANSPORTE';
       setActionMsg({
         type: 'ok',
-        text: `PIN validado. Servicio completado y liquidado (+${res.puntos_otorgados} pts al cliente). Comprobante listo para imprimir.`,
+        text: isTaxi
+          ? `PIN validado. Traslado completado y liquidado (+${res.puntos_otorgados} pts al pasajero).`
+          : `PIN validado. Servicio completado y liquidado (+${res.puntos_otorgados} pts al cliente). Comprobante listo para imprimir.`,
       });
       setPinInputs((prev) => ({ ...prev, [pedidoId]: '' }));
-      if (res.comprobante || res.pedido) {
+      if (!isTaxi && (res.comprobante || res.pedido)) {
         setInvoiceModal({ order: res.pedido, comprobante: res.comprobante });
       }
       await loadWorkspace(true);
@@ -1103,8 +1289,286 @@ export const BusinessPanel: React.FC = () => {
         </div>
       )}
 
-      {/* TAB NUEVOS */}
-      {tab === 'NUEVOS' && (
+      {/* TAB NUEVOS (para TRANSPORTE incluye Modo Conductor estilo inDrive) */}
+      {tab === 'NUEVOS' && session.rubro === 'TRANSPORTE' && (() => {
+        const activeUnit =
+          resumen?.unidades.find((u) => u.id === activeUnitId) || resumen?.unidades[0];
+        const isDriverAvailable = activeUnit ? activeUnit.estado === 'DISPONIBLE' : Boolean(resumen?.negocio.en_linea);
+        const completedTrips = historial.filter((h) => h.estado === 'ENTREGADO_PAGADO');
+        const grossEarnings = completedTrips.reduce((sum, h) => sum + h.monto_centavos, 0);
+
+        return (
+          <div className="space-y-4">
+            {/* Barra superior Modo Conductor estilo inDrive */}
+            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <CarFront className="w-5 h-5 text-[#16A34A]" />
+                  <div>
+                    <h2 className="font-display text-xl font-semibold leading-tight">
+                      Modo Conductor · En Vivo
+                    </h2>
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                      {activeUnit
+                        ? `${activeUnit.conductor_nombre} · ${activeUnit.placa} (${activeUnit.modelo})`
+                        : 'Sin unidades registradas aún'}
+                    </p>
+                  </div>
+                </div>
+                {resumen && resumen.unidades.length > 1 && (
+                  <select
+                    value={activeUnit?.id ?? ''}
+                    onChange={(e) => setActiveUnitId(Number(e.target.value))}
+                    className="min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-semibold"
+                  >
+                    {resumen.unidades.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.conductor_nombre} · {u.placa}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                {/* Toggle Disponible / Ocupado */}
+                <button
+                  type="button"
+                  onClick={() => void handleToggleDriverAvailability()}
+                  className="min-h-[44px] p-1 rounded-full bg-[#EFECE6] dark:bg-[#0B0E14] border border-black/10 dark:border-white/10 inline-flex items-center gap-1"
+                  aria-label="Cambiar disponibilidad del conductor"
+                >
+                  <span
+                    className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors ${
+                      !isDriverAvailable
+                        ? 'bg-[#DC2626] text-white shadow'
+                        : 'text-[#6A717E] dark:text-[#98A0AD]'
+                    }`}
+                  >
+                    Ocupado
+                  </span>
+                  <span
+                    className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors ${
+                      isDriverAvailable
+                        ? 'bg-[#16A34A] text-white shadow'
+                        : 'text-[#6A717E] dark:text-[#98A0AD]'
+                    }`}
+                  >
+                    Disponible
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!activeUnit || driverGpsSending}
+                  onClick={() => void handleSendDriverGps()}
+                  className="min-h-[44px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap"
+                >
+                  <Crosshair className="w-3.5 h-3.5" />
+                  <span>{driverGpsSending ? 'Enviando GPS...' : 'Enviar Mi GPS'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Sub-pestañas inDrive: Solicitudes de viaje | Desempeño */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-white dark:bg-[#121620] border border-black/10 dark:border-white/10 max-w-md">
+              <button
+                type="button"
+                onClick={() => setDriverSubTab('SOLICITUDES')}
+                className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                  driverSubTab === 'SOLICITUDES'
+                    ? 'bg-[#14213D] text-white dark:bg-[#B6F02B] dark:text-[#0B0E14]'
+                    : 'text-[#6A717E] dark:text-[#98A0AD]'
+                }`}
+              >
+                <ListChecks className="w-4 h-4" />
+                <span>Solicitudes de viaje ({nuevos.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setDriverSubTab('DESEMPENO')}
+                className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                  driverSubTab === 'DESEMPENO'
+                    ? 'bg-[#14213D] text-white dark:bg-[#B6F02B] dark:text-[#0B0E14]'
+                    : 'text-[#6A717E] dark:text-[#98A0AD]'
+                }`}
+              >
+                <Gauge className="w-4 h-4" />
+                <span>Desempeño</span>
+              </button>
+            </div>
+
+            {driverSubTab === 'SOLICITUDES' ? (
+              <div className="space-y-3">
+                {enCurso.length > 0 && (
+                  <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div className="text-xs">
+                      <p className="font-bold text-emerald-700 dark:text-emerald-300">
+                        Tienes {enCurso.length} traslado{enCurso.length > 1 ? 's' : ''} aceptado{enCurso.length > 1 ? 's' : ''} en curso
+                      </p>
+                      <p className="text-[#555B66] dark:text-[#A3A9B5]">
+                        Mantén tu GPS actualizado y solicita el PIN de 4 dígitos al pasajero al finalizar.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTab('EN_CURSO')}
+                      className="min-h-[40px] px-4 rounded-xl bg-emerald-600 text-white text-xs font-bold whitespace-nowrap"
+                    >
+                      Ir a En Curso ({enCurso.length})
+                    </button>
+                  </div>
+                )}
+
+                {nuevos.length === 0 ? (
+                  <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center space-y-2">
+                    <p className="text-sm font-medium">
+                      Sin solicitudes de viaje pendientes en este momento.
+                    </p>
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                      Mantén tu estado en Disponible y envía tu GPS para que los pasajeros te ubiquen en el mapa de Cusco.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-black/10 dark:divide-white/10 rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] overflow-hidden">
+                    {nuevos.map((p) => {
+                      const kmStr = (p.distancia_km ?? 2.8).toFixed(1).replace('.', ',');
+                      const etaStr = `${p.eta_min ?? 6} min.`;
+                      return (
+                        <article
+                          key={p.id}
+                          onClick={() => {
+                            setSelectedRideOrder(p);
+                            setCustomCounterOpen(false);
+                          }}
+                          className="p-4 sm:p-5 hover:bg-[#F8F7F4] dark:hover:bg-[#161B28] transition-colors cursor-pointer flex items-start gap-3.5"
+                        >
+                          {/* Columna izquierda pasajero */}
+                          <div className="w-16 shrink-0 flex flex-col items-center text-center gap-1">
+                            <div className="w-11 h-11 rounded-full bg-[#EFECE6] dark:bg-[#1E2534] border border-black/10 dark:border-white/10 flex items-center justify-center font-display font-bold text-base">
+                              {p.cliente_nombre.slice(0, 1).toUpperCase()}
+                            </div>
+                            <p className="text-[11px] font-semibold leading-tight truncate w-full">
+                              {p.cliente_nombre}
+                            </p>
+                            <p className="text-[10px] font-mono-tabular text-[#9A7B2C] dark:text-[#E5C158] flex items-center gap-0.5">
+                              <Star className="w-3 h-3 fill-amber-400 text-amber-400" /> 4.9
+                            </p>
+                            <p className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                              {etaStr}
+                            </p>
+                          </div>
+
+                          {/* Detalle tarifa, puntos A -> B y pasajero verificado */}
+                          <div className="flex-1 min-w-0 space-y-1.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex flex-wrap items-baseline gap-2">
+                                <span className="text-xs font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                                  ~{kmStr} km
+                                </span>
+                                <span className="font-mono-tabular text-xl font-extrabold">
+                                  {formatSoles(p.monto_centavos)}
+                                </span>
+                                <span className="text-xs font-semibold text-purple-600 dark:text-purple-400">
+                                  {p.contraoferta_centavos ? 'Contraoferta enviada' : 'Precio justo'}
+                                </span>
+                              </div>
+                              <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                                {p.codigo}
+                              </span>
+                            </div>
+
+                            <p className="text-sm font-semibold leading-snug">
+                              A: {p.origen_texto || 'Ubicación GPS del pasajero'}
+                            </p>
+                            <p className="text-xs sm:text-sm text-[#555B66] dark:text-[#A3A9B5] leading-snug">
+                              B: {p.destino_texto || 'Destino en Cusco'}
+                            </p>
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5">
+                              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                <span className="px-2.5 py-0.5 rounded-lg bg-[#B6F02B] text-[#0B0E14] font-bold">
+                                  {p.metodo_pago}
+                                </span>
+                                {p.cliente_documento_numero && (
+                                  <span className="inline-flex items-center gap-1 font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
+                                    <BadgeCheck className="w-3.5 h-3.5" />
+                                    {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero} (Pasajero · Sin factura)
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                className="flex items-center gap-2"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedRideOrder(p);
+                                    setCustomCounterOpen(false);
+                                  }}
+                                  className="min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 text-xs font-semibold inline-flex items-center gap-1"
+                                >
+                                  <MapPin className="w-3.5 h-3.5 text-[#2563EB]" />
+                                  <span>Ver mapa</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleAccept(p.id)}
+                                  className="min-h-[38px] px-3.5 rounded-xl bg-[#16A34A] text-white text-xs font-bold inline-flex items-center gap-1"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>Aceptar</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-display text-2xl font-semibold">Desempeño del Conductor</h3>
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                      Resumen operativo en tiempo real · Identidad de pasajeros verificada sin facturación electrónica
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Viajes Completados</p>
+                    <p className="font-mono-tabular text-2xl font-bold mt-1">{completedTrips.length}</p>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Ingresos Generados</p>
+                    <p className="font-mono-tabular text-2xl font-bold mt-1 text-emerald-600 dark:text-emerald-400">
+                      {formatSoles(grossEarnings)}
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Calificación</p>
+                    <p className="font-mono-tabular text-2xl font-bold mt-1">
+                      {(activeUnit?.calificacion ?? 4.9).toFixed(2)} ★
+                    </p>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Viajes Activos</p>
+                    <p className="font-mono-tabular text-2xl font-bold mt-1">{enCurso.length}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* TAB NUEVOS (Negocios no-taxi) */}
+      {tab === 'NUEVOS' && session.rubro !== 'TRANSPORTE' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {nuevos.length === 0 ? (
             <div className="md:col-span-2 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center text-sm text-[#6A717E] dark:text-[#98A0AD]">
@@ -1126,7 +1590,7 @@ export const BusinessPanel: React.FC = () => {
                       Cliente: {p.cliente_nombre} · {p.transcripcion}
                     </p>
                     {p.cliente_documento_numero && (
-                      <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full border border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-mono-tabular font-semibold">
+                      <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
                         <BadgeCheck className="w-3.5 h-3.5" />
                         {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}{' '}
                         {p.cliente_documento_verificado ? '· RENIEC/SUNAT Verificado' : ''}
@@ -1243,7 +1707,9 @@ export const BusinessPanel: React.FC = () => {
                 <th className="py-3.5 px-4 font-medium">Estado</th>
                 <th className="py-3.5 px-4 font-medium text-right">Monto</th>
                 <th className="py-3.5 px-4 font-medium text-right">Comisión</th>
-                <th className="py-3.5 px-4 font-medium text-right">Comprobante</th>
+                {session.rubro !== 'TRANSPORTE' && (
+                  <th className="py-3.5 px-4 font-medium text-right">Comprobante SUNAT</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-black/8 dark:divide-white/8">
@@ -1266,22 +1732,44 @@ export const BusinessPanel: React.FC = () => {
                   <td className="py-3 px-4 font-mono-tabular text-right">
                     {formatSoles(p.comision_retenida_centavos)}
                   </td>
-                  <td className="py-3 px-4 text-right">
-                    {p.estado === 'ENTREGADO_PAGADO' ? (
-                      <button
-                        type="button"
-                        onClick={() => setInvoiceModal({ order: p })}
-                        className="min-h-[36px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>
-                          {p.cliente_documento_tipo === 'RUC' ? 'Factura' : 'Boleta / Recibo'}
-                        </span>
-                      </button>
-                    ) : (
-                      <span className="text-[11px] text-[#8A8F99]">—</span>
-                    )}
-                  </td>
+                  {session.rubro !== 'TRANSPORTE' && (
+                    <td className="py-3 px-4 text-right">
+                      {p.estado === 'ENTREGADO_PAGADO' ? (
+                        <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
+                          {p.comprobante_sunat_estado && (
+                            <span className="text-[10px] font-mono-tabular font-semibold text-emerald-700 dark:text-emerald-300">
+                              {p.comprobante_sunat_estado}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setInvoiceModal({ order: p })}
+                            className="min-h-[36px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>
+                              {p.cliente_documento_tipo === 'RUC' ? 'Factura' : 'Boleta / Recibo'}
+                            </span>
+                          </button>
+                          {p.comprobante_sunat_estado !== 'ACEPTADA_SUNAT' && (
+                            <button
+                              type="button"
+                              disabled={sunatSendingId === p.id}
+                              onClick={() => void handleEmitirSunat(p.id)}
+                              className="min-h-[36px] px-3 rounded-xl border border-emerald-600/40 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap disabled:opacity-50"
+                            >
+                              <FileCheck2 className="w-3.5 h-3.5" />
+                              <span>
+                                {sunatSendingId === p.id ? 'Enviando...' : 'Enviar a SUNAT'}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[#8A8F99]">—</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -1644,8 +2132,206 @@ export const BusinessPanel: React.FC = () => {
           </div>
         </div>
       )}
-      {/* MODAL COMPROBANTE ELECTRÓNICO (BOLETA / FACTURA) */}
-      {invoiceModal && (
+      {/* MODAL SOLICITUD DE VIAJE MODO CONDUCTOR (ESTILO INDRIVE) */}
+      {selectedRideOrder && session.rubro === 'TRANSPORTE' && (() => {
+        const unit =
+          resumen?.unidades.find((u) => u.id === activeUnitId) || resumen?.unidades[0];
+        const oLat = selectedRideOrder.origen_lat ?? -13.5167;
+        const oLng = selectedRideOrder.origen_lng ?? -71.9788;
+        const dLat = selectedRideOrder.destino_lat ?? -13.5356;
+        const dLng = selectedRideOrder.destino_lng ?? -71.9388;
+        const drvLat = unit?.lat ?? selectedRideOrder.conductor_lat ?? -13.5174;
+        const drvLng = unit?.lng ?? selectedRideOrder.conductor_lng ?? -71.9765;
+        const baseCentavos = selectedRideOrder.monto_centavos;
+        const offer10 = Math.max(500, Math.round((baseCentavos * 1.1) / 10) * 10);
+        const offer20 = Math.max(500, Math.round((baseCentavos * 1.2) / 10) * 10);
+        const kmLabel = `${(selectedRideOrder.distancia_km ?? 2.8).toFixed(1)} km`;
+
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Solicitud de viaje"
+            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4"
+          >
+            <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#121620] border border-black/15 dark:border-white/15 overflow-hidden shadow-2xl max-h-[94vh] flex flex-col">
+              <div className="px-5 py-3.5 flex items-center justify-between border-b border-black/10 dark:border-white/10">
+                <h3 className="font-display text-xl font-semibold">Solicitud de viaje</h3>
+                <button
+                  type="button"
+                  onClick={() => setSelectedRideOrder(null)}
+                  aria-label="Cerrar solicitud de viaje"
+                  className="min-h-[40px] min-w-[40px] rounded-xl border border-black/10 dark:border-white/10 flex items-center justify-center"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="overflow-y-auto flex-1">
+                <CuscoGeoMap
+                  mode="TAXI"
+                  userLat={oLat}
+                  userLng={oLng}
+                  originLabel={selectedRideOrder.origen_texto || 'Punto A'}
+                  destLat={dLat}
+                  destLng={dLng}
+                  destLabel={selectedRideOrder.destino_texto || 'Destino B'}
+                  driverLat={drvLat}
+                  driverLng={drvLng}
+                  driverLabel={unit ? `${unit.conductor_nombre} (${unit.placa})` : 'Tu Unidad'}
+                  driverEtaBadge={`${selectedRideOrder.eta_min ?? 6} min\n${kmLabel}`}
+                  routeBadge={`14 min\n${kmLabel}`}
+                  pins={[]}
+                  heightClass="h-[240px] sm:h-[280px]"
+                />
+
+                <div className="p-5 space-y-4">
+                  <div className="flex items-start gap-3.5">
+                    <div className="w-12 h-12 rounded-full bg-[#EFECE6] dark:bg-[#1E2534] border border-black/10 dark:border-white/10 flex items-center justify-center font-display font-bold text-lg shrink-0">
+                      {selectedRideOrder.cliente_nombre.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="text-xs font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                          ~{kmLabel}
+                        </span>
+                        <span className="font-mono-tabular text-2xl font-extrabold">
+                          {formatSoles(baseCentavos)}
+                        </span>
+                        <span className="text-xs font-semibold text-purple-600 dark:text-purple-400">
+                          Precio justo
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold">
+                        {selectedRideOrder.cliente_nombre}{' '}
+                        {selectedRideOrder.cliente_documento_numero && (
+                          <span className="font-mono-tabular text-emerald-600 dark:text-emerald-400">
+                            · {selectedRideOrder.cliente_documento_tipo || 'DNI'}:{' '}
+                            {selectedRideOrder.cliente_documento_numero}
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                        Pasajero verificado · Sin facturación electrónica en taxi
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-start gap-2.5">
+                      <span className="w-5 h-5 rounded-md bg-[#2563EB] text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        A
+                      </span>
+                      <p className="font-medium leading-snug">
+                        {selectedRideOrder.origen_texto || 'Ubicación GPS del pasajero'}
+                      </p>
+                    </div>
+                    <div className="flex items-start gap-2.5">
+                      <span className="w-5 h-5 rounded-md bg-[#16A34A] text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        B
+                      </span>
+                      <p className="text-[#555B66] dark:text-[#A3A9B5] leading-snug">
+                        {selectedRideOrder.destino_texto || 'Destino en Cusco'}
+                      </p>
+                    </div>
+                    <div className="pt-1">
+                      <span className="inline-block px-2.5 py-0.5 rounded-lg bg-[#B6F02B] text-[#0B0E14] text-xs font-bold">
+                        {selectedRideOrder.metodo_pago}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const id = selectedRideOrder.id;
+                      setSelectedRideOrder(null);
+                      void handleAccept(id);
+                    }}
+                    className="w-full min-h-[50px] rounded-2xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] text-base font-extrabold shadow-md"
+                  >
+                    Aceptar por {formatSoles(baseCentavos)}
+                  </button>
+
+                  <div className="space-y-2 pt-1">
+                    <p className="text-center text-xs font-semibold text-[#6A717E] dark:text-[#98A0AD]">
+                      Ofrece tu tarifa
+                    </p>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleSendCounterOffer(selectedRideOrder.id, offer10)}
+                        className="min-h-[44px] rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] font-mono-tabular text-sm font-bold hover:border-[#B6F02B]"
+                      >
+                        {formatSoles(offer10)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleSendCounterOffer(selectedRideOrder.id, offer20)}
+                        className="min-h-[44px] rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] font-mono-tabular text-sm font-bold hover:border-[#B6F02B]"
+                      >
+                        {formatSoles(offer20)}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomCounterOpen((v) => !v);
+                          setCustomCounterSoles(((baseCentavos + 200) / 100).toFixed(2));
+                        }}
+                        aria-label="Editar contraoferta personalizada"
+                        className="min-h-[44px] rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] flex items-center justify-center hover:border-[#B6F02B]"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {customCounterOpen && (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const centavos = Math.round((Number(customCounterSoles) || 0) * 100);
+                          if (centavos >= 500) {
+                            void handleSendCounterOffer(selectedRideOrder.id, centavos);
+                          }
+                        }}
+                        className="flex gap-2 pt-1"
+                      >
+                        <input
+                          type="number"
+                          min="5"
+                          step="0.5"
+                          required
+                          value={customCounterSoles}
+                          onChange={(e) => setCustomCounterSoles(e.target.value)}
+                          placeholder="Monto S/"
+                          className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] font-mono-tabular text-sm"
+                        />
+                        <button
+                          type="submit"
+                          className="min-h-[42px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                        >
+                          Enviar oferta
+                        </button>
+                      </form>
+                    )}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRideOrder(null)}
+                    className="w-full min-h-[46px] rounded-2xl bg-[#EFECE6] dark:bg-[#0B0E14] text-sm font-bold"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL COMPROBANTE ELECTRÓNICO (SOLO NEGOCIOS NO-TAXI) */}
+      {invoiceModal && session.rubro !== 'TRANSPORTE' && (
         <ElectronicInvoiceModal
           order={invoiceModal.order}
           comprobante={invoiceModal.comprobante}

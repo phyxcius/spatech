@@ -1,22 +1,25 @@
 import React, { useEffect, useState } from 'react';
-import { Briefcase, Compass, MapPinned, Moon, Shield, Siren, Sun } from 'lucide-react';
+import { BadgeCheck, Briefcase, Compass, MapPinned, Moon, Shield, Siren, Sun, UserCheck } from 'lucide-react';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { BusinessPanel } from './components/BusinessPanel.tsx';
 import { ClientPortal } from './components/ClientPortal.tsx';
 import { GlowingNotificationCardHost } from './components/GlowingNotificationCard.tsx';
+import { IdentityGateOverlay } from './components/IdentityGateOverlay.tsx';
 import { OrderTracking } from './components/OrderTracking.tsx';
 import {
   FloatingAvatarWidget,
   type AssistantDispatchEvent,
 } from './components/RealisticHumanoidWidget.tsx';
 import { isFirebaseRtdbMode, subscribeFirebaseRtdbMode } from './lib/firebaseRtdb.ts';
-import type { PedidoPublico, Rubro } from './types.ts';
+import type { PedidoPublico, Rubro, SharedCustomerDoc } from './types.ts';
 
 type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'ADMIN';
 
 export default function App() {
   const [view, setView] = useState<ViewMode>('CONCIERGE');
   const [darkMode, setDarkMode] = useState(true);
+  const [customerDoc, setCustomerDoc] = useState<SharedCustomerDoc | null>(null);
+  const [identityGateOpen, setIdentityGateOpen] = useState(false);
   const [lastOrderCodigo, setLastOrderCodigo] = useState<string | null>(null);
   const [lastOrderPin, setLastOrderPin] = useState<string | null>(null);
   const [assistantSignal, setAssistantSignal] = useState(0);
@@ -38,6 +41,11 @@ export default function App() {
       root.classList.remove('dark');
     }
   }, [darkMode]);
+
+  function handleCustomerDocVerified(doc: SharedCustomerDoc) {
+    setCustomerDoc(doc);
+    setIdentityGateOpen(false);
+  }
 
   function handleOrderCreated(pedido: PedidoPublico, pin: string) {
     setLastOrderCodigo(pedido.codigo);
@@ -71,8 +79,25 @@ export default function App() {
     { id: 'ADMIN', label: 'Administración', icon: <Shield className="w-5 h-5" /> },
   ];
 
+  const showIdentityGate =
+    (view === 'CONCIERGE' || view === 'SEGUIMIENTO') &&
+    (!customerDoc?.verificado || identityGateOpen);
+
   return (
     <div className="min-h-screen flex flex-col bg-[#F8F7F4] text-[#14171F] dark:bg-[#0B0E14] dark:text-[#F4F1EA] transition-colors">
+      {/* Overlay obligatorio al ingresar al sistema para validar DNI, RUC o Extranjero */}
+      <IdentityGateOverlay
+        isOpen={showIdentityGate}
+        initialDoc={customerDoc}
+        canClose={Boolean(customerDoc?.verificado)}
+        onClose={() => setIdentityGateOpen(false)}
+        onVerified={handleCustomerDocVerified}
+        onSwitchView={(nextView) => {
+          setIdentityGateOpen(false);
+          setView(nextView);
+        }}
+      />
+
       {/* Top Bar Contract: exactamente 3 zonas separadas */}
       <header className="sticky top-0 z-30 h-14 md:h-16 border-b border-black/10 dark:border-white/10 bg-[#F8F7F4]/90 dark:bg-[#0B0E14]/90 backdrop-blur-md">
         <div className="max-w-7xl mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-8">
@@ -131,9 +156,34 @@ export default function App() {
         </div>
       </header>
 
-      {/* Barra discreta de tema debajo del Top Bar */}
-      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 pt-4 flex items-center justify-between text-xs text-[#6A717E] dark:text-[#98A0AD]">
-        <span>Cusco · Red Multinegocio Verificada</span>
+      {/* Barra superior con Titular Verificado + Selector de tema */}
+      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#6A717E] dark:text-[#98A0AD]">
+        <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+          <span>Cusco · Red Multinegocio Verificada</span>
+          {customerDoc?.verificado ? (
+            <button
+              type="button"
+              onClick={() => setIdentityGateOpen(true)}
+              title="Cambiar documento del titular"
+              className="min-h-[34px] px-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 font-semibold flex items-center gap-1.5 max-w-full"
+            >
+              <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate max-w-[230px] sm:max-w-xs">
+                Titular: {customerDoc.nombre} · {customerDoc.tipo} {customerDoc.numero}
+              </span>
+              <span className="underline text-[11px] shrink-0">Cambiar</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setIdentityGateOpen(true)}
+              className="min-h-[34px] px-3 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1.5"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>Identificar Titular</span>
+            </button>
+          )}
+        </div>
         <button
           type="button"
           onClick={() => setDarkMode((v) => !v)}
@@ -159,6 +209,9 @@ export default function App() {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-4">
         {view === 'CONCIERGE' && (
           <ClientPortal
+            customerDoc={customerDoc}
+            onCustomerDocVerified={handleCustomerDocVerified}
+            onRequestIdentityGate={() => setIdentityGateOpen(true)}
             onOrderCreated={handleOrderCreated}
             openAssistantSignal={assistantSignal}
             openSosSignal={sosSignal}

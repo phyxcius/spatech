@@ -4,11 +4,13 @@ import {
   CarFront,
   CheckCircle2,
   Clock,
+  FileCheck2,
   KeyRound,
   MapPin,
   Plus,
   Save,
   Settings,
+  ShieldCheck,
   Trash2,
   Volume2,
 } from 'lucide-react';
@@ -81,6 +83,7 @@ export interface BusinessConfigResumen {
     tasa_venta: number;
     disponible?: number;
   }>;
+  facturacion_apisperu_activa?: boolean;
 }
 
 interface BusinessConfigTabProps {
@@ -854,6 +857,48 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
               Actualizar PIN de Acceso
             </button>
           </form>
+
+          {/* Facturación Electrónica ApisPeru (Solo negocios no-taxi) o Regla Taxi */}
+          {n.rubro !== 'TRANSPORTE' ? (
+            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <FileCheck2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <h3 className="font-display text-xl font-semibold">
+                    Facturación Electrónica SUNAT (ApisPeru)
+                  </h3>
+                </div>
+                <span
+                  className={`text-[11px] font-bold ${
+                    resumen.facturacion_apisperu_activa
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-[#9A7B2C] dark:text-[#E5C158]'
+                  }`}
+                >
+                  {resumen.facturacion_apisperu_activa
+                    ? 'Conectado en servidor'
+                    : 'Comprobante local listo'}
+                </span>
+              </div>
+              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] leading-relaxed">
+                {resumen.facturacion_apisperu_activa
+                  ? 'El servidor Node.js tiene activo el token de ApisPeru SUNAT. Al validar el PIN de entrega se emitirá automáticamente Boleta (DNI) o Factura (RUC) con IGV 18%.'
+                  : 'Se generan Boletas (DNI) y Facturas (RUC) locales con IGV 18% al finalizar cada pedido, listas para envío a SUNAT desde el Historial cuando el token de servidor esté activo.'}
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-2">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-[#2563EB]" />
+                <h3 className="font-display text-xl font-semibold">
+                  Identificación de Pasajeros (Sin Facturación)
+                </h3>
+              </div>
+              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] leading-relaxed">
+                Para taxis y movilidad el sistema exige validar DNI (RENIEC), RUC (SUNAT) o Pasaporte/CE antes de solicitar el viaje para seguridad del conductor. No se emiten Boletas ni Facturas electrónicas en traslados de taxi.
+              </p>
+            </div>
+          )}
 
           {/* Módulo Transporte: Configurar Unidades y Tarifas */}
           {n.rubro === 'TRANSPORTE' && (

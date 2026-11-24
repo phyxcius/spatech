@@ -358,6 +358,12 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['comprobante_serie', 'TEXT'],
     ['comprobante_numero', 'TEXT'],
     ['comprobante_emitido_at', 'TEXT'],
+    ['comprobante_hash', 'TEXT'],
+    ['comprobante_sunat_estado', 'TEXT'],
+    ['destino_lat', 'REAL'],
+    ['destino_lng', 'REAL'],
+    ['conductor_lat', 'REAL'],
+    ['conductor_lng', 'REAL'],
   ]);
 
   ensureCols('alertas_emergencias', [

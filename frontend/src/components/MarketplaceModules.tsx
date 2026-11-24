@@ -29,6 +29,7 @@ import {
 import { apiFetch, speakSpanish } from '../lib/api.ts';
 import {
   formatPeruLookupError,
+  isValidForeignDoc,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import type { SharedCustomerDoc } from '../types.ts';
@@ -43,8 +44,11 @@ const MandatoryDocGate: React.FC<{
   onVerified: (doc: SharedCustomerDoc) => void;
   contextLabel: string;
 }> = ({ customerDoc, onVerified, contextLabel }) => {
-  const [tipo, setTipo] = useState<'DNI' | 'RUC'>(customerDoc?.tipo || 'DNI');
+  const [tipo, setTipo] = useState<'DNI' | 'RUC' | 'EXTRANJERO'>(customerDoc?.tipo || 'DNI');
   const [numero, setNumero] = useState(customerDoc?.numero || '');
+  const [nombreExtra, setNombreExtra] = useState(
+    customerDoc?.tipo === 'EXTRANJERO' ? customerDoc.nombre : ''
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,13 +56,43 @@ const MandatoryDocGate: React.FC<{
     if (customerDoc?.verificado) {
       setTipo(customerDoc.tipo);
       setNumero(customerDoc.numero);
+      if (customerDoc.tipo === 'EXTRANJERO') setNombreExtra(customerDoc.nombre);
       setError(null);
     }
-  }, [customerDoc?.verificado, customerDoc?.tipo, customerDoc?.numero]);
+  }, [customerDoc?.verificado, customerDoc?.tipo, customerDoc?.numero, customerDoc?.nombre]);
 
   async function handleVerify() {
-    const clean = numero.replace(/\D/g, '');
     setError(null);
+    if (tipo === 'EXTRANJERO') {
+      const clean = numero.trim().toUpperCase();
+      if (!isValidForeignDoc(clean)) {
+        setError('Ingresa un Pasaporte o Carné de Extranjería válido (6-20 caracteres).');
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await apiFetch<PeruDocumentLookupResult>(
+          `/api/public/consulta-documento?tipo=EXTRANJERO&numero=${encodeURIComponent(clean)}${
+            nombreExtra.trim() ? `&nombre=${encodeURIComponent(nombreExtra.trim())}` : ''
+          }`
+        );
+        onVerified({
+          tipo: 'EXTRANJERO',
+          numero: res.numero,
+          nombre: nombreExtra.trim() || res.nombre_completo,
+          direccionFiscal: res.direccion,
+          verificado: true,
+          fuente: res.fuente || res.source,
+        });
+      } catch (err) {
+        setError(formatPeruLookupError(err));
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    const clean = numero.replace(/\D/g, '');
     if (!clean) {
       setError('Ingresa el DNI (8 dígitos) o RUC (11 dígitos) del titular.');
       return;
@@ -97,7 +131,7 @@ const MandatoryDocGate: React.FC<{
     >
       <div className="flex items-center justify-between gap-2">
         <span className="text-[11px] uppercase tracking-wider font-bold text-amber-300">
-          DNI / RUC del Titular * ({contextLabel})
+          Documento del Titular * ({contextLabel})
         </span>
         {verified && customerDoc ? (
           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300">
@@ -112,23 +146,28 @@ const MandatoryDocGate: React.FC<{
         <select
           value={tipo}
           onChange={(e) => {
-            setTipo(e.target.value as 'DNI' | 'RUC');
+            setTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
             setError(null);
           }}
           className="min-h-[40px] px-2.5 rounded-xl border border-white/15 bg-[#07090E] text-xs font-bold text-white"
         >
           <option value="DNI">DNI (8)</option>
           <option value="RUC">RUC (11)</option>
+          <option value="EXTRANJERO">Extranjero</option>
         </select>
         <input
           type="text"
-          inputMode="numeric"
-          maxLength={tipo === 'DNI' ? 8 : 11}
+          inputMode={tipo === 'EXTRANJERO' ? 'text' : 'numeric'}
+          maxLength={tipo === 'DNI' ? 8 : tipo === 'RUC' ? 11 : 20}
           value={numero}
           onChange={(e) => {
-            const digits = e.target.value.replace(/\D/g, '');
-            setNumero(digits);
-            if (digits.length > 8 && tipo !== 'RUC') setTipo('RUC');
+            if (tipo === 'EXTRANJERO') {
+              setNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+            } else {
+              const digits = e.target.value.replace(/\D/g, '');
+              setNumero(digits);
+              if (digits.length > 8 && tipo !== 'RUC') setTipo('RUC');
+            }
             setError(null);
           }}
           onKeyDown={(e) => {
@@ -137,7 +176,9 @@ const MandatoryDocGate: React.FC<{
               void handleVerify();
             }
           }}
-          placeholder={tipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+          placeholder={
+            tipo === 'DNI' ? 'DNI 8 dígitos' : tipo === 'RUC' ? 'RUC 11 dígitos' : 'Pasaporte / CE'
+          }
           className="flex-1 min-h-[40px] px-3 rounded-xl border border-white/15 bg-[#07090E] text-xs font-mono-tabular text-white"
         />
         <button
@@ -150,13 +191,23 @@ const MandatoryDocGate: React.FC<{
         </button>
       </div>
 
+      {tipo === 'EXTRANJERO' && !verified && (
+        <input
+          type="text"
+          value={nombreExtra}
+          onChange={(e) => setNombreExtra(e.target.value)}
+          placeholder="Nombre completo del titular"
+          className="w-full min-h-[38px] px-3 rounded-xl border border-white/15 bg-[#07090E] text-xs text-white"
+        />
+      )}
+
       {verified && customerDoc ? (
         <p className="text-[11px] text-emerald-300 font-medium">
           ✓ Titular: {customerDoc.nombre}
         </p>
       ) : (
         <p className="text-[11px] text-amber-200">
-          Obligatorio: ingresa y valida tu DNI o RUC para habilitar la reserva.
+          Obligatorio: ingresa y valida tu DNI, RUC o Pasaporte/CE para habilitar la reserva.
         </p>
       )}
       {error && <p className="text-[11px] text-rose-400">{error}</p>}

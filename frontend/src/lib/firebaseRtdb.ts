@@ -125,7 +125,7 @@ interface RtdbUnidad {
   calificacion: number;
   lat: number;
   lng: number;
-  estado: 'DISPONIBLE' | 'EN_RUTA';
+  estado: 'DISPONIBLE' | 'OCUPADO' | 'FUERA_SERVICIO' | 'EN_RUTA';
   certificada: number;
 }
 
@@ -855,11 +855,25 @@ export async function handleFirebaseRtdbRequest<T>(
 
   if (cleanPath === '/api/public/consulta-documento' && method === 'GET') {
     const params = new URLSearchParams(queryStr);
-    const tipo = (params.get('tipo') || 'DNI').toUpperCase() === 'RUC' ? 'RUC' : 'DNI';
+    const rawTipo = (params.get('tipo') || 'DNI').toUpperCase();
+    const tipo: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      rawTipo === 'RUC' ? 'RUC' : rawTipo === 'EXTRANJERO' ? 'EXTRANJERO' : 'DNI';
     const numero = (params.get('numero') || '').trim();
+    const nombreQuery = (params.get('nombre') || '').trim();
     const validationErr = formatPeruLookupError(tipo, numero);
     if (validationErr) {
       throw new Error(validationErr);
+    }
+    if (tipo === 'EXTRANJERO') {
+      return {
+        valid: true,
+        validado: true,
+        tipo: 'EXTRANJERO',
+        numero: numero.toUpperCase(),
+        nombre_completo: nombreQuery.length >= 2 ? nombreQuery : 'Pasajero / Cliente Extranjero',
+        source: 'MIGRACIONES_EXTRANJERO',
+        fuente: 'MIGRACIONES_EXTRANJERO',
+      } as T;
     }
 
     const docKey = `${tipo}_${numero}`;
@@ -988,11 +1002,22 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/divisas/reservar' && method === 'POST') {
-    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
-    const docTipo = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-    if (!/^\d{8}$/.test(rawDoc) && !(docTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
-      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.');
-    }
+    const rawNum = String(payload.cliente_documento_numero || '').trim();
+    const rawDigits = rawNum.replace(/\D/g, '');
+    const reqTipo = String(payload.cliente_documento_tipo || (rawDigits.length === 11 ? 'RUC' : /^\d{8}$/.test(rawDigits) ? 'DNI' : 'EXTRANJERO')).toUpperCase();
+    const docTipo: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      reqTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDigits)
+        ? 'RUC'
+        : reqTipo === 'DNI' && /^\d{8}$/.test(rawDigits)
+          ? 'DNI'
+          : reqTipo === 'EXTRANJERO' && /^[A-Z0-9-]{6,20}$/i.test(rawNum)
+            ? 'EXTRANJERO'
+            : (() => {
+                throw new Error(
+                  'Es obligatorio ingresar DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE (Extranjero) para reservar.'
+                );
+              })();
+    const cleanDocNum = docTipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawDigits;
     const moneda = String(payload.moneda || 'USD');
     const divisas = toArray(snap.divisas);
     const rate = divisas.find((d) => d.moneda_origen === moneda) || divisas[0];
@@ -1005,8 +1030,8 @@ export async function handleFirebaseRtdbRequest<T>(
       operacion: payload.operacion || 'COMPRA',
       monto_origen: monto,
       monto_destino_pen: Number((monto * tasa).toFixed(2)),
-      cliente_documento_tipo: docTipo === 'RUC' ? 'RUC' : 'DNI',
-      cliente_documento_numero: rawDoc,
+      cliente_documento_tipo: docTipo,
+      cliente_documento_numero: cleanDocNum,
       created_at: new Date().toISOString(),
     });
     return {
@@ -1026,10 +1051,15 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/butacas/reservar' && method === 'POST') {
-    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
-    const docTipo = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-    if (!/^\d{8}$/.test(rawDoc) && !(docTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
-      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.');
+    const rawNum = String(payload.cliente_documento_numero || '').trim();
+    const rawDigits = rawNum.replace(/\D/g, '');
+    const reqTipo = String(payload.cliente_documento_tipo || (rawDigits.length === 11 ? 'RUC' : /^\d{8}$/.test(rawDigits) ? 'DNI' : 'EXTRANJERO')).toUpperCase();
+    if (
+      !(reqTipo === 'DNI' && /^\d{8}$/.test(rawDigits)) &&
+      !(reqTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDigits)) &&
+      !(reqTipo === 'EXTRANJERO' && /^[A-Z0-9-]{6,20}$/i.test(rawNum))
+    ) {
+      throw new Error('Es obligatorio ingresar DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE (Extranjero) para reservar.');
     }
     const rutas = toArray(snap.butacas);
     const idx = rutas.findIndex((b) => b.id === Number(payload.asiento_servicio_id));
@@ -1096,11 +1126,22 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/taxi/pedir' && method === 'POST') {
-    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
-    const docTipoResolved = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-    if (!/^\d{8}$/.test(rawDoc) && !(docTipoResolved === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
-      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar taxi.');
-    }
+    const rawNum = String(payload.cliente_documento_numero || '').trim();
+    const rawDigits = rawNum.replace(/\D/g, '');
+    const reqTipo = String(payload.cliente_documento_tipo || (rawDigits.length === 11 ? 'RUC' : /^\d{8}$/.test(rawDigits) ? 'DNI' : 'EXTRANJERO')).toUpperCase();
+    const docTipo: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      reqTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDigits)
+        ? 'RUC'
+        : reqTipo === 'DNI' && /^\d{8}$/.test(rawDigits)
+          ? 'DNI'
+          : reqTipo === 'EXTRANJERO' && /^[A-Z0-9-]{6,20}$/i.test(rawNum)
+            ? 'EXTRANJERO'
+            : (() => {
+                throw new Error(
+                  'Es obligatorio ingresar el DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE (Extranjero) para reservar taxi.'
+                );
+              })();
+    const cleanDocNum = docTipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawDigits;
     const unidades = toArray(snap.unidades);
     const unit = unidades.find((u) => u.id === Number(payload.unidad_id)) || unidades[0];
     const biz = toArray(snap.negocios).find((n) => n.id === unit.negocio_id);
@@ -1108,9 +1149,14 @@ export async function handleFirebaseRtdbRequest<T>(
     const pin = String(Math.floor(1000 + Math.random() * 9000));
     const tel = String(payload.cliente_telefono || '+51984000000');
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
-    const monto = unit.tarifa_base_centavos + unit.tarifa_km_centavos * 5;
+    const oLat = typeof payload.origen_lat === 'number' ? payload.origen_lat : -13.5167;
+    const oLng = typeof payload.origen_lng === 'number' ? payload.origen_lng : -71.9788;
+    const dLat = typeof payload.destino_lat === 'number' ? payload.destino_lat : -13.5356;
+    const dLng = typeof payload.destino_lng === 'number' ? payload.destino_lng : -71.9388;
+    const tripKm = Number(Math.max(1.5, haversineKm(oLat, oLng, dLat, dLng)).toFixed(2));
+    const etaMin = Math.max(2, Math.round(haversineKm(oLat, oLng, unit.lat, unit.lng) * 3.8 + 2));
+    const monto = unit.tarifa_base_centavos + Math.round(unit.tarifa_km_centavos * tripKm);
     const comPlat = Math.round(monto * 0.03);
-    const docTipo: 'DNI' | 'RUC' = docTipoResolved === 'RUC' ? 'RUC' : 'DNI';
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1131,12 +1177,22 @@ export async function handleFirebaseRtdbRequest<T>(
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
       cliente_documento_tipo: docTipo,
-      cliente_documento_numero: payload.cliente_documento_numero || null,
+      cliente_documento_numero: cleanDocNum,
       cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
       cliente_direccion_fiscal: payload.cliente_direccion_fiscal || null,
-      comprobante_tipo: docTipo === 'RUC' ? 'FACTURA' : 'BOLETA',
+      comprobante_tipo: null,
       origen_texto: String(payload.origen_texto || 'Plaza de Armas, Cusco'),
       destino_texto: String(payload.destino_texto || 'Aeropuerto Velasco Astete'),
+      origen_lat: oLat,
+      origen_lng: oLng,
+      destino_lat: dLat,
+      destino_lng: dLng,
+      conductor_lat: unit.lat,
+      conductor_lng: unit.lng,
+      unidad_lat: unit.lat,
+      unidad_lng: unit.lng,
+      distancia_km: tripKm,
+      eta_min: etaMin,
       conductor_nombre: unit.conductor_nombre,
       placa: unit.placa,
       modelo: unit.modelo,
@@ -1153,11 +1209,22 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/pedidos' && method === 'POST') {
-    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
-    const docTipoResolved = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-    if (!/^\d{8}$/.test(rawDoc) && !(docTipoResolved === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
-      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.');
-    }
+    const rawNum = String(payload.cliente_documento_numero || '').trim();
+    const rawDigits = rawNum.replace(/\D/g, '');
+    const reqTipo = String(payload.cliente_documento_tipo || (rawDigits.length === 11 ? 'RUC' : /^\d{8}$/.test(rawDigits) ? 'DNI' : 'EXTRANJERO')).toUpperCase();
+    const docTipo: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      reqTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDigits)
+        ? 'RUC'
+        : reqTipo === 'DNI' && /^\d{8}$/.test(rawDigits)
+          ? 'DNI'
+          : reqTipo === 'EXTRANJERO' && /^[A-Z0-9-]{6,20}$/i.test(rawNum)
+            ? 'EXTRANJERO'
+            : (() => {
+                throw new Error(
+                  'Es obligatorio ingresar DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE (Extranjero) para reservar.'
+                );
+              })();
+    const cleanDocNum = docTipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawDigits;
     const servicios = toArray(snap.servicios);
     const srv = servicios.find((s) => s.id === Number(payload.servicio_id)) || servicios[0];
     const biz = toArray(snap.negocios).find((n) => n.id === srv.negocio_id);
@@ -1166,7 +1233,6 @@ export async function handleFirebaseRtdbRequest<T>(
     const tel = String(payload.cliente_telefono || '+51984000000');
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
     const comPlat = Math.round(srv.precio_centavos * 0.03);
-    const docTipo: 'DNI' | 'RUC' = docTipoResolved === 'RUC' ? 'RUC' : 'DNI';
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1188,7 +1254,7 @@ export async function handleFirebaseRtdbRequest<T>(
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
       cliente_documento_tipo: docTipo,
-      cliente_documento_numero: payload.cliente_documento_numero || null,
+      cliente_documento_numero: cleanDocNum,
       cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
       cliente_direccion_fiscal: payload.cliente_direccion_fiscal || null,
       comprobante_tipo: docTipo === 'RUC' ? 'FACTURA' : 'BOLETA',
@@ -1205,11 +1271,22 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   if (cleanPath === '/api/public/market-pedidos' && method === 'POST') {
-    const rawDoc = String(payload.cliente_documento_numero || '').replace(/\D/g, '');
-    const docTipoResolved = String(payload.cliente_documento_tipo || (rawDoc.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
-    if (!/^\d{8}$/.test(rawDoc) && !(docTipoResolved === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDoc))) {
-      throw new Error('Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar en minimarket.');
-    }
+    const rawNum = String(payload.cliente_documento_numero || '').trim();
+    const rawDigits = rawNum.replace(/\D/g, '');
+    const reqTipo = String(payload.cliente_documento_tipo || (rawDigits.length === 11 ? 'RUC' : /^\d{8}$/.test(rawDigits) ? 'DNI' : 'EXTRANJERO')).toUpperCase();
+    const docTipo: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      reqTipo === 'RUC' && /^(10|15|16|17|20)\d{9}$/.test(rawDigits)
+        ? 'RUC'
+        : reqTipo === 'DNI' && /^\d{8}$/.test(rawDigits)
+          ? 'DNI'
+          : reqTipo === 'EXTRANJERO' && /^[A-Z0-9-]{6,20}$/i.test(rawNum)
+            ? 'EXTRANJERO'
+            : (() => {
+                throw new Error(
+                  'Es obligatorio ingresar DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE (Extranjero) para reservar en minimarket.'
+                );
+              })();
+    const cleanDocNum = docTipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawDigits;
     const negocios = toArray(snap.negocios).filter((n) => n.activo !== 0);
     const targetBiz =
       negocios.find((n) => n.rubro === 'RESTAURANTE' || n.rubro === 'FARMACIA') || negocios[0];
@@ -1222,7 +1299,6 @@ export async function handleFirebaseRtdbRequest<T>(
     const comPlat = Math.round(monto * 0.03);
     const marketNombre = String(payload.market_nombre || 'Minimarket Cusco');
     const resumen = String(payload.items_resumen || payload.item_resumen || 'Canasta de productos');
-    const docTipo: 'DNI' | 'RUC' = docTipoResolved === 'RUC' ? 'RUC' : 'DNI';
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1244,7 +1320,7 @@ export async function handleFirebaseRtdbRequest<T>(
       cliente_nombre: String(payload.cliente_nombre || 'Cliente Verificado'),
       cliente_telefono_masked: tel.length > 4 ? `***${tel.slice(-4)}` : tel,
       cliente_documento_tipo: docTipo,
-      cliente_documento_numero: payload.cliente_documento_numero || null,
+      cliente_documento_numero: cleanDocNum,
       cliente_documento_verificado: payload.cliente_documento_verificado ? 1 : 0,
       cliente_direccion_fiscal: payload.cliente_direccion_fiscal || null,
       comprobante_tipo: docTipo === 'RUC' ? 'FACTURA' : 'BOLETA',
@@ -1285,6 +1361,9 @@ export async function handleFirebaseRtdbRequest<T>(
       return { ok: true } as T;
     }
     if (action === '/comprobante' && method === 'GET') {
+      if (pedido.categoria === 'TRANSPORTE') {
+        throw new Error('Los servicios de taxi no emiten comprobante electrónico; el documento solo identifica al pasajero.');
+      }
       if (pedido.estado !== 'ENTREGADO_PAGADO') {
         throw new Error('El comprobante electrónico se emite al finalizar y liquidar el pedido.');
       }
@@ -1443,7 +1522,7 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   const bizMatch = cleanPath.match(
-    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|reservas-referidas|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|rechazar|entregar|cancelar))$/
+    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|reservas-referidas|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|rechazar|entregar|cancelar|contraoferta|emitir-sunat))$/
   );
   if (bizMatch) {
     const bizId = Number(bizMatch[1]);
@@ -1592,7 +1671,31 @@ export async function handleFirebaseRtdbRequest<T>(
         return { ok: true } as T;
       }
       await rtdbFetch(`unidades/${uId}`, 'PATCH', payload);
-      return { ok: true } as T;
+      if (typeof payload.lat === 'number' && typeof payload.lng === 'number') {
+        const pedidosList = Object.values(snap.pedidos || {});
+        for (const p of pedidosList) {
+          if (
+            p.negocio_id === biz.id &&
+            (p.estado === 'PENDIENTE_CONFIRMACION' || p.estado === 'CONFIRMADO_PREPARACION')
+          ) {
+            await rtdbFetch(`pedidos/${p.codigo}`, 'PATCH', {
+              conductor_lat: payload.lat,
+              conductor_lng: payload.lng,
+              unidad_lat: payload.lat,
+              unidad_lng: payload.lng,
+            });
+          }
+        }
+      }
+      const unitsRecord =
+        snap.unidades && !Array.isArray(snap.unidades)
+          ? (snap.unidades as Record<string, RtdbUnidad>)
+          : undefined;
+      const existingUnit = Array.isArray(snap.unidades)
+        ? snap.unidades.find((u) => String(u?.id) === String(uId))
+        : unitsRecord?.[uId];
+      const updatedUnit = existingUnit ? { ...existingUnit, ...payload } : { id: Number(uId), ...payload };
+      return { ok: true, unidad: updatedUnit } as T;
     }
 
     if (sub === 'divisas' && method === 'POST') {
@@ -1783,10 +1886,12 @@ export async function handleFirebaseRtdbRequest<T>(
             created_at: new Date().toISOString(),
           });
         }
-        const compTipo = match.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA';
-        const compSerie = compTipo === 'FACTURA' ? 'F001' : 'B001';
-        const compNum = String(match.id).slice(-8).padStart(8, '0');
-        const emitidoAt = new Date().toISOString();
+        const isTaxi = match.categoria === 'TRANSPORTE';
+        const compTipo = isTaxi ? null : match.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA';
+        const compSerie = compTipo ? (compTipo === 'FACTURA' ? 'F001' : 'B001') : null;
+        const compNum = compTipo ? String(match.id).slice(-8).padStart(8, '0') : null;
+        const emitidoAt = compTipo ? new Date().toISOString() : null;
+        const sunatEstado = compTipo ? 'REPRESENTACION_IMPRESA' : null;
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
           estado: 'ENTREGADO_PAGADO',
           comision_retenida_centavos: 0,
@@ -1794,6 +1899,7 @@ export async function handleFirebaseRtdbRequest<T>(
           comprobante_serie: compSerie,
           comprobante_numero: compNum,
           comprobante_emitido_at: emitidoAt,
+          comprobante_sunat_estado: sunatEstado,
         });
         return {
           ok: true,
@@ -1805,9 +1911,111 @@ export async function handleFirebaseRtdbRequest<T>(
             comprobante_serie: compSerie,
             comprobante_numero: compNum,
             comprobante_emitido_at: emitidoAt,
+            comprobante_sunat_estado: sunatEstado,
             emisor_ruc: biz.documento_numero || '20601234565',
             emisor_razon_social: biz.razon_social || biz.nombre,
             emisor_direccion: biz.zona,
+          },
+          comprobante: isTaxi
+            ? null
+            : {
+                tipo: compTipo,
+                serie: compSerie,
+                numero: compNum,
+                numero_completo: `${compSerie}-${compNum}`,
+                emitido_at: emitidoAt,
+                pedido_codigo: match.codigo,
+                metodo_pago: match.metodo_pago,
+                moneda: 'PEN',
+                sunat_estado: sunatEstado,
+                emisor: {
+                  ruc: biz.documento_numero || '20601234565',
+                  razon_social: biz.razon_social || biz.nombre,
+                  nombre_comercial: biz.nombre,
+                  direccion: biz.zona,
+                },
+                receptor: {
+                  tipo_doc: match.cliente_documento_tipo || 'DNI',
+                  numero_doc: match.cliente_documento_numero || '00000000',
+                  nombre: match.cliente_nombre,
+                  direccion: match.cliente_direccion_fiscal || 'Cusco, Perú',
+                },
+                items: [
+                  {
+                    cantidad: 1,
+                    descripcion: match.item_nombre,
+                    detalle: match.transcripcion,
+                    valor_unitario_centavos: Math.round(match.monto_centavos / 1.18),
+                    total_centavos: match.monto_centavos,
+                  },
+                ],
+                op_gravada_centavos: Math.round(match.monto_centavos / 1.18),
+                igv_centavos: match.monto_centavos - Math.round(match.monto_centavos / 1.18),
+                total_centavos: match.monto_centavos,
+              },
+        } as T;
+      }
+
+      if (action === 'contraoferta' && method === 'POST') {
+        const monto = Number(payload.monto_centavos);
+        if (!Number.isInteger(monto) || monto < 500 || monto > 500000) {
+          throw new Error('Contraoferta inválida (mínimo S/ 5.00).');
+        }
+        await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
+          contraoferta_centavos: monto,
+          monto_centavos: monto,
+        });
+        return { ok: true, monto_centavos: monto } as T;
+      }
+
+      if (action === 'emitir-sunat' && method === 'POST') {
+        if (match.categoria === 'TRANSPORTE') {
+          throw new Error('La facturación electrónica está deshabilitada para servicios de taxi.');
+        }
+        const compTipo = match.comprobante_tipo || (match.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA');
+        const compSerie = match.comprobante_serie || (compTipo === 'FACTURA' ? 'F001' : 'B001');
+        const compNum = match.comprobante_numero || String(match.id).slice(-8).padStart(8, '0');
+        await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
+          comprobante_sunat_estado: 'REPRESENTACION_IMPRESA',
+        });
+        return {
+          ok: true,
+          enviado_apisperu: false,
+          mensaje: 'Comprobante preparado en modo nube Firebase (el envío directo a SUNAT requiere backend Node.js con APISPERU_FACTURACION_TOKEN).',
+          comprobante: {
+            tipo: compTipo,
+            serie: compSerie,
+            numero: compNum,
+            numero_completo: `${compSerie}-${compNum}`,
+            emitido_at: match.comprobante_emitido_at || new Date().toISOString(),
+            pedido_codigo: match.codigo,
+            metodo_pago: match.metodo_pago,
+            moneda: 'PEN',
+            sunat_estado: 'REPRESENTACION_IMPRESA',
+            emisor: {
+              ruc: biz.documento_numero || '20601234565',
+              razon_social: biz.razon_social || biz.nombre,
+              nombre_comercial: biz.nombre,
+              direccion: biz.zona,
+            },
+            receptor: {
+              tipo_doc: match.cliente_documento_tipo || 'DNI',
+              numero_doc: match.cliente_documento_numero || '00000000',
+              nombre: match.cliente_nombre,
+              direccion: match.cliente_direccion_fiscal || 'Cusco, Perú',
+            },
+            items: [
+              {
+                cantidad: 1,
+                descripcion: match.item_nombre,
+                detalle: match.transcripcion,
+                valor_unitario_centavos: Math.round(match.monto_centavos / 1.18),
+                total_centavos: match.monto_centavos,
+              },
+            ],
+            op_gravada_centavos: Math.round(match.monto_centavos / 1.18),
+            igv_centavos: match.monto_centavos - Math.round(match.monto_centavos / 1.18),
+            total_centavos: match.monto_centavos,
           },
         } as T;
       }

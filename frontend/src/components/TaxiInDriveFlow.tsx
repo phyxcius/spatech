@@ -17,6 +17,7 @@ import { haversineKm } from '../lib/cuscoMarkets.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
+  isValidForeignDoc,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import {
@@ -157,7 +158,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     driver: DriverBidCard;
     finalCentavos: number;
   } | null>(null);
-  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>(customerDoc?.tipo || 'DNI');
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC' | 'EXTRANJERO'>(customerDoc?.tipo || 'DNI');
   const [docNumero, setDocNumero] = useState(customerDoc?.numero || '');
   const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(
     customerDoc?.verificado
@@ -168,17 +169,19 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           numero: customerDoc.numero,
           nombre_completo: customerDoc.nombre,
           direccion: customerDoc.direccionFiscal,
-          source: 'RENIEC',
-          fuente: customerDoc.fuente || 'RENIEC',
+          source:
+            customerDoc.tipo === 'RUC'
+              ? 'SUNAT'
+              : customerDoc.tipo === 'EXTRANJERO'
+              ? 'MIGRACIONES_EXTRANJERO'
+              : 'RENIEC',
+          fuente: customerDoc.fuente || customerDoc.tipo,
         }
       : null
   );
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docLookupError, setDocLookupError] = useState<string | null>(null);
   const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
-  const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState(
-    customerDoc?.direccionFiscal || ''
-  );
   const [clienteTelefono, setClienteTelefono] = useState('');
   const [promotorCodigo, setPromotorCodigo] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -191,7 +194,6 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
       setDocTipo(customerDoc.tipo);
       setDocNumero(customerDoc.numero);
       if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
-      if (customerDoc.direccionFiscal) setClienteDireccionFiscal(customerDoc.direccionFiscal);
       setDocVerificado({
         valid: true,
         validado: true,
@@ -199,11 +201,16 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
         numero: customerDoc.numero,
         nombre_completo: customerDoc.nombre,
         direccion: customerDoc.direccionFiscal,
-        source: customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
-        fuente: customerDoc.fuente || (customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+        source:
+          customerDoc.tipo === 'RUC'
+            ? 'SUNAT'
+            : customerDoc.tipo === 'EXTRANJERO'
+            ? 'MIGRACIONES_EXTRANJERO'
+            : 'RENIEC',
+        fuente: customerDoc.fuente || customerDoc.tipo,
       });
     }
-  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo]);
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo, customerDoc?.nombre]);
 
   useEffect(() => {
     if (!gpsLive) {
@@ -341,24 +348,30 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   }
 
   async function handleVerifyTaxiDoc() {
-    const clean = docNumero.replace(/\D/g, '');
+    const clean =
+      docTipo === 'EXTRANJERO' ? docNumero.trim().toUpperCase() : docNumero.replace(/\D/g, '');
     setDocLookupError(null);
-    if (!clean) {
-      setDocLookupError('Ingresa tu DNI (8 dígitos) o RUC (11 dígitos).');
+    if (!clean || (docTipo === 'EXTRANJERO' && !isValidForeignDoc(clean))) {
+      setDocLookupError('Ingresa tu DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE válido.');
       return;
     }
     setDocLookupLoading(true);
     try {
       const res = await apiFetch<PeruDocumentLookupResult>(
-        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}${
+          docTipo === 'EXTRANJERO' && clienteNombre.trim()
+            ? `&nombre=${encodeURIComponent(clienteNombre.trim())}`
+            : ''
+        }`
       );
       setDocVerificado(res);
-      if (res.nombre_completo) setClienteNombre(res.nombre_completo);
-      if (res.direccion) setClienteDireccionFiscal(res.direccion);
+      if (res.nombre_completo && (!clienteNombre.trim() || docTipo !== 'EXTRANJERO')) {
+        setClienteNombre(res.nombre_completo);
+      }
       onCustomerDocVerified?.({
         tipo: res.tipo,
         numero: res.numero,
-        nombre: res.nombre_completo,
+        nombre: (docTipo === 'EXTRANJERO' ? clienteNombre.trim() : '') || res.nombre_completo,
         direccionFiscal: res.direccion,
         verificado: true,
         fuente: res.fuente || res.source,
@@ -376,20 +389,24 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     if (!confirmDriver) return;
     setErrorMsg(null);
 
-    const cleanDoc = docNumero.replace(/\D/g, '');
+    const cleanDoc =
+      docTipo === 'EXTRANJERO' ? docNumero.trim().toUpperCase() : docNumero.replace(/\D/g, '');
     let activeVerif = docVerificado;
     let activeNombre = clienteNombre.trim();
-    let activeDireccion = clienteDireccionFiscal.trim();
 
     if (!activeVerif || !(activeVerif.valid || activeVerif.validado)) {
       if (!cleanDoc) {
-        setErrorMsg('Es obligatorio ingresar y validar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar un taxi.');
+        setErrorMsg('Es obligatorio validar el DNI, RUC o Pasaporte/CE del pasajero para pedir un taxi.');
         return;
       }
       setDocLookupLoading(true);
       try {
         const res = await apiFetch<PeruDocumentLookupResult>(
-          `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}`
+          `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}${
+            docTipo === 'EXTRANJERO' && activeNombre
+              ? `&nombre=${encodeURIComponent(activeNombre)}`
+              : ''
+          }`
         );
         activeVerif = res;
         setDocVerificado(res);
@@ -397,15 +414,11 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           activeNombre = res.nombre_completo;
           setClienteNombre(res.nombre_completo);
         }
-        if (res.direccion && !activeDireccion) {
-          activeDireccion = res.direccion;
-          setClienteDireccionFiscal(res.direccion);
-        }
         onCustomerDocVerified?.({
           tipo: res.tipo,
           numero: res.numero,
           nombre: activeNombre || res.nombre_completo,
-          direccionFiscal: activeDireccion || res.direccion,
+          direccionFiscal: res.direccion,
           verificado: true,
           fuente: res.fuente || res.source,
         });
@@ -432,7 +445,6 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             cliente_documento_tipo: activeVerif?.tipo || docTipo,
             cliente_documento_numero: activeVerif?.numero || cleanDoc,
             cliente_documento_verificado: Boolean(activeVerif && (activeVerif.valid || activeVerif.validado)),
-            cliente_direccion_fiscal: activeDireccion || undefined,
             origen_texto: gpsLive ? 'Mi ubicación GPS Cusco' : 'Plaza de Armas, Cusco',
             destino_texto: `${destinoText} (Oferta acordada ${formatSoles(confirmDriver.finalCentavos)})`,
             origen_lat: userLat,
@@ -447,7 +459,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
       emitCenterNotification({
         title: `Taxi Confirmado · ${res.pedido.codigo}`,
         message: `${confirmDriver.driver.conductor_nombre} (${confirmDriver.driver.placa}) en camino rumbo a ${destinoText}. PIN de abordaje: ${res.cliente_pin}`,
-        badge: docTipo === 'RUC' ? 'FACTURA ELECTRÓNICA' : 'BOLETA ELECTRÓNICA',
+        badge: 'TAXI VERIFICADO',
         tone: 'success',
         responseTimeMs: latency,
         speakText: speakEnabled
@@ -857,7 +869,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                 </div>
               )}
 
-              {/* Verificación DNI (Boleta) / RUC (Factura) RENIEC / SUNAT — OBLIGATORIA */}
+              {/* Identidad obligatoria del pasajero (solo identificación, sin facturación electrónica) */}
               <div
                 className={`rounded-2xl border p-3.5 space-y-2 ${
                   isDocValid
@@ -868,7 +880,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
                     <Receipt className="w-3.5 h-3.5" />
-                    {docTipo === 'RUC' ? 'RUC del Titular * (Factura)' : 'DNI del Titular * (Boleta)'}
+                    Identidad del Pasajero * (Sin facturación electrónica)
                   </span>
                   {isDocValid && docVerificado ? (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
@@ -884,7 +896,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                   <select
                     value={docTipo}
                     onChange={(e) => {
-                      setDocTipo(e.target.value as 'DNI' | 'RUC');
+                      setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
                       setDocVerificado(null);
                       setDocLookupError(null);
                     }}
@@ -892,17 +904,22 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                   >
                     <option value="DNI">DNI (RENIEC)</option>
                     <option value="RUC">RUC (SUNAT)</option>
+                    <option value="EXTRANJERO">Extranjero</option>
                   </select>
                   <input
                     required
                     type="text"
-                    inputMode="numeric"
-                    maxLength={docTipo === 'DNI' ? 8 : 11}
+                    inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
+                    maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
                     value={docNumero}
                     onChange={(e) => {
-                      const digits = e.target.value.replace(/\D/g, '');
-                      setDocNumero(digits);
-                      if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                      if (docTipo === 'EXTRANJERO') {
+                        setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+                      } else {
+                        const digits = e.target.value.replace(/\D/g, '');
+                        setDocNumero(digits);
+                        if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                      }
                       setDocVerificado(null);
                       setDocLookupError(null);
                     }}
@@ -912,7 +929,13 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                         void handleVerifyTaxiDoc();
                       }
                     }}
-                    placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+                    placeholder={
+                      docTipo === 'DNI'
+                        ? 'DNI 8 dígitos'
+                        : docTipo === 'RUC'
+                        ? 'RUC 11 dígitos'
+                        : 'Pasaporte / CE'
+                    }
                     className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
                   />
                   <button
@@ -926,7 +949,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                 </div>
                 {!isDocValid && (
                   <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
-                    Obligatorio: ingresa y valida el DNI o RUC del titular para habilitar la reserva del taxi.
+                    Obligatorio: valida tu DNI, RUC o Pasaporte para identificar al pasajero (los viajes en taxi no emiten factura electrónica).
                   </p>
                 )}
                 {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
@@ -938,18 +961,9 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                   type="text"
                   value={clienteNombre}
                   onChange={(e) => setClienteNombre(e.target.value)}
-                  placeholder={docTipo === 'RUC' ? 'Razón Social (autocompletado)' : 'Nombre completo (autocompletado)'}
+                  placeholder="Nombre completo del pasajero"
                   className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
                 />
-                {docTipo === 'RUC' && (
-                  <input
-                    type="text"
-                    value={clienteDireccionFiscal}
-                    onChange={(e) => setClienteDireccionFiscal(e.target.value)}
-                    placeholder="Dirección fiscal para Factura (autocompletada)"
-                    className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
-                  />
-                )}
                 <input
                   required
                   type="tel"
@@ -985,7 +999,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                     {submitting
                       ? 'Enviando...'
                       : !isDocValid
-                      ? 'Valida DNI/RUC del titular'
+                      ? 'Valida documento del titular'
                       : 'Pedir Taxi y Ver PIN'}
                   </span>
                 </button>

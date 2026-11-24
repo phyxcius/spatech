@@ -1,12 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle,
   ArrowLeftRight,
   BadgeCheck,
-  Building2,
   CarFront,
   Compass,
-  FileText,
   Hotel,
   MapPin,
   Mic,
@@ -35,6 +32,7 @@ import { subscribeAvatarSpeech } from '../lib/heygenAvatar.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
+  isValidForeignDoc,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import {
@@ -60,6 +58,9 @@ import { RealisticAvatarPortrait } from './RealisticHumanoidWidget.tsx';
 import { TaxiInDriveFlow } from './TaxiInDriveFlow.tsx';
 
 interface ClientPortalProps {
+  customerDoc?: SharedCustomerDoc | null;
+  onCustomerDocVerified?: (doc: SharedCustomerDoc) => void;
+  onRequestIdentityGate?: () => void;
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
   openAssistantSignal: number;
   openSosSignal?: number;
@@ -102,6 +103,9 @@ interface SeatRoute {
 }
 
 export const ClientPortal: React.FC<ClientPortalProps> = ({
+  customerDoc = null,
+  onCustomerDocVerified,
+  onRequestIdentityGate,
   onOrderCreated,
   openAssistantSignal,
   openSosSignal = 0,
@@ -138,12 +142,32 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
   // Hoja de confirmación para servicios generales
   const [selectedOption, setSelectedOption] = useState<ConciergeOpcion | null>(null);
-  const [clienteNombre, setClienteNombre] = useState('');
+  const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
   const [clienteTelefono, setClienteTelefono] = useState('');
-  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>('DNI');
-  const [docNumero, setDocNumero] = useState('');
-  const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState('');
-  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC' | 'EXTRANJERO'>(customerDoc?.tipo || 'DNI');
+  const [docNumero, setDocNumero] = useState(customerDoc?.numero || '');
+  const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState(
+    customerDoc?.direccionFiscal || ''
+  );
+  const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(
+    customerDoc?.verificado
+      ? {
+          valid: true,
+          validado: true,
+          tipo: customerDoc.tipo,
+          numero: customerDoc.numero,
+          nombre_completo: customerDoc.nombre,
+          direccion: customerDoc.direccionFiscal,
+          source:
+            customerDoc.tipo === 'RUC'
+              ? 'SUNAT'
+              : customerDoc.tipo === 'EXTRANJERO'
+              ? 'MIGRACIONES_EXTRANJERO'
+              : 'RENIEC',
+          fuente: customerDoc.fuente || customerDoc.tipo,
+        }
+      : null
+  );
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docLookupError, setDocLookupError] = useState<string | null>(null);
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
@@ -178,7 +202,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [sosOpen, setSosOpen] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
-  const docInputRef = useRef<HTMLInputElement>(null);
   const docAlertCooldownRef = useRef<number>(0);
 
   const isDocValid = Boolean(docVerificado && (docVerificado.valid || docVerificado.validado));
@@ -195,6 +218,31 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     };
   }, [isDocValid, docVerificado, clienteNombre, clienteDireccionFiscal]);
 
+  useEffect(() => {
+    if (customerDoc?.verificado) {
+      setDocTipo(customerDoc.tipo);
+      setDocNumero(customerDoc.numero);
+      if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      if (customerDoc.direccionFiscal) setClienteDireccionFiscal(customerDoc.direccionFiscal);
+      setDocLookupError(null);
+      setDocVerificado({
+        valid: true,
+        validado: true,
+        tipo: customerDoc.tipo,
+        numero: customerDoc.numero,
+        nombre_completo: customerDoc.nombre,
+        direccion: customerDoc.direccionFiscal,
+        source:
+          customerDoc.tipo === 'RUC'
+            ? 'SUNAT'
+            : customerDoc.tipo === 'EXTRANJERO'
+            ? 'MIGRACIONES_EXTRANJERO'
+            : 'RENIEC',
+        fuente: customerDoc.fuente || customerDoc.tipo,
+      });
+    }
+  }, [customerDoc?.verificado, customerDoc?.tipo, customerDoc?.numero, customerDoc?.nombre]);
+
   function handleSharedDocSynced(synced: SharedCustomerDoc) {
     setDocTipo(synced.tipo);
     setDocNumero(synced.numero);
@@ -208,9 +256,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       numero: synced.numero,
       nombre_completo: synced.nombre,
       direccion: synced.direccionFiscal,
-      source: synced.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
-      fuente: synced.fuente || (synced.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+      source:
+        synced.tipo === 'RUC'
+          ? 'SUNAT'
+          : synced.tipo === 'EXTRANJERO'
+          ? 'MIGRACIONES_EXTRANJERO'
+          : 'RENIEC',
+      fuente: synced.fuente || synced.tipo,
     });
+    onCustomerDocVerified?.(synced);
   }
 
   function notifyDocumentAlertIfNeeded(tipoPedidoLabel: string, allowSpeak = true) {
@@ -220,19 +274,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     docAlertCooldownRef.current = now;
     emitCenterNotification({
       id: `alerta-dni-ruc-${now}`,
-      badge: 'ALERTA RENIEC / SUNAT · COMPROBANTE',
-      title: 'Ingresa tu DNI o RUC para emitir tu pedido',
-      subtitle: `${tipoPedidoLabel} · Boleta (DNI) o Factura Electrónica (RUC)`,
+      badge: 'IDENTIDAD OBLIGATORIA',
+      title: 'Valida tu DNI, RUC o Documento Extranjero',
+      subtitle: `${tipoPedidoLabel} · Identidad del titular requerida`,
       detail:
-        'Para registrar el pedido a tu nombre ingresa tu DNI (8 dígitos, sincronizado con RENIEC). Si solicitas como empresa para Factura Electrónica, ingresa tu RUC (11 dígitos, SUNAT).',
+        'Para emitir pedidos a tu nombre debes validar tu DNI (RENIEC), RUC (SUNAT) o Pasaporte/Carné de Extranjería.',
       tone: 'warning',
       meta: 'RENIEC · SUNAT',
       speakText:
         allowSpeak && speakReplies
-          ? 'Alerta: ingresa tu DNI para boleta a tu nombre, o tu RUC si es empresa y deseas factura electrónica.'
+          ? 'Valida tu documento de identidad para registrar pedidos a tu nombre.'
           : undefined,
     });
-    setTimeout(() => docInputRef.current?.focus(), 140);
+    onRequestIdentityGate?.();
   }
 
   // Precarga silenciosa de unidades reales de transporte para el modo Taxi InDrive
@@ -556,30 +610,47 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   }
 
   async function handleVerifyCustomerDoc(
-    overrideTipo?: 'DNI' | 'RUC',
+    overrideTipo?: 'DNI' | 'RUC' | 'EXTRANJERO',
     overrideNumero?: string
   ): Promise<PeruDocumentLookupResult | null> {
-    const clean = (overrideNumero ?? docNumero).replace(/\D/g, '');
-    const tipoUse: 'DNI' | 'RUC' =
-      overrideTipo || (clean.length === 11 ? 'RUC' : clean.length === 8 ? 'DNI' : docTipo);
+    const requestedTipo = overrideTipo || docTipo;
+    const rawNum = (overrideNumero ?? docNumero).trim();
+    const clean = requestedTipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawNum.replace(/\D/g, '');
+    const tipoUse: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      requestedTipo === 'EXTRANJERO'
+        ? 'EXTRANJERO'
+        : overrideTipo || (clean.length === 11 ? 'RUC' : clean.length === 8 ? 'DNI' : docTipo);
+
     if (tipoUse !== docTipo) setDocTipo(tipoUse);
     setDocLookupError(null);
-    if (!clean) {
-      setDocLookupError('Ingresa tu DNI (8 dígitos) o RUC (11 dígitos).');
+    if (!clean || (tipoUse === 'EXTRANJERO' && !isValidForeignDoc(clean))) {
+      setDocLookupError('Ingresa DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE válido.');
       return null;
     }
     setDocLookupLoading(true);
     try {
       const res = await apiFetch<PeruDocumentLookupResult>(
-        `/api/public/consulta-documento?tipo=${tipoUse}&numero=${encodeURIComponent(clean)}`
+        `/api/public/consulta-documento?tipo=${tipoUse}&numero=${encodeURIComponent(clean)}${
+          tipoUse === 'EXTRANJERO' && clienteNombre.trim()
+            ? `&nombre=${encodeURIComponent(clienteNombre.trim())}`
+            : ''
+        }`
       );
       setDocVerificado(res);
-      if (res.nombre_completo) {
+      if (res.nombre_completo && (!clienteNombre.trim() || tipoUse !== 'EXTRANJERO')) {
         setClienteNombre(res.nombre_completo);
       }
       if (res.direccion) {
         setClienteDireccionFiscal(res.direccion);
       }
+      onCustomerDocVerified?.({
+        tipo: res.tipo,
+        numero: res.numero,
+        nombre: (tipoUse === 'EXTRANJERO' ? clienteNombre.trim() : '') || res.nombre_completo,
+        direccionFiscal: res.direccion,
+        verificado: true,
+        fuente: res.fuente || res.source,
+      });
       return res;
     } catch (err) {
       setDocVerificado(null);
@@ -597,15 +668,18 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
     let activeDoc = isDocValid ? docVerificado : null;
     if (!activeDoc) {
-      const clean = docNumero.replace(/\D/g, '');
-      if (clean.length === 8 || clean.length === 11) {
+      const clean =
+        docTipo === 'EXTRANJERO' ? docNumero.trim().toUpperCase() : docNumero.replace(/\D/g, '');
+      if (docTipo === 'EXTRANJERO' && isValidForeignDoc(clean)) {
+        activeDoc = await handleVerifyCustomerDoc('EXTRANJERO', clean);
+      } else if (clean.length === 8 || clean.length === 11) {
         activeDoc = await handleVerifyCustomerDoc(clean.length === 11 ? 'RUC' : 'DNI', clean);
       }
     }
 
     if (!activeDoc || !(activeDoc.valid || activeDoc.validado)) {
       setSheetError(
-        'Ingresa y valida tu DNI (8 dígitos, Boleta a tu nombre) o tu RUC (11 dígitos, Factura Electrónica).'
+        'Valida tu DNI (8 dígitos), RUC (11 dígitos) o documento de extranjero para continuar.'
       );
       return;
     }
@@ -629,7 +703,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               cliente_documento_tipo: activeDoc.tipo,
               cliente_documento_numero: activeDoc.numero,
               cliente_documento_verificado: true,
-              cliente_direccion_fiscal: finalDirFiscal || undefined,
               origen_texto: gpsStatus === 'live' ? 'Mi ubicación GPS' : 'Plaza de Armas, Cusco',
               destino_texto: destino || 'Aeropuerto Velasco Astete',
               origen_lat: coords.lat,
@@ -644,7 +717,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           id: `order-confirm-${res.pedido.codigo}`,
           title: `Taxi Confirmado · ${res.pedido.codigo}`,
           subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
-          detail: `Conductor en ruta. ${activeDoc.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'} a nombre de ${finalNombre} (${activeDoc.tipo} ${activeDoc.numero}) al finalizar.`,
+          detail: `Conductor en ruta. Pasajero verificado: ${finalNombre} (${activeDoc.tipo} ${activeDoc.numero}).`,
           tone: 'success',
           responseMs: ms,
           speakText: speakReplies
@@ -1079,120 +1152,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           )}
         </div>
 
-        {/* Barra de Identidad RENIEC (DNI) / SUNAT (RUC) sincronizada con los negocios */}
-        <div
-          className={`mt-5 rounded-2xl border p-3.5 sm:p-4 transition-colors ${
-            isDocValid
-              ? 'border-emerald-500/40 bg-emerald-500/8'
-              : 'border-amber-500/45 bg-amber-500/10'
-          }`}
-        >
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            <div className="flex items-start gap-2.5">
-              {isDocValid ? (
-                <BadgeCheck className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
-              ) : (
-                <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-              )}
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#14171F] dark:text-white">
-                    {isDocValid && docVerificado
-                      ? `Titular Verificado (${docVerificado.tipo} ${docVerificado.numero})`
-                      : 'Ingresa tu DNI o RUC para emitir tu pedido y comprobante'}
-                  </span>
-                  <span
-                    className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                      docTipo === 'RUC'
-                        ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300 border border-sky-500/30'
-                        : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
-                    }`}
-                  >
-                    <FileText className="w-3 h-3" />
-                    {docTipo === 'RUC' ? 'Factura Electrónica' : 'Boleta de Venta'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5] mt-0.5">
-                  {isDocValid && docVerificado
-                    ? `${docVerificado.nombre_completo}${clienteDireccionFiscal ? ` · ${clienteDireccionFiscal}` : ''} · Sincronizado con el panel del negocio (${docVerificado.fuente || docVerificado.source}).`
-                    : 'Persona natural: DNI (8 dígitos RENIEC). Empresa: RUC (11 dígitos SUNAT para Factura Electrónica al finalizar).'}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex rounded-xl border border-black/15 dark:border-white/15 overflow-hidden bg-white dark:bg-[#121620]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDocTipo('DNI');
-                    setDocVerificado(null);
-                    setDocLookupError(null);
-                  }}
-                  className={`min-h-[38px] px-3 text-xs font-bold transition-colors ${
-                    docTipo === 'DNI'
-                      ? 'bg-[#14213D] text-white dark:bg-[#D4AF37] dark:text-[#0B0E14]'
-                      : 'text-[#555B66] dark:text-[#98A0AD]'
-                  }`}
-                >
-                  DNI (Boleta)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDocTipo('RUC');
-                    setDocVerificado(null);
-                    setDocLookupError(null);
-                  }}
-                  className={`min-h-[38px] px-3 text-xs font-bold flex items-center gap-1 transition-colors ${
-                    docTipo === 'RUC'
-                      ? 'bg-[#14213D] text-white dark:bg-[#D4AF37] dark:text-[#0B0E14]'
-                      : 'text-[#555B66] dark:text-[#98A0AD]'
-                  }`}
-                >
-                  <Building2 className="w-3.5 h-3.5" /> RUC (Factura)
-                </button>
-              </div>
-
-              <input
-                ref={docInputRef}
-                type="text"
-                inputMode="numeric"
-                maxLength={11}
-                value={docNumero}
-                onChange={(e) => {
-                  const digits = e.target.value.replace(/\D/g, '');
-                  setDocNumero(digits);
-                  if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
-                  else if (digits.length === 8 && docTipo !== 'DNI') setDocTipo('DNI');
-                  setDocVerificado(null);
-                  setDocLookupError(null);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    void handleVerifyCustomerDoc();
-                  }
-                }}
-                placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
-                className="w-40 sm:w-44 min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular text-[#14171F] dark:text-white"
-              />
-
-              <button
-                type="button"
-                onClick={() => void handleVerifyCustomerDoc()}
-                disabled={docLookupLoading}
-                className="min-h-[38px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
-              >
-                {docLookupLoading ? 'Validando...' : 'Validar RENIEC/SUNAT'}
-              </button>
-            </div>
-          </div>
-          {docLookupError && (
-            <p className="text-[11px] font-medium text-[#C81E5B] mt-2">{docLookupError}</p>
-          )}
-        </div>
-
         {/* Barra de acceso rápido a los módulos complementarios */}
         <div className="mt-4 pt-4 border-t border-black/8 dark:border-white/8 flex items-center gap-2 overflow-x-auto pb-1">
           <button
@@ -1496,14 +1455,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           {!isDocValid && (
             <div className="rounded-2xl border border-amber-500/45 bg-amber-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-200">
               <span>
-                <strong>DNI/RUC Obligatorio:</strong> valida el DNI o RUC del titular arriba antes de bloquear una tasa.
+                <strong>Documento Obligatorio:</strong> valida tu DNI, RUC o documento de extranjero antes de bloquear una tasa.
               </span>
               <button
                 type="button"
-                onClick={() => docInputRef.current?.focus()}
+                onClick={() => onRequestIdentityGate?.()}
                 className="px-3 py-1.5 rounded-xl bg-amber-500 text-[#0B0E14] font-bold"
               >
-                Ingresar DNI/RUC
+                Identificar Titular
               </button>
             </div>
           )}
@@ -1870,12 +1829,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   <span>
                     {isDocValid && docVerificado
                       ? `✓ Titular verificado: ${docVerificado.tipo} ${docVerificado.numero}`
-                      : 'Obligatorio: valida tu DNI o RUC arriba para reservar butaca.'}
+                      : 'Obligatorio: valida tu DNI, RUC o Pasaporte para reservar butaca.'}
                   </span>
                   {!isDocValid && (
                     <button
                       type="button"
-                      onClick={() => docInputRef.current?.focus()}
+                      onClick={() => onRequestIdentityGate?.()}
                       className="px-2.5 py-1 rounded-lg bg-[#D4AF37] text-[#0B0E14] font-bold shrink-0"
                     >
                       Validar
@@ -2000,7 +1959,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </div>
               )}
 
-              {/* Validación DNI / RUC sincronizada con RENIEC / SUNAT — OBLIGATORIA */}
+              {/* Validación DNI / RUC / Extranjero — OBLIGATORIA */}
               <div
                 className={`rounded-2xl border p-3.5 space-y-2.5 ${
                   isDocValid
@@ -2010,12 +1969,18 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-                    DNI (8) o RUC (11) del Titular *
+                    {selectedOption.tipo === 'TAXI'
+                      ? 'Identidad del Pasajero * (Sin facturación electrónica)'
+                      : 'DNI (8), RUC (11) o Extranjero *'}
                   </span>
                   {isDocValid && docVerificado ? (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} ·{' '}
-                      {docVerificado.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'}
+                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo}{' '}
+                      {selectedOption.tipo === 'TAXI'
+                        ? 'Verificado'
+                        : `· ${
+                            docVerificado.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'
+                          }`}
                     </span>
                   ) : (
                     <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
@@ -2027,25 +1992,30 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   <select
                     value={docTipo}
                     onChange={(e) => {
-                      setDocTipo(e.target.value as 'DNI' | 'RUC');
+                      setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
                       setDocVerificado(null);
                       setDocLookupError(null);
                     }}
                     className="min-h-[40px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
                   >
-                    <option value="DNI">DNI (8 · Boleta)</option>
-                    <option value="RUC">RUC (11 · Factura)</option>
+                    <option value="DNI">DNI (8)</option>
+                    <option value="RUC">RUC (11)</option>
+                    <option value="EXTRANJERO">Extranjero</option>
                   </select>
                   <input
                     type="text"
                     required
-                    inputMode="numeric"
-                    maxLength={docTipo === 'DNI' ? 8 : 11}
+                    inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
+                    maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
                     value={docNumero}
                     onChange={(e) => {
-                      const digits = e.target.value.replace(/\D/g, '');
-                      setDocNumero(digits);
-                      if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                      if (docTipo === 'EXTRANJERO') {
+                        setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+                      } else {
+                        const digits = e.target.value.replace(/\D/g, '');
+                        setDocNumero(digits);
+                        if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                      }
                       setDocVerificado(null);
                       setDocLookupError(null);
                     }}
@@ -2055,7 +2025,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                         void handleVerifyCustomerDoc();
                       }
                     }}
-                    placeholder={docTipo === 'DNI' ? 'Ej: 44556677' : 'Ej: 20601234565'}
+                    placeholder={
+                      docTipo === 'DNI'
+                        ? 'Ej: 44556677'
+                        : docTipo === 'RUC'
+                        ? 'Ej: 20601234565'
+                        : 'Pasaporte / CE'
+                    }
                     className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
                   />
                   <button
@@ -2069,15 +2045,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </div>
                 {!isDocValid && (
                   <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
-                    Obligatorio: ingresa y valida el DNI o RUC del titular para habilitar la reserva.
+                    Obligatorio: valida tu DNI, RUC o documento de extranjero para habilitar la reserva.
                   </p>
                 )}
                 {isDocValid && docVerificado && (
                   <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
-                    ✓ {docVerificado.nombre_completo} · Fuente: {docVerificado.fuente || docVerificado.source}
+                    ✓ {clienteNombre || docVerificado.nombre_completo} · Fuente: {docVerificado.fuente || docVerificado.source}
                   </p>
                 )}
-                {docTipo === 'RUC' && (
+                {selectedOption.tipo !== 'TAXI' && docTipo === 'RUC' && (
                   <input
                     type="text"
                     value={clienteDireccionFiscal}

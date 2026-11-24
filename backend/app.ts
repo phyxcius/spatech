@@ -7,6 +7,10 @@ import {
   runConciergeSearch,
 } from './assistant.ts';
 import {
+  enviarComprobanteApisperu,
+  isApisperuBillingConfigured,
+} from './apisperuBilling.ts';
+import {
   aceptarPedido,
   ajustarSaldoAdmin,
   aprobarRecarga,
@@ -58,6 +62,10 @@ function isValidDni(raw: string): boolean {
   return /^\d{8}$/.test(raw.trim());
 }
 
+function isValidForeignDoc(raw: string): boolean {
+  return /^[A-Z0-9-]{6,20}$/i.test(raw.trim());
+}
+
 function isValidRuc(raw: string): boolean {
   const ruc = raw.trim();
   if (!/^(10|15|16|17|20)\d{9}$/.test(ruc)) return false;
@@ -76,13 +84,17 @@ function generateCode(prefix: string): string {
   return `${prefix}-${num}`;
 }
 
-function parseClienteDocumentoInput(body: Record<string, any>): {
-  docTipo: 'DNI' | 'RUC' | null;
-  docNum: string | null;
+function parseClienteDocumentoInput(
+  body: Record<string, any>,
+  opts?: { allowInvoice?: boolean }
+): {
+  docTipo: 'DNI' | 'RUC' | 'EXTRANJERO';
+  docNum: string;
   docVerif: number;
   docDireccionFiscal: string | null;
-  comprobanteTipo: 'BOLETA' | 'FACTURA';
+  comprobanteTipo: 'BOLETA' | 'FACTURA' | null;
 } {
+  const allowInvoice = opts?.allowInvoice !== false;
   const rawNum = String(body.cliente_documento_numero || '').trim();
   const rawDir =
     typeof body.cliente_direccion_fiscal === 'string' && body.cliente_direccion_fiscal.trim()
@@ -92,18 +104,21 @@ function parseClienteDocumentoInput(body: Record<string, any>): {
   if (!rawNum) {
     throw new HttpError(
       400,
-      'Es obligatorio ingresar el DNI (8 dígitos) o RUC (11 dígitos) del titular para reservar.'
+      'Es obligatorio ingresar tu DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE (Extranjero) para reservar.'
     );
   }
 
-  const t = String(body.cliente_documento_tipo || (rawNum.length === 11 ? 'RUC' : 'DNI')).toUpperCase();
+  const t = String(
+    body.cliente_documento_tipo || (rawNum.length === 11 && /^\d+$/.test(rawNum) ? 'RUC' : /^\d{8}$/.test(rawNum) ? 'DNI' : 'EXTRANJERO')
+  ).toUpperCase();
+
   if (t === 'DNI' && isValidDni(rawNum)) {
     return {
       docTipo: 'DNI',
       docNum: rawNum,
       docVerif: body.cliente_documento_verificado ? 1 : 0,
       docDireccionFiscal: rawDir,
-      comprobanteTipo: 'BOLETA',
+      comprobanteTipo: allowInvoice ? 'BOLETA' : null,
     };
   }
   if (t === 'RUC' && isValidRuc(rawNum)) {
@@ -112,10 +127,19 @@ function parseClienteDocumentoInput(body: Record<string, any>): {
       docNum: rawNum,
       docVerif: body.cliente_documento_verificado ? 1 : 0,
       docDireccionFiscal: rawDir,
-      comprobanteTipo: 'FACTURA',
+      comprobanteTipo: allowInvoice ? 'FACTURA' : null,
     };
   }
-  throw new HttpError(400, 'El DNI/RUC del cliente no tiene formato válido');
+  if (t === 'EXTRANJERO' && isValidForeignDoc(rawNum)) {
+    return {
+      docTipo: 'EXTRANJERO',
+      docNum: rawNum.toUpperCase(),
+      docVerif: body.cliente_documento_verificado ? 1 : 0,
+      docDireccionFiscal: rawDir,
+      comprobanteTipo: allowInvoice ? 'BOLETA' : null,
+    };
+  }
+  throw new HttpError(400, 'El DNI, RUC o documento extranjero no tiene formato válido');
 }
 
 function buildComprobantePayload(row: PedidoRow & {
@@ -139,6 +163,8 @@ function buildComprobantePayload(row: PedidoRow & {
     pedido_codigo: row.codigo,
     metodo_pago: row.metodo_pago,
     moneda: 'PEN',
+    hash: row.comprobante_hash || null,
+    sunat_estado: row.comprobante_sunat_estado || 'REPRESENTACION_IMPRESA',
     emisor: {
       ruc: row.emisor_ruc || '20601234565',
       razon_social: row.emisor_razon_social || row.negocio_nombre || 'La Chuspa Cusco Partner',
@@ -462,8 +488,32 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     try {
       const tipo = String(req.query.tipo || '').trim().toUpperCase();
       const numero = String(req.query.numero || '').trim();
+      const nombreQuery = String(req.query.nombre || '').trim();
+
+      if (tipo === 'EXTRANJERO') {
+        const cleanDoc = numero.toUpperCase();
+        if (!isValidForeignDoc(cleanDoc)) {
+          throw new HttpError(
+            400,
+            'El Pasaporte o Carné de Extranjería debe tener entre 6 y 20 caracteres alfanuméricos.'
+          );
+        }
+        const finalNombre =
+          nombreQuery.length >= 2 ? nombreQuery.slice(0, 120) : 'Pasajero / Cliente Extranjero';
+        res.json({
+          valid: true,
+          validado: true,
+          tipo: 'EXTRANJERO',
+          numero: cleanDoc,
+          nombre_completo: finalNombre,
+          source: 'MIGRACIONES_EXTRANJERO',
+          fuente: 'MIGRACIONES_EXTRANJERO',
+        });
+        return;
+      }
+
       if (tipo !== 'DNI' && tipo !== 'RUC') {
-        throw new HttpError(400, 'Tipo de documento debe ser DNI o RUC');
+        throw new HttpError(400, 'Tipo de documento debe ser DNI, RUC o EXTRANJERO');
       }
       if (tipo === 'DNI' && !isValidDni(numero)) {
         throw new HttpError(400, 'El DNI peruano debe tener exactamente 8 dígitos numéricos');
@@ -1060,8 +1110,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         ? origen_texto.trim()
         : 'Ubicación GPS actual';
 
-      const { docTipo, docNum, docVerif, docDireccionFiscal, comprobanteTipo } =
-        parseClienteDocumentoInput(req.body || {});
+      const { docTipo, docNum, docVerif, docDireccionFiscal } =
+        parseClienteDocumentoInput(req.body || {}, { allowInvoice: false });
 
       const insertRes = db
         .prepare(`
@@ -1071,10 +1121,11 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             metodo_pago, estado, cliente_nombre, cliente_telefono,
             cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
             cliente_direccion_fiscal, comprobante_tipo,
-            origen_texto, destino_texto, origen_lat, origen_lng, distancia_km, eta_min,
+            origen_texto, destino_texto, origen_lat, origen_lng, destino_lat, destino_lng,
+            conductor_lat, conductor_lng, distancia_km, eta_min,
             pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, ?, 'TRANSPORTE', NULL, ?, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+45 minutes'))
+          VALUES (?, ?, NULL, ?, 'TRANSPORTE', NULL, ?, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+45 minutes'))
         `)
         .run(
           codigo,
@@ -1091,11 +1142,14 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           docNum,
           docVerif,
           docDireccionFiscal,
-          comprobanteTipo,
           origenClean,
           destinoClean,
           oLat,
           oLng,
+          dLat,
+          dLng,
+          unidad.lat,
+          unidad.lng,
           tripKm,
           etaMin,
           hash,
@@ -1111,7 +1165,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       );
 
       const created = db
-        .prepare('SELECT * FROM pedidos_ordenes WHERE id = ?')
+        .prepare(`
+          SELECT p.*, u.lat AS unidad_lat, u.lng AS unidad_lng, u.conductor_nombre, u.placa, u.modelo
+          FROM pedidos_ordenes p
+          LEFT JOIN unidades_conductores u ON u.id = p.unidad_id
+          WHERE p.id = ?
+        `)
         .get(Number(insertRes.lastInsertRowid)) as unknown as PedidoRow;
 
       res.status(201).json({
@@ -1188,6 +1247,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         | undefined;
 
       if (!row) throw new HttpError(404, 'Pedido no encontrado');
+      if (row.categoria === 'TRANSPORTE') {
+        throw new HttpError(
+          400,
+          'Los servicios de taxi no emiten comprobante electrónico; el documento solo identifica al pasajero.'
+        );
+      }
       if (row.estado !== 'ENTREGADO_PAGADO') {
         throw new HttpError(
           409,
@@ -1814,6 +1879,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           saldo_libre: negocio.saldo - negocio.saldo_retenido,
         },
         regla_comision: regla,
+        facturacion_apisperu_activa:
+          negocio.rubro === 'TRANSPORTE' ? false : isApisperuBillingConfigured(),
         movimientos,
         recargas,
         servicios,
@@ -2056,10 +2123,13 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             SELECT p.*, ref.nombre AS referidor_nombre,
                    prov.documento_numero AS emisor_ruc,
                    COALESCE(prov.razon_social, prov.nombre) AS emisor_razon_social,
-                   prov.zona AS emisor_direccion
+                   prov.zona AS emisor_direccion,
+                   u.lat AS unidad_lat, u.lng AS unidad_lng,
+                   u.conductor_nombre, u.placa, u.modelo
             FROM pedidos_ordenes p
             JOIN negocios prov ON prov.id = p.negocio_id
             LEFT JOIN negocios ref ON ref.id = p.referido_negocio_id
+            LEFT JOIN unidades_conductores u ON u.id = p.unidad_id
             WHERE p.negocio_id = ? AND p.categoria = ?
             ORDER BY p.id DESC
           `)
@@ -2070,9 +2140,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             SELECT p.*, prov.nombre AS prestador_nombre,
                    prov.documento_numero AS emisor_ruc,
                    COALESCE(prov.razon_social, prov.nombre) AS emisor_razon_social,
-                   prov.zona AS emisor_direccion
+                   prov.zona AS emisor_direccion,
+                   u.lat AS unidad_lat, u.lng AS unidad_lng,
+                   u.conductor_nombre, u.placa, u.modelo
             FROM pedidos_ordenes p
             JOIN negocios prov ON prov.id = p.negocio_id
+            LEFT JOIN unidades_conductores u ON u.id = p.unidad_id
             WHERE p.referido_negocio_id = ?
             ORDER BY p.id DESC
           `)
@@ -2083,10 +2156,13 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             SELECT p.*, prov.nombre AS prestador_nombre, ref.nombre AS referidor_nombre,
                    prov.documento_numero AS emisor_ruc,
                    COALESCE(prov.razon_social, prov.nombre) AS emisor_razon_social,
-                   prov.zona AS emisor_direccion
+                   prov.zona AS emisor_direccion,
+                   u.lat AS unidad_lat, u.lng AS unidad_lng,
+                   u.conductor_nombre, u.placa, u.modelo
             FROM pedidos_ordenes p
             JOIN negocios prov ON prov.id = p.negocio_id
             LEFT JOIN negocios ref ON ref.id = p.referido_negocio_id
+            LEFT JOIN unidades_conductores u ON u.id = p.unidad_id
             WHERE (p.negocio_id = ? AND p.categoria = ?) OR p.referido_negocio_id = ?
             ORDER BY p.id DESC
           `)
@@ -2155,7 +2231,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.post(
     '/api/negocio/:negocioId/pedidos/:pedidoId/entregar',
     requireBusinessAuth,
-    (req: AuthedRequest, res, next) => {
+    async (req: AuthedRequest, res, next) => {
       try {
         const negocioId = Number(req.params.negocioId);
         const pedidoId = Number(req.params.pedidoId);
@@ -2173,17 +2249,95 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
               emisor_direccion: string | null;
             }
           | undefined;
-        const enriched = {
+        let enriched = {
           ...result.pedido,
           negocio_nombre: issuer?.negocio_nombre,
           emisor_ruc: issuer?.emisor_ruc || null,
           emisor_razon_social: issuer?.emisor_razon_social || null,
           emisor_direccion: issuer?.emisor_direccion || null,
         };
+
+        let comprobantePayload: ReturnType<typeof buildComprobantePayload> | null = null;
+        if (enriched.categoria !== 'TRANSPORTE') {
+          const initialComp = buildComprobantePayload(enriched);
+          const apisperuRes = await enviarComprobanteApisperu(enriched.categoria, initialComp);
+          db.prepare(
+            'UPDATE pedidos_ordenes SET comprobante_hash = ?, comprobante_sunat_estado = ? WHERE id = ?'
+          ).run(apisperuRes.hash, apisperuRes.estado, enriched.id);
+          enriched = {
+            ...enriched,
+            comprobante_hash: apisperuRes.hash,
+            comprobante_sunat_estado: apisperuRes.estado,
+          };
+          comprobantePayload = buildComprobantePayload(enriched);
+        }
+
         res.json({
           pedido: sanitizeOrderForBusiness(enriched as unknown as Record<string, unknown>, negocioId),
           puntos_otorgados: result.puntosGanados,
-          comprobante: buildComprobantePayload(enriched),
+          comprobante: comprobantePayload,
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  app.post(
+    '/api/negocio/:negocioId/pedidos/:pedidoId/emitir-sunat',
+    requireBusinessAuth,
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const pedidoId = Number(req.params.pedidoId);
+        const row = db
+          .prepare(`
+            SELECT p.*, n.nombre AS negocio_nombre, n.documento_numero AS emisor_ruc,
+                   COALESCE(n.razon_social, n.nombre) AS emisor_razon_social, n.zona AS emisor_direccion
+            FROM pedidos_ordenes p
+            JOIN negocios n ON n.id = p.negocio_id
+            WHERE p.id = ?
+          `)
+          .get(pedidoId) as unknown as
+          | (PedidoRow & {
+              negocio_nombre: string;
+              emisor_ruc: string | null;
+              emisor_razon_social: string | null;
+              emisor_direccion: string | null;
+            })
+          | undefined;
+
+        if (!row) throw new HttpError(404, 'Pedido no encontrado');
+        if (row.negocio_id !== negocioId) throw new HttpError(403, 'Sin permiso');
+        if (row.categoria === 'TRANSPORTE') {
+          throw new HttpError(
+            400,
+            'La facturación electrónica está deshabilitada para servicios de taxi.'
+          );
+        }
+        if (row.estado !== 'ENTREGADO_PAGADO') {
+          throw new HttpError(
+            409,
+            'Solo puedes emitir comprobante SUNAT cuando el pedido esté entregado y liquidado.'
+          );
+        }
+
+        const comp = buildComprobantePayload(row);
+        const apisperuRes = await enviarComprobanteApisperu(row.categoria, comp);
+        db.prepare(
+          'UPDATE pedidos_ordenes SET comprobante_hash = ?, comprobante_sunat_estado = ? WHERE id = ?'
+        ).run(apisperuRes.hash, apisperuRes.estado, row.id);
+
+        const updatedComp = buildComprobantePayload({
+          ...row,
+          comprobante_hash: apisperuRes.hash,
+          comprobante_sunat_estado: apisperuRes.estado,
+        });
+        res.json({
+          ok: true,
+          enviado_apisperu: apisperuRes.sent,
+          mensaje: apisperuRes.mensaje || null,
+          comprobante: updatedComp,
         });
       } catch (err) {
         next(err);
@@ -2199,8 +2353,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         const negocioId = Number(req.params.negocioId);
         const pedidoId = Number(req.params.pedidoId);
         const { monto_centavos } = req.body || {};
-        if (!Number.isInteger(monto_centavos) || monto_centavos < 1000 || monto_centavos > 500000) {
-          throw new HttpError(400, 'Contraoferta inválida');
+        if (!Number.isInteger(monto_centavos) || monto_centavos < 500 || monto_centavos > 500000) {
+          throw new HttpError(400, 'Contraoferta inválida (mínimo S/ 5.00)');
         }
         const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
           | PedidoRow
@@ -2564,6 +2718,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           tarifa_base_centavos,
           tarifa_km_centavos,
           estado,
+          lat,
+          lng,
         } = req.body || {};
 
         const validEstados = ['DISPONIBLE', 'OCUPADO', 'FUERA_SERVICIO'];
@@ -2576,6 +2732,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         if (tarifa_km_centavos !== undefined && (!Number.isInteger(tarifa_km_centavos) || tarifa_km_centavos < 50)) {
           throw new HttpError(400, 'Tarifa por km inválida');
         }
+        const validLat =
+          typeof lat === 'number' && Number.isFinite(lat) && lat >= -90 && lat <= 90 ? lat : null;
+        const validLng =
+          typeof lng === 'number' && Number.isFinite(lng) && lng >= -180 && lng <= 180 ? lng : null;
 
         db.prepare(`
           UPDATE unidades_conductores
@@ -2584,7 +2744,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
               color = COALESCE(?, color),
               tarifa_base_centavos = COALESCE(?, tarifa_base_centavos),
               tarifa_km_centavos = COALESCE(?, tarifa_km_centavos),
-              estado = COALESCE(?, estado)
+              estado = COALESCE(?, estado),
+              lat = COALESCE(?, lat),
+              lng = COALESCE(?, lng)
           WHERE id = ? AND negocio_id = ?
         `).run(
           typeof conductor_nombre === 'string' && conductor_nombre.trim() ? conductor_nombre.trim() : null,
@@ -2593,9 +2755,19 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           tarifa_base_centavos ?? null,
           tarifa_km_centavos ?? null,
           estado ?? null,
+          validLat,
+          validLng,
           unidadId,
           negocioId
         );
+
+        if (validLat !== null && validLng !== null) {
+          db.prepare(`
+            UPDATE pedidos_ordenes
+            SET conductor_lat = ?, conductor_lng = ?, updated_at = datetime('now')
+            WHERE unidad_id = ? AND estado IN ('PENDIENTE_CONFIRMACION', 'CONFIRMADO_PREPARACION')
+          `).run(validLat, validLng, unidadId);
+        }
 
         res.json({
           unidad: db.prepare('SELECT * FROM unidades_conductores WHERE id = ?').get(unidadId),

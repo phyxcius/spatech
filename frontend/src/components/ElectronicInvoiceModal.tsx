@@ -70,6 +70,8 @@ export function buildComprobanteFromOrder(
     op_gravada_centavos: opGravadaCentavos,
     igv_centavos: igvCentavos,
     total_centavos: totalCentavos,
+    hash: order.comprobante_hash ?? null,
+    sunat_estado: order.comprobante_sunat_estado ?? null,
   };
 }
 
@@ -78,6 +80,7 @@ export const ElectronicInvoiceModal: React.FC<ElectronicInvoiceModalProps> = ({
   comprobante,
   onClose,
 }) => {
+  if (order?.categoria === 'TRANSPORTE') return null;
   const data = comprobante || (order ? buildComprobanteFromOrder(order) : null);
   if (!data) return null;
 
@@ -279,9 +282,17 @@ export const ElectronicInvoiceModal: React.FC<ElectronicInvoiceModalProps> = ({
           </div>
         </div>
 
-        {/* Pie representacion impresa */}
-        <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-center text-[11px] text-emerald-800">
-          Representación impresa de {isFactura ? 'Factura' : 'Boleta'} Electrónica · Operación Liquidada
+        {/* Pie representacion impresa y estado SUNAT (Apisperu) */}
+        <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2 text-center text-[11px] text-emerald-800 space-y-1">
+          <p>
+            Representación impresa de {isFactura ? 'Factura' : 'Boleta'} Electrónica · Operación Liquidada
+          </p>
+          {data.sunat_estado && (
+            <p className="font-mono-tabular font-bold text-emerald-700">
+              Estado SUNAT (Apisperu): {data.sunat_estado}
+              {data.hash ? ` · Hash ${data.hash.slice(0, 14)}…` : ''}
+            </p>
+          )}
         </div>
 
         {/* Botones Imprimir / Descargar (no se imprimen) */}

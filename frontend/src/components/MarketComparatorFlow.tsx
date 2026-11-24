@@ -23,6 +23,7 @@ import { apiFetch, speakSpanish } from '../lib/api.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
+  isValidForeignDoc,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import {
@@ -77,7 +78,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     customerDoc?.direccionFiscal || ''
   );
   const [clienteTelefono, setClienteTelefono] = useState('');
-  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC'>(customerDoc?.tipo || 'DNI');
+  const [docTipo, setDocTipo] = useState<'DNI' | 'RUC' | 'EXTRANJERO'>(customerDoc?.tipo || 'DNI');
   const [docNumero, setDocNumero] = useState(customerDoc?.numero || '');
   const [docVerificado, setDocVerificado] = useState<PeruDocumentLookupResult | null>(
     customerDoc?.verificado
@@ -88,8 +89,13 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
           numero: customerDoc.numero,
           nombre_completo: customerDoc.nombre,
           direccion: customerDoc.direccionFiscal,
-          source: customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
-          fuente: customerDoc.fuente || (customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+          source:
+            customerDoc.tipo === 'RUC'
+              ? 'SUNAT'
+              : customerDoc.tipo === 'EXTRANJERO'
+              ? 'MIGRACIONES_EXTRANJERO'
+              : 'RENIEC',
+          fuente: customerDoc.fuente || customerDoc.tipo,
         }
       : null
   );
@@ -123,11 +129,16 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         numero: customerDoc.numero,
         nombre_completo: customerDoc.nombre,
         direccion: customerDoc.direccionFiscal,
-        source: customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC',
-        fuente: customerDoc.fuente || (customerDoc.tipo === 'RUC' ? 'SUNAT' : 'RENIEC'),
+        source:
+          customerDoc.tipo === 'RUC'
+            ? 'SUNAT'
+            : customerDoc.tipo === 'EXTRANJERO'
+            ? 'MIGRACIONES_EXTRANJERO'
+            : 'RENIEC',
+        fuente: customerDoc.fuente || customerDoc.tipo,
       });
     }
-  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo]);
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo, customerDoc?.nombre]);
 
   const comparisons = useMemo(() => {
     const list = computeMarketComparisons(requestedItems, userLat, userLng, !onlyOpen);
@@ -177,19 +188,24 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   }
 
   async function handleVerifyCustomerDoc() {
-    const clean = docNumero.replace(/\D/g, '');
+    const clean =
+      docTipo === 'EXTRANJERO' ? docNumero.trim().toUpperCase() : docNumero.replace(/\D/g, '');
     setDocLookupError(null);
-    if (!clean) {
-      setDocLookupError('Ingresa DNI (8 dígitos) o RUC (11 dígitos).');
+    if (!clean || (docTipo === 'EXTRANJERO' && !isValidForeignDoc(clean))) {
+      setDocLookupError('Ingresa DNI (8 dígitos), RUC (11 dígitos) o Pasaporte/CE válido.');
       return;
     }
     setDocLookupLoading(true);
     try {
       const res = await apiFetch<PeruDocumentLookupResult>(
-        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}`
+        `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(clean)}${
+          docTipo === 'EXTRANJERO' && clienteNombre.trim()
+            ? `&nombre=${encodeURIComponent(clienteNombre.trim())}`
+            : ''
+        }`
       );
       setDocVerificado(res);
-      if (res.nombre_completo) {
+      if (res.nombre_completo && (!clienteNombre.trim() || docTipo !== 'EXTRANJERO')) {
         setClienteNombre(res.nombre_completo);
       }
       if (res.direccion) {
@@ -198,7 +214,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
       onCustomerDocVerified?.({
         tipo: res.tipo,
         numero: res.numero,
-        nombre: res.nombre_completo,
+        nombre: (docTipo === 'EXTRANJERO' ? clienteNombre.trim() : '') || res.nombre_completo,
         direccionFiscal: res.direccion,
         verificado: true,
         fuente: res.fuente || res.source,
@@ -216,20 +232,25 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     if (!checkoutTarget) return;
     setCheckoutError(null);
 
-    const cleanDoc = docNumero.replace(/\D/g, '');
+    const cleanDoc =
+      docTipo === 'EXTRANJERO' ? docNumero.trim().toUpperCase() : docNumero.replace(/\D/g, '');
     let activeVerif = docVerificado;
     let activeNombre = clienteNombre.trim();
     let activeDireccion = clienteDireccionFiscal.trim();
 
     if (!activeVerif || !(activeVerif.valid || activeVerif.validado)) {
       if (!cleanDoc) {
-        setCheckoutError('Es obligatorio ingresar y validar el DNI (8 dígitos) o RUC (11 dígitos) del titular antes de reservar o comprar.');
+        setCheckoutError('Es obligatorio ingresar y validar el DNI, RUC o documento de extranjero del titular.');
         return;
       }
       setDocLookupLoading(true);
       try {
         const res = await apiFetch<PeruDocumentLookupResult>(
-          `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}`
+          `/api/public/consulta-documento?tipo=${docTipo}&numero=${encodeURIComponent(cleanDoc)}${
+            docTipo === 'EXTRANJERO' && activeNombre
+              ? `&nombre=${encodeURIComponent(activeNombre)}`
+              : ''
+          }`
         );
         activeVerif = res;
         setDocVerificado(res);
@@ -736,7 +757,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300">
-                  DNI (8) o RUC (11) del Titular *
+                  DNI (8), RUC (11) o Extranjero *
                 </span>
                 {isDocValid && docVerificado ? (
                   <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
@@ -752,7 +773,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                 <select
                   value={docTipo}
                   onChange={(e) => {
-                    setDocTipo(e.target.value as 'DNI' | 'RUC');
+                    setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
                     setDocVerificado(null);
                     setDocLookupError(null);
                   }}
@@ -760,17 +781,22 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                 >
                   <option value="DNI">DNI (RENIEC)</option>
                   <option value="RUC">RUC (SUNAT)</option>
+                  <option value="EXTRANJERO">Extranjero</option>
                 </select>
                 <input
                   required
                   type="text"
-                  inputMode="numeric"
-                  maxLength={docTipo === 'DNI' ? 8 : 11}
+                  inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
+                  maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
                   value={docNumero}
                   onChange={(e) => {
-                    const digits = e.target.value.replace(/\D/g, '');
-                    setDocNumero(digits);
-                    if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                    if (docTipo === 'EXTRANJERO') {
+                      setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+                    } else {
+                      const digits = e.target.value.replace(/\D/g, '');
+                      setDocNumero(digits);
+                      if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                    }
                     setDocVerificado(null);
                     setDocLookupError(null);
                   }}
@@ -780,7 +806,13 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                       void handleVerifyCustomerDoc();
                     }
                   }}
-                  placeholder={docTipo === 'DNI' ? 'DNI 8 dígitos' : 'RUC 11 dígitos'}
+                  placeholder={
+                    docTipo === 'DNI'
+                      ? 'DNI 8 dígitos'
+                      : docTipo === 'RUC'
+                      ? 'RUC 11 dígitos'
+                      : 'Pasaporte / CE'
+                  }
                   className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
                 />
                 <button
@@ -794,7 +826,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
               </div>
               {!isDocValid && (
                 <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
-                  Obligatorio: ingresa y valida el DNI o RUC del titular para confirmar la compra o reserva.
+                  Obligatorio: valida tu DNI, RUC o documento de extranjero para confirmar la compra o reserva.
                 </p>
               )}
               {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
@@ -803,7 +835,13 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             <div className="space-y-2.5">
               <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
                 Comprobante a emitir al finalizar:{' '}
-                <strong>{docTipo === 'RUC' ? 'Factura Electrónica (RUC)' : 'Boleta Electrónica (DNI)'}</strong>
+                <strong>
+                  {docTipo === 'RUC'
+                    ? 'Factura Electrónica (RUC)'
+                    : docTipo === 'EXTRANJERO'
+                    ? 'Boleta Electrónica (Pasaporte / CE)'
+                    : 'Boleta Electrónica (DNI)'}
+                </strong>
               </p>
               <input
                 required

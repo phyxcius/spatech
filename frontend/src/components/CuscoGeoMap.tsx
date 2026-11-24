@@ -23,6 +23,11 @@ interface CuscoGeoMapProps {
   destLat?: number;
   destLng?: number;
   destLabel?: string;
+  driverLat?: number;
+  driverLng?: number;
+  driverLabel?: string;
+  driverEtaBadge?: string;
+  routeBadge?: string;
   routeSummary?: string;
   pins: GeoMapPin[];
   selectedPinId?: string | null;
@@ -74,6 +79,11 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
   destLat,
   destLng,
   destLabel,
+  driverLat,
+  driverLng,
+  driverLabel,
+  driverEtaBadge,
+  routeBadge,
   routeSummary,
   pins,
   selectedPinId,
@@ -94,6 +104,7 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [streetCoords, setStreetCoords] = useState<Array<[number, number]>>([]);
+  const [driverStreetCoords, setDriverStreetCoords] = useState<Array<[number, number]>>([]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -139,7 +150,7 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
     return () => window.clearTimeout(timer);
   }, [isFullscreen]);
 
-  // Real street-following route via OSRM (falls back cleanly to orthogonal street segments)
+  // Real street-following route via OSRM A -> B
   useEffect(() => {
     if (mode !== 'TAXI' || destLat === undefined || destLng === undefined) {
       setStreetCoords([]);
@@ -175,12 +186,45 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
     return () => controller.abort();
   }, [mode, userLat, userLng, destLat, destLng]);
 
+  // Real street-following route via OSRM Conductor -> Punto A
+  useEffect(() => {
+    if (mode !== 'TAXI' || driverLat === undefined || driverLng === undefined) {
+      setDriverStreetCoords([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const fallback = buildCuscoStreetGridFallback(driverLat, driverLng, userLat, userLng);
+    setDriverStreetCoords(fallback);
+
+    const url = `https://router.project-osrm.org/route/v1/driving/${driverLng},${driverLat};${userLng},${userLat}?overview=full&geometries=geojson`;
+
+    fetch(url, { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const coords = data?.routes?.[0]?.geometry?.coordinates;
+        if (Array.isArray(coords) && coords.length >= 2) {
+          setDriverStreetCoords(
+            coords.map(([lng, lat]: [number, number]) => [lat, lng] as [number, number])
+          );
+        }
+      })
+      .catch(() => {
+        // Keep fallback route
+      });
+
+    return () => controller.abort();
+  }, [mode, driverLat, driverLng, userLat, userLng]);
+
   function fitAllBounds() {
     const map = mapRef.current;
     if (!map) return;
     const pts: L.LatLngExpression[] = [[userLat, userLng]];
     if (mode === 'TAXI' && destLat !== undefined && destLng !== undefined) {
       pts.push([destLat, destLng]);
+    }
+    if (mode === 'TAXI' && driverLat !== undefined && driverLng !== undefined) {
+      pts.push([driverLat, driverLng]);
     }
     pins.forEach((p) => pts.push([p.lat, p.lng]));
     if (pts.length > 1) {
@@ -199,6 +243,65 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
     group.clearLayers();
 
     if (mode === 'TAXI') {
+      // Ruta Conductor -> Punto A en azul (estilo inDrive)
+      if (driverLat !== undefined && driverLng !== undefined) {
+        const approachPts: L.LatLngExpression[] =
+          driverStreetCoords.length >= 2
+            ? driverStreetCoords
+            : buildCuscoStreetGridFallback(driverLat, driverLng, userLat, userLng);
+
+        L.polyline(approachPts, {
+          color: '#FFFFFF',
+          weight: 7,
+          opacity: 0.9,
+          lineJoin: 'round',
+        }).addTo(group);
+
+        L.polyline(approachPts, {
+          color: '#2563EB',
+          weight: 4.5,
+          opacity: 0.98,
+          lineJoin: 'round',
+        }).addTo(group);
+
+        if (driverEtaBadge) {
+          const midApproach = approachPts[Math.floor(approachPts.length / 2)] || [
+            (driverLat + userLat) / 2,
+            (driverLng + userLng) / 2,
+          ];
+          const blueBadge = L.divIcon({
+            className: 'cusco-leaflet-pin',
+            iconSize: [86, 42],
+            iconAnchor: [43, 21],
+            html: `
+              <div style="background:#2563EB;color:#FFFFFF;padding:4px 10px;border-radius:10px;border:2px solid #FFFFFF;font-size:11px;font-weight:800;line-height:1.15;text-align:center;box-shadow:0 6px 16px rgba(37,99,235,0.45);white-space:pre-line;">
+                ${escapeHtml(driverEtaBadge)}
+              </div>
+            `,
+          });
+          L.marker(midApproach, { icon: blueBadge, interactive: false, zIndexOffset: 650 }).addTo(group);
+        }
+
+        const carIcon = L.divIcon({
+          className: 'cusco-leaflet-pin',
+          iconSize: [145, 42],
+          iconAnchor: [20, 20],
+          html: `
+            <div style="display:flex;align-items:center;gap:6px;">
+              <div style="width:36px;height:36px;border-radius:9999px;background:#B6F02B;border:3px solid #FFFFFF;box-shadow:0 6px 16px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;font-size:16px;">🚕</div>
+              ${
+                driverLabel
+                  ? `<span style="background:#0F172A;color:#FFFFFF;padding:3px 8px;border-radius:8px;border:1.5px solid #B6F02B;font-size:10px;font-weight:700;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.35);">${escapeHtml(
+                      driverLabel
+                    )}</span>`
+                  : ''
+              }
+            </div>
+          `,
+        });
+        L.marker([driverLat, driverLng], { icon: carIcon, zIndexOffset: 700 }).addTo(group);
+      }
+
       const originIcon = L.divIcon({
         className: 'cusco-leaflet-pin',
         iconSize: [148, 38],
@@ -226,28 +329,31 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
         }).addTo(group);
 
         L.polyline(linePts, {
-          color: '#84CC16',
-          weight: 3.5,
+          color: '#16A34A',
+          weight: 4,
           opacity: 0.98,
           lineJoin: 'round',
         }).addTo(group);
 
-        if (routeSummary) {
+        const greenLabel = routeBadge || routeSummary;
+        if (greenLabel) {
           const midPt = linePts[Math.floor(linePts.length / 2)] || [
             (userLat + destLat) / 2,
             (userLng + destLng) / 2,
           ];
           const midIcon = L.divIcon({
             className: 'cusco-leaflet-pin',
-            iconSize: [132, 26],
-            iconAnchor: [66, 13],
-            html: `
-              <div style="background:#0B0E14;color:#FACC15;padding:3px 9px;border-radius:999px;border:1px solid rgba(250,204,21,0.5);font-size:10px;font-weight:700;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);white-space:nowrap;">
-                ${escapeHtml(routeSummary)}
-              </div>
-            `,
+            iconSize: [132, 42],
+            iconAnchor: [66, 21],
+            html: routeBadge
+              ? `<div style="background:#16A34A;color:#FFFFFF;padding:4px 10px;border-radius:10px;border:2px solid #FFFFFF;font-size:11px;font-weight:800;line-height:1.15;text-align:center;box-shadow:0 6px 16px rgba(22,163,74,0.4);white-space:pre-line;">${escapeHtml(
+                  routeBadge
+                )}</div>`
+              : `<div style="background:#0B0E14;color:#FACC15;padding:3px 9px;border-radius:999px;border:1px solid rgba(250,204,21,0.5);font-size:10px;font-weight:700;text-align:center;box-shadow:0 4px 12px rgba(0,0,0,0.35);white-space:nowrap;">${escapeHtml(
+                  greenLabel
+                )}</div>`,
           });
-          L.marker(midPt, { icon: midIcon, interactive: false }).addTo(group);
+          L.marker(midPt, { icon: midIcon, interactive: false, zIndexOffset: 620 }).addTo(group);
         }
 
         const destIcon = L.divIcon({
@@ -256,7 +362,7 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
           iconAnchor: [18, 34],
           html: `
             <div style="display:flex;align-items:center;gap:6px;background:#0F172A;color:#FFFFFF;padding:5px 10px;border-radius:12px;border:2px solid #84CC16;box-shadow:0 8px 20px rgba(0,0,0,0.35);font-size:11px;font-weight:700;white-space:nowrap;">
-              <span style="width:18px;height:18px;border-radius:6px;background:#84CC16;color:#0B0E14;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">B</span>
+              <span style="width:18px;height:18px;border-radius:6px;background:#16A34A;color:#FFFFFF;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">B</span>
               <span style="max-width:118px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(destLabel || 'Destino')}</span>
             </div>
           `,
@@ -336,15 +442,21 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
     destLat,
     destLng,
     destLabel,
+    driverLat,
+    driverLng,
+    driverLabel,
+    driverEtaBadge,
+    routeBadge,
     routeSummary,
     streetCoords,
+    driverStreetCoords,
     pins,
     selectedPinId,
   ]);
 
   useEffect(() => {
     fitAllBounds();
-  }, [mode, destLat, destLng, pins.length]);
+  }, [mode, destLat, destLng, driverLat, driverLng, pins.length]);
 
   const selectedPin = useMemo(
     () => pins.find((p) => p.id === selectedPinId) || null,

@@ -1,19 +1,23 @@
 export interface PeruDocumentLookupResult {
   valid: boolean;
   validado?: boolean;
-  tipo: 'DNI' | 'RUC';
+  tipo: 'DNI' | 'RUC' | 'EXTRANJERO';
   numero: string;
   nombre_completo: string;
   razon_social?: string;
   estado?: string;
   condicion?: string;
   direccion?: string;
-  source: 'RENIEC' | 'SUNAT' | 'CACHE' | 'VALIDACION_LOCAL';
+  source: 'RENIEC' | 'SUNAT' | 'MIGRACIONES_EXTRANJERO' | 'CACHE' | 'VALIDACION_LOCAL';
   fuente?: string;
 }
 
 export function isValidPeruvianDni(raw: string): boolean {
   return /^\d{8}$/.test(raw.trim());
+}
+
+export function isValidForeignDoc(raw: string): boolean {
+  return /^[A-Z0-9-]{6,20}$/i.test(raw.trim());
 }
 
 export function isValidPeruvianRuc(raw: string): boolean {
@@ -30,19 +34,25 @@ export function isValidPeruvianRuc(raw: string): boolean {
 }
 
 export function formatPeruLookupError(err: unknown): string;
-export function formatPeruLookupError(tipo: 'DNI' | 'RUC', numero: string): string | null;
+export function formatPeruLookupError(
+  tipo: 'DNI' | 'RUC' | 'EXTRANJERO',
+  numero: string
+): string | null;
 export function formatPeruLookupError(
   arg1: unknown,
   arg2?: string
 ): string | null {
   if (typeof arg2 === 'string') {
-    const tipo = arg1 === 'RUC' ? 'RUC' : 'DNI';
+    const tipo = arg1 === 'RUC' ? 'RUC' : arg1 === 'EXTRANJERO' ? 'EXTRANJERO' : 'DNI';
     const clean = arg2.trim();
     if (tipo === 'DNI' && !isValidPeruvianDni(clean)) {
       return 'El DNI debe tener exactamente 8 dígitos numéricos.';
     }
     if (tipo === 'RUC' && !isValidPeruvianRuc(clean)) {
       return 'El RUC debe tener 11 dígitos válidos según dígito verificador SUNAT (10... o 20...).';
+    }
+    if (tipo === 'EXTRANJERO' && !isValidForeignDoc(clean)) {
+      return 'El Pasaporte o Carné de Extranjería debe tener entre 6 y 20 caracteres alfanuméricos.';
     }
     return null;
   }

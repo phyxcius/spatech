@@ -96,7 +96,7 @@ export interface PedidoRow {
   estado: EstadoPedido;
   cliente_nombre: string;
   cliente_telefono: string;
-  cliente_documento_tipo?: 'DNI' | 'RUC' | null;
+  cliente_documento_tipo?: 'DNI' | 'RUC' | 'EXTRANJERO' | null;
   cliente_documento_numero?: string | null;
   cliente_documento_verificado?: number;
   cliente_direccion_fiscal?: string | null;
@@ -104,10 +104,18 @@ export interface PedidoRow {
   comprobante_serie?: string | null;
   comprobante_numero?: string | null;
   comprobante_emitido_at?: string | null;
+  comprobante_hash?: string | null;
+  comprobante_sunat_estado?: string | null;
   origen_texto: string | null;
   destino_texto: string | null;
   origen_lat: number | null;
   origen_lng: number | null;
+  destino_lat?: number | null;
+  destino_lng?: number | null;
+  conductor_lat?: number | null;
+  conductor_lng?: number | null;
+  unidad_lat?: number | null;
+  unidad_lng?: number | null;
   distancia_km: number | null;
   eta_min: number | null;
   fecha_hora_reserva: string | null;

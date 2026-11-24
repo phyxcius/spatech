@@ -138,7 +138,7 @@ export interface PedidoPublico {
   estado: EstadoPedido;
   cliente_nombre: string;
   cliente_telefono_masked: string;
-  cliente_documento_tipo?: 'DNI' | 'RUC' | null;
+  cliente_documento_tipo?: 'DNI' | 'RUC' | 'EXTRANJERO' | null;
   cliente_documento_numero?: string | null;
   cliente_documento_verificado?: number;
   cliente_direccion_fiscal?: string | null;
@@ -146,11 +146,22 @@ export interface PedidoPublico {
   comprobante_serie?: string | null;
   comprobante_numero?: string | null;
   comprobante_emitido_at?: string | null;
+  comprobante_hash?: string | null;
+  comprobante_sunat_estado?: string | null;
   emisor_ruc?: string | null;
   emisor_razon_social?: string | null;
   emisor_direccion?: string | null;
   origen_texto?: string | null;
   destino_texto?: string | null;
+  origen_lat?: number | null;
+  origen_lng?: number | null;
+  destino_lat?: number | null;
+  destino_lng?: number | null;
+  conductor_lat?: number | null;
+  conductor_lng?: number | null;
+  unidad_lat?: number | null;
+  unidad_lng?: number | null;
+  contraoferta_centavos?: number | null;
   distancia_km?: number | null;
   eta_min?: number | null;
   fecha_hora_reserva?: string | null;
@@ -175,7 +186,7 @@ export interface PedidoNegocio {
   estado: EstadoPedido;
   cliente_nombre: string;
   cliente_telefono: string;
-  cliente_documento_tipo?: 'DNI' | 'RUC' | null;
+  cliente_documento_tipo?: 'DNI' | 'RUC' | 'EXTRANJERO' | null;
   cliente_documento_numero?: string | null;
   cliente_documento_verificado?: number;
   cliente_direccion_fiscal?: string | null;
@@ -183,11 +194,27 @@ export interface PedidoNegocio {
   comprobante_serie?: string | null;
   comprobante_numero?: string | null;
   comprobante_emitido_at?: string | null;
+  comprobante_hash?: string | null;
+  comprobante_sunat_estado?: string | null;
   emisor_ruc?: string | null;
   emisor_razon_social?: string | null;
   emisor_direccion?: string | null;
   origen_texto?: string | null;
   destino_texto?: string | null;
+  origen_lat?: number | null;
+  origen_lng?: number | null;
+  destino_lat?: number | null;
+  destino_lng?: number | null;
+  conductor_lat?: number | null;
+  conductor_lng?: number | null;
+  unidad_id?: number | null;
+  unidad_lat?: number | null;
+  unidad_lng?: number | null;
+  conductor_nombre?: string | null;
+  placa?: string | null;
+  modelo?: string | null;
+  distancia_km?: number | null;
+  contraoferta_centavos?: number | null;
   eta_min?: number | null;
   fecha_hora_reserva?: string | null;
   intentos_pin: number;
@@ -227,7 +254,7 @@ export const ESTADO_LABELS: Record<EstadoPedido, string> = {
 };
 
 export interface SharedCustomerDoc {
-  tipo: 'DNI' | 'RUC';
+  tipo: 'DNI' | 'RUC' | 'EXTRANJERO';
   numero: string;
   nombre: string;
   direccionFiscal?: string;
@@ -244,6 +271,8 @@ export interface ComprobanteElectronico {
   pedido_codigo: string;
   metodo_pago: string;
   moneda: string;
+  hash?: string | null;
+  sunat_estado?: string | null;
   emisor: {
     ruc: string;
     razon_social: string;
@@ -251,7 +280,7 @@ export interface ComprobanteElectronico {
     direccion: string;
   };
   receptor: {
-    tipo_doc: 'DNI' | 'RUC';
+    tipo_doc: 'DNI' | 'RUC' | 'EXTRANJERO';
     numero_doc: string;
     nombre: string;
     direccion: string;

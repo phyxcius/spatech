@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
+  CarFront,
   CheckCircle2,
   KeyRound,
   MessageSquare,
@@ -12,6 +13,7 @@ import {
   Star,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api.ts';
+import { haversineKm } from '../lib/cuscoMarkets.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
@@ -22,6 +24,7 @@ import {
   type PedidoPublico,
   type WhatsAppLog,
 } from '../types.ts';
+import { CuscoGeoMap } from './CuscoGeoMap.tsx';
 import { PinKeypadCard } from './DispatchAndRouteModules.tsx';
 import {
   buildComprobanteFromOrder,
@@ -246,8 +249,12 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                       <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-mono-tabular font-semibold text-emerald-700 dark:text-emerald-300">
                         <BadgeCheck className="w-3.5 h-3.5" />
                         Titular: {pedido.cliente_nombre} · {pedido.cliente_documento_tipo || 'DNI'}{' '}
-                        {pedido.cliente_documento_numero} (
-                        {pedido.cliente_documento_tipo === 'RUC' ? 'Factura' : 'Boleta'})
+                        {pedido.cliente_documento_numero}{' '}
+                        {pedido.categoria === 'TRANSPORTE'
+                          ? '(Pasajero verificado · Sin facturación electrónica)'
+                          : pedido.cliente_documento_tipo === 'RUC'
+                          ? '(Factura)'
+                          : '(Boleta)'}
                       </p>
                     )}
                   </div>
@@ -261,6 +268,68 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                     <span>Actualizar</span>
                   </button>
                 </div>
+
+                {/* Mapa en Vivo A -> B + Ubicación del Conductor acercándose (Modo Cliente Taxi) */}
+                {pedido.categoria === 'TRANSPORTE' && (() => {
+                  const oLat = pedido.origen_lat ?? -13.5167;
+                  const oLng = pedido.origen_lng ?? -71.9788;
+                  const dLat = pedido.destino_lat ?? -13.5357;
+                  const dLng = pedido.destino_lng ?? -71.9388;
+                  const cLat = pedido.conductor_lat ?? pedido.unidad_lat ?? undefined;
+                  const cLng = pedido.conductor_lng ?? pedido.unidad_lng ?? undefined;
+                  const tripKm = Math.max(0.8, haversineKm(oLat, oLng, dLat, dLng));
+                  const tripEta = pedido.eta_min || Math.max(5, Math.round(tripKm * 3.1 + 2));
+                  const drvDistKm =
+                    typeof cLat === 'number' && typeof cLng === 'number'
+                      ? Math.max(0.2, haversineKm(cLat, cLng, oLat, oLng))
+                      : null;
+                  const drvEta = drvDistKm !== null ? Math.max(1, Math.round(drvDistKm * 3.2 + 1)) : null;
+
+                  return (
+                    <div className="space-y-2.5">
+                      <div className="rounded-2xl border border-blue-500/30 bg-blue-500/8 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2 font-semibold text-blue-700 dark:text-blue-300">
+                          <CarFront className="w-4 h-4 shrink-0" />
+                          <span>
+                            {pedido.conductor_nombre
+                              ? `${pedido.conductor_nombre} (${pedido.placa || 'Taxi Cusco'})`
+                              : 'Buscando ubicación del conductor'}
+                          </span>
+                        </div>
+                        <span className="font-mono-tabular font-bold text-[#14171F] dark:text-white">
+                          {drvDistKm !== null && drvEta !== null
+                            ? `Acercándose: ${drvEta} min · ${drvDistKm.toFixed(1)} km del punto A`
+                            : `Ruta A → B: ${tripKm.toFixed(1)} km`}
+                        </span>
+                      </div>
+
+                      <CuscoGeoMap
+                        mode="TAXI"
+                        userLat={oLat}
+                        userLng={oLng}
+                        originLabel={pedido.origen_texto || 'Punto de recojo A'}
+                        destLat={dLat}
+                        destLng={dLng}
+                        destLabel={pedido.destino_texto || 'Destino B'}
+                        driverLat={cLat}
+                        driverLng={cLng}
+                        driverLabel={
+                          pedido.conductor_nombre
+                            ? `${pedido.conductor_nombre.split(' ')[0]} · ${pedido.placa || 'Taxi'}`
+                            : 'Conductor'
+                        }
+                        driverEtaBadge={
+                          drvEta !== null && drvDistKm !== null
+                            ? `${drvEta} min\n${drvDistKm.toFixed(1)} km`
+                            : undefined
+                        }
+                        routeBadge={`${tripEta} min\n${tripKm.toFixed(1)} km`}
+                        pins={[]}
+                        heightClass="h-[260px] sm:h-[300px]"
+                      />
+                    </div>
+                  );
+                })()}
 
                 {/* PIN secreto 4 cajas + advertencia + simulador Vista Rider */}
                 {clientPin && initialCodigo === pedido.codigo && pedido.estado !== 'CANCELADO' && (
@@ -432,33 +501,39 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                         <span className="font-mono-tabular text-[#D4AF37]">
                           Puntos acumulados: {puntos} pts
                         </span>
-                        <button
-                          type="button"
-                          disabled={loadingInvoice}
-                          onClick={async () => {
-                            setLoadingInvoice(true);
-                            try {
-                              const r = await apiFetch<{ comprobante: ComprobanteElectronico }>(
-                                `/api/public/pedidos/${encodeURIComponent(pedido.codigo)}/comprobante`
-                              );
-                              setInvoiceData(r.comprobante);
-                            } catch {
-                              setInvoiceData(buildComprobanteFromOrder(pedido));
-                            } finally {
-                              setLoadingInvoice(false);
-                            }
-                          }}
-                          className="min-h-[38px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>
-                            {loadingInvoice
-                              ? 'Generando...'
-                              : pedido.cliente_documento_tipo === 'RUC'
-                              ? 'Ver / Imprimir Factura'
-                              : 'Ver / Imprimir Boleta'}
+                        {pedido.categoria !== 'TRANSPORTE' ? (
+                          <button
+                            type="button"
+                            disabled={loadingInvoice}
+                            onClick={async () => {
+                              setLoadingInvoice(true);
+                              try {
+                                const r = await apiFetch<{ comprobante: ComprobanteElectronico }>(
+                                  `/api/public/pedidos/${encodeURIComponent(pedido.codigo)}/comprobante`
+                                );
+                                setInvoiceData(r.comprobante);
+                              } catch {
+                                setInvoiceData(buildComprobanteFromOrder(pedido));
+                              } finally {
+                                setLoadingInvoice(false);
+                              }
+                            }}
+                            className="min-h-[38px] px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>
+                              {loadingInvoice
+                                ? 'Generando...'
+                                : pedido.cliente_documento_tipo === 'RUC'
+                                ? 'Ver / Imprimir Factura'
+                                : 'Ver / Imprimir Boleta'}
+                            </span>
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                            Viaje en taxi · Sin facturación electrónica
                           </span>
-                        </button>
+                        )}
                       </div>
                     </div>
                     {hasReview ? (

@@ -419,9 +419,15 @@ export function validarPinYEntregar(
       'INSERT INTO historial_puntos (telefono, pedido_codigo, puntos) VALUES (?, ?, ?)'
     ).run(pedido.cliente_telefono, pedido.codigo, puntosGanados);
 
-    const compTipo = pedido.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA';
-    const compSerie = compTipo === 'FACTURA' ? 'F001' : 'B001';
-    const compNum = String(pedido.id).padStart(8, '0');
+    const isTaxi = pedido.categoria === 'TRANSPORTE';
+    const compTipo = isTaxi
+      ? null
+      : pedido.cliente_documento_tipo === 'RUC'
+        ? 'FACTURA'
+        : 'BOLETA';
+    const compSerie = compTipo ? (compTipo === 'FACTURA' ? 'F001' : 'B001') : null;
+    const compNum = compTipo ? String(pedido.id).padStart(8, '0') : null;
+    const sunatEstado = compTipo ? 'REPRESENTACION_IMPRESA' : null;
 
     db.prepare(`
       UPDATE pedidos_ordenes
@@ -429,10 +435,11 @@ export function validarPinYEntregar(
           comprobante_tipo = ?,
           comprobante_serie = ?,
           comprobante_numero = ?,
-          comprobante_emitido_at = datetime('now'),
+          comprobante_emitido_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE NULL END,
+          comprobante_sunat_estado = ?,
           updated_at = datetime('now')
       WHERE id = ?
-    `).run(compTipo, compSerie, compNum, pedido.id);
+    `).run(compTipo, compSerie, compNum, compTipo, sunatEstado, pedido.id);
 
     if (pedido.unidad_id) {
       db.prepare("UPDATE unidades_conductores SET estado = 'DISPONIBLE' WHERE id = ?").run(
@@ -445,7 +452,9 @@ export function validarPinYEntregar(
       pedido.cliente_telefono,
       'pedido_listo',
       pedido.codigo,
-      `Servicio ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa. Comprobante ${compTipo} ${compSerie}-${compNum} listo para imprimir.`
+      isTaxi
+        ? `Viaje ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa.`
+        : `Servicio ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa. Comprobante ${compTipo} ${compSerie}-${compNum} listo para imprimir.`
     );
 
     return {

@@ -818,7 +818,7 @@ test('9. Proxy HeyGen Interactive Avatar WebRTC: estado público seguro y valida
   }
 });
 
-test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electrónica con IGV al entregar', async () => {
+test('10. DNI/RUC en taxi (solo identidad, sin factura) y emisión de Factura/Boleta SUNAT con IGV en negocios no-taxi', async () => {
   const { db, server, req } = await startTestServer();
   try {
     const loginAdmin = await req('POST', '/api/admin/login', { pin: '998877' });
@@ -841,7 +841,7 @@ test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electr�
     const unitTx1 = dir.data.unidades.find((u: any) => u.negocio_id === tx1Id);
     assert.ok(unitTx1);
 
-    // 1) Pedido de taxi como EMPRESA con RUC (debe emitir FACTURA F001-... al entregar)
+    // 1) Pedido de taxi: valida RUC/DNI del pasajero, pero NO emite comprobante electrónico
     const rucLookup = await req('GET', '/api/public/consulta-documento?tipo=RUC&numero=20601234565');
     assert.equal(rucLookup.status, 200);
     assert.equal(rucLookup.data.valid, true);
@@ -862,10 +862,8 @@ test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electr�
     const rucPin = taxiRuc.data.cliente_pin;
     assert.equal(rucPedido.cliente_documento_tipo, 'RUC');
     assert.equal(rucPedido.cliente_documento_numero, '20601234565');
-    assert.equal(rucPedido.cliente_direccion_fiscal, 'AV. EL SOL 450, CUSCO');
-    assert.equal(rucPedido.comprobante_tipo, 'FACTURA');
+    assert.equal(rucPedido.comprobante_tipo, null);
 
-    // Aceptar pedido
     const acceptRuc = await req(
       'POST',
       `/api/negocio/${tx1Id}/pedidos/${rucPedido.id}/aceptar`,
@@ -874,38 +872,100 @@ test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electr�
     );
     assert.equal(acceptRuc.status, 200);
 
-    // Antes de entregar, comprobante retorna 409
-    const preComp = await req('GET', `/api/public/pedidos/${rucPedido.codigo}/comprobante`);
-    assert.equal(preComp.status, 409);
-
-    // Entregar con PIN -> emite Factura F001-... con desglose IGV 18%
-    const deliverRuc = await req(
+    // Entregar taxi con PIN -> comprobante es null y /comprobante responde 400
+    const deliverTaxi = await req(
       'POST',
       `/api/negocio/${tx1Id}/pedidos/${rucPedido.id}/entregar`,
       { pin: rucPin },
       tx1Token
     );
-    assert.equal(deliverRuc.status, 200);
-    assert.ok(deliverRuc.data.comprobante);
-    assert.equal(deliverRuc.data.comprobante.tipo, 'FACTURA');
-    assert.equal(deliverRuc.data.comprobante.serie, 'F001');
-    assert.match(deliverRuc.data.comprobante.numero_completo, /^F001-\d{8}$/);
-    assert.equal(deliverRuc.data.comprobante.receptor.tipo_doc, 'RUC');
-    assert.equal(deliverRuc.data.comprobante.receptor.numero_doc, '20601234565');
-    assert.equal(deliverRuc.data.comprobante.receptor.direccion, 'AV. EL SOL 450, CUSCO');
-    assert.equal(
-      deliverRuc.data.comprobante.op_gravada_centavos + deliverRuc.data.comprobante.igv_centavos,
-      deliverRuc.data.comprobante.total_centavos
+    assert.equal(deliverTaxi.status, 200);
+    assert.equal(deliverTaxi.data.comprobante, null);
+
+    const taxiCompRes = await req('GET', `/api/public/pedidos/${rucPedido.codigo}/comprobante`);
+    assert.equal(taxiCompRes.status, 400);
+
+    // 2) Pedido en Restaurante como EMPRESA con RUC (sí emite FACTURA F001-... con IGV 18%)
+    const restBiz = dir.data.negocios.find((n: any) => n.codigo === 'NEG-RE-01');
+    const restDish = dir.data.servicios.find((s: any) => s.negocio_id === restBiz.id);
+    assert.ok(restBiz && restDish);
+
+    const loginRest = await req('POST', '/api/negocio/login', { codigo: 'NEG-RE-01', pin: '5792' });
+    assert.equal(loginRest.status, 200);
+    const restToken = loginRest.data.token;
+
+    await req(
+      'POST',
+      '/api/admin/ajustes-saldo',
+      { negocio_id: restBiz.id, delta_centavos: 10000, motivo: 'Saldo restaurante factura test' },
+      adminToken
     );
 
-    const postComp = await req('GET', `/api/public/pedidos/${rucPedido.codigo}/comprobante`);
+    const restRucRes = await req('POST', '/api/public/pedidos', {
+      negocio_id: restBiz.id,
+      servicio_id: restDish.id,
+      categoria: 'RESTAURANTE',
+      metodo_pago: 'Tarjeta',
+      cliente_nombre: 'INVERSIONES CUSCO SAC',
+      cliente_telefono: '+51984112233',
+      cliente_documento_tipo: 'RUC',
+      cliente_documento_numero: '20601234565',
+      cliente_documento_verificado: true,
+      cliente_direccion_fiscal: 'AV. EL SOL 450, CUSCO',
+    });
+    assert.equal(restRucRes.status, 201);
+    const restPedido = restRucRes.data.pedido;
+    const restPin = restRucRes.data.cliente_pin;
+    assert.equal(restPedido.comprobante_tipo, 'FACTURA');
+
+    const accRest = await req(
+      'POST',
+      `/api/negocio/${restBiz.id}/pedidos/${restPedido.id}/aceptar`,
+      {},
+      restToken
+    );
+    assert.equal(accRest.status, 200);
+
+    const preComp = await req('GET', `/api/public/pedidos/${restPedido.codigo}/comprobante`);
+    assert.equal(preComp.status, 409);
+
+    const deliverRest = await req(
+      'POST',
+      `/api/negocio/${restBiz.id}/pedidos/${restPedido.id}/entregar`,
+      { pin: restPin },
+      restToken
+    );
+    assert.equal(deliverRest.status, 200);
+    assert.ok(deliverRest.data.comprobante);
+    assert.equal(deliverRest.data.comprobante.tipo, 'FACTURA');
+    assert.equal(deliverRest.data.comprobante.serie, 'F001');
+    assert.match(deliverRest.data.comprobante.numero_completo, /^F001-\d{8}$/);
+    assert.equal(deliverRest.data.comprobante.receptor.tipo_doc, 'RUC');
+    assert.equal(deliverRest.data.comprobante.receptor.numero_doc, '20601234565');
+    assert.equal(deliverRest.data.comprobante.receptor.direccion, 'AV. EL SOL 450, CUSCO');
+    assert.equal(
+      deliverRest.data.comprobante.op_gravada_centavos + deliverRest.data.comprobante.igv_centavos,
+      deliverRest.data.comprobante.total_centavos
+    );
+
+    const postComp = await req('GET', `/api/public/pedidos/${restPedido.codigo}/comprobante`);
     assert.equal(postComp.status, 200);
     assert.equal(
       postComp.data.comprobante.numero_completo,
-      deliverRuc.data.comprobante.numero_completo
+      deliverRest.data.comprobante.numero_completo
     );
 
-    // 2) Pedido de Market como PERSONA NATURAL con DNI (debe emitir BOLETA B001-... al entregar)
+    const emitSunatRest = await req(
+      'POST',
+      `/api/negocio/${restBiz.id}/pedidos/${restPedido.id}/emitir-sunat`,
+      {},
+      restToken
+    );
+    assert.equal(emitSunatRest.status, 200);
+    assert.equal(emitSunatRest.data.ok, true);
+    assert.equal(emitSunatRest.data.comprobante.numero_completo, deliverRest.data.comprobante.numero_completo);
+
+    // 3) Pedido de Market como PERSONA NATURAL con DNI (debe emitir BOLETA B001-... al entregar)
     const mktRes = await req('POST', '/api/public/market-pedidos', {
       market_nombre: 'Supermercados Orión Cusco',
       market_zona: 'Cusco Centro',
@@ -926,7 +986,6 @@ test('10. DNI/RUC en pedidos de taxi/market y emisión de Boleta/Factura Electr�
     assert.equal(mktPedido.comprobante_tipo, 'BOLETA');
 
     const mktNegId = mktPedido.negocio_id;
-    // Asegurar saldo en el negocio asignado al market para completar entrega
     await req(
       'POST',
       '/api/admin/ajustes-saldo',
@@ -1074,6 +1133,117 @@ test('11. Regla estricta: sin DNI o RUC del titular NO se permite reservar taxi,
   }
 });
 
+test('12. Extranjero (Pasaporte/CE), mapa geolocalización A->B + GPS conductor en vivo, contraoferta conductor y rechazo SUNAT en taxi', async () => {
+  const { server, req } = await startTestServer();
+  try {
+    const extRes = await req(
+      'GET',
+      '/api/public/consulta-documento?tipo=EXTRANJERO&numero=PA998877&nombre=John+Doe'
+    );
+    assert.equal(extRes.status, 200);
+    assert.equal(extRes.data.valid, true);
+    assert.equal(extRes.data.tipo, 'EXTRANJERO');
+    assert.equal(extRes.data.numero, 'PA998877');
+    assert.equal(extRes.data.nombre_completo, 'John Doe');
 
+    const loginAdmin = await req('POST', '/api/admin/login', { pin: '998877' });
+    assert.equal(loginAdmin.status, 200);
+    const adminToken = loginAdmin.data.token;
 
+    const loginTx1 = await req('POST', '/api/negocio/login', { codigo: 'NEG-TX-01', pin: '2468' });
+    assert.equal(loginTx1.status, 200);
+    const tx1Id = loginTx1.data.negocio.id;
+    const tx1Token = loginTx1.data.token;
 
+    await req(
+      'POST',
+      '/api/admin/ajustes-saldo',
+      { negocio_id: tx1Id, delta_centavos: 10000, motivo: 'Saldo para test GPS conductor' },
+      adminToken
+    );
+
+    const dir = await req('GET', '/api/public/directorio');
+    const unitTx1 = dir.data.unidades.find((u: any) => u.negocio_id === tx1Id);
+    assert.ok(unitTx1);
+
+    // Pasajero extranjero pide taxi con coordenadas Origen A -> Destino B
+    const taxiExt = await req('POST', '/api/public/taxi/pedir', {
+      unidad_id: unitTx1.id,
+      metodo_pago: 'Yape',
+      cliente_nombre: 'John Doe',
+      cliente_telefono: '+51984778899',
+      cliente_documento_tipo: 'EXTRANJERO',
+      cliente_documento_numero: 'PA998877',
+      cliente_documento_verificado: true,
+      origen_texto: 'Plaza de Armas, Cusco',
+      destino_texto: 'Aeropuerto Velasco Astete',
+      origen_lat: -13.5167,
+      origen_lng: -71.9788,
+      destino_lat: -13.5356,
+      destino_lng: -71.9388,
+    });
+    assert.equal(taxiExt.status, 201);
+    const extPedido = taxiExt.data.pedido;
+    assert.equal(extPedido.cliente_documento_tipo, 'EXTRANJERO');
+    assert.equal(extPedido.cliente_documento_numero, 'PA998877');
+    assert.equal(extPedido.comprobante_tipo, null);
+    assert.equal(extPedido.origen_lat, -13.5167);
+    assert.equal(extPedido.destino_lat, -13.5356);
+
+    // Conductor actualiza su GPS en vivo -> se propaga al pedido activo
+    const gpsPatch = await req(
+      'PATCH',
+      `/api/negocio/${tx1Id}/unidades/${unitTx1.id}`,
+      { lat: -13.5212, lng: -71.9711, estado: 'DISPONIBLE' },
+      tx1Token
+    );
+    assert.equal(gpsPatch.status, 200);
+    assert.equal(gpsPatch.data.unidad.lat, -13.5212);
+    assert.equal(gpsPatch.data.unidad.lng, -71.9711);
+
+    // Conductor envía contraoferta inDrive
+    const counterRes = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${extPedido.id}/contraoferta`,
+      { monto_centavos: 880 },
+      tx1Token
+    );
+    assert.equal(counterRes.status, 200);
+    assert.equal(counterRes.data.monto_centavos, 880);
+
+    const trackRes = await req('GET', `/api/public/pedidos/${extPedido.codigo}`);
+    assert.equal(trackRes.status, 200);
+    assert.equal(trackRes.data.pedido.conductor_lat, -13.5212);
+    assert.equal(trackRes.data.pedido.conductor_lng, -71.9711);
+    assert.equal(trackRes.data.pedido.contraoferta_centavos, 880);
+    assert.equal(trackRes.data.pedido.monto_centavos, 880);
+
+    // Aceptar y finalizar taxi -> emitir-sunat debe rechazar TRANSPORTE con 400
+    const accTaxi = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${extPedido.id}/aceptar`,
+      {},
+      tx1Token
+    );
+    assert.equal(accTaxi.status, 200);
+
+    const delTaxi = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${extPedido.id}/entregar`,
+      { pin: taxiExt.data.cliente_pin },
+      tx1Token
+    );
+    assert.equal(delTaxi.status, 200);
+    assert.equal(delTaxi.data.comprobante, null);
+
+    const rejectSunatTaxi = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${extPedido.id}/emitir-sunat`,
+      {},
+      tx1Token
+    );
+    assert.equal(rejectSunatTaxi.status, 400);
+  } finally {
+    server.close();
+  }
+});
