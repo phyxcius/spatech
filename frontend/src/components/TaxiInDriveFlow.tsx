@@ -28,6 +28,7 @@ import {
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
+import { MapEdgeCarousel, type EdgeCarouselItem } from './MapEdgeCarousel.tsx';
 
 interface TaxiInDriveFlowProps {
   userLat: number;
@@ -151,7 +152,6 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
   const [searchingRound, setSearchingRound] = useState(1);
   const [selectedDriverId, setSelectedDriverId] = useState<string>('drv-1');
-  const [mobileMode, setMobileMode] = useState<'SPLIT' | 'LIST'>('SPLIT');
 
   // Hoja de confirmación
   const [confirmDriver, setConfirmDriver] = useState<{
@@ -319,6 +319,22 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     [driverBids]
   );
 
+  const carouselItems: EdgeCarouselItem[] = useMemo(
+    () =>
+      driverBids.map((d, idx) => ({
+        id: d.id,
+        title: d.conductor_nombre,
+        subtitle: `${d.modelo} · ${d.placa}`,
+        priceText: formatSoles(d.priceCentavos),
+        badge: d.negocio_nombre.split(' ')[0],
+        etaText: `${d.etaMin} min · ${d.distanciaKm.toFixed(1)} km`,
+        rating: d.calificacion,
+        bestPrice: idx === 0,
+        actionLabel: 'Solicitar',
+      })),
+    [driverBids]
+  );
+
   const cheapestDriver = driverBids[0];
 
   function triggerDriverSearch() {
@@ -477,33 +493,24 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
 
   return (
     <section className="space-y-4">
-      {/* Barra superior estilo InDrive A -> B + Ver Mapa / Lista */}
-      <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 shadow-lg space-y-3">
+      {/* Barra superior estilo InDrive A -> B */}
+      <div className="rounded-3xl border border-[#4285F4]/25 bg-white dark:bg-[#0D1322] p-4 sm:p-5 shadow-lg space-y-3 chuspa-google-border">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-              Taxi por Geolocalización · Modo InDrive / Facilito
+            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#4285F4] dark:text-[#60A5FA]">
+              Taxi por Geolocalización · Modo InDrive / La Chuspa
             </p>
             <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
-              Elige tu ruta, propón tu tarifa y compara conductores en vivo
+              Mapa central en vivo y carrusel de conductores cercanos
             </h2>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setMobileMode((m) => (m === 'SPLIT' ? 'LIST' : 'SPLIT'))}
-              className="min-h-[40px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 text-xs font-semibold text-[#14171F] dark:text-white lg:hidden"
-            >
-              {mobileMode === 'SPLIT' ? 'Solo Lista' : 'Ver Mapa'}
-            </button>
           </div>
         </div>
 
         {/* Origen A y Destino B */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="min-h-[44px] px-3.5 py-2 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] flex items-center justify-between gap-2">
+          <div className="min-h-[44px] px-3.5 py-2 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#080C16] flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
-              <span className="w-6 h-6 rounded-lg bg-blue-600 text-white text-xs font-black flex items-center justify-center shrink-0">
+              <span className="w-6 h-6 rounded-lg bg-[#4285F4] text-white text-xs font-black flex items-center justify-center shrink-0">
                 A
               </span>
               <span className="text-xs sm:text-sm font-medium truncate">
@@ -513,14 +520,14 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             <button
               type="button"
               onClick={onRequestGps}
-              className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 shrink-0 hover:underline"
+              className="text-[11px] font-semibold text-[#4285F4] shrink-0 hover:underline"
             >
               {gpsLive ? 'Actualizado' : 'Usar GPS'}
             </button>
           </div>
 
-          <div className="min-h-[44px] px-3.5 py-1.5 rounded-2xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] flex items-center gap-2.5">
-            <span className="w-6 h-6 rounded-lg bg-[#84CC16] text-[#0B0E14] text-xs font-black flex items-center justify-center shrink-0">
+          <div className="min-h-[44px] px-3.5 py-1.5 rounded-2xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#080C16] flex items-center gap-2.5">
+            <span className="w-6 h-6 rounded-lg bg-[#34A853] text-white text-xs font-black flex items-center justify-center shrink-0">
               B
             </span>
             <input
@@ -545,8 +552,8 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
               onClick={() => setDestinoText(preset.label)}
               className={`min-h-[36px] px-3 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 border transition-colors ${
                 destinoText === preset.label
-                  ? 'border-[#84CC16] bg-[#84CC16]/15 text-[#14171F] dark:text-[#C2F238]'
-                  : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD] hover:border-[#D4AF37]/50'
+                  ? 'border-[#34A853] bg-[#34A853]/15 text-[#14171F] dark:text-[#B6F02B]'
+                  : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD] hover:border-[#4285F4]/50'
               }`}
             >
               {preset.label}
@@ -556,9 +563,9 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
 
         {/* Recomendación Agente La Chuspa: Mejor Precio */}
         {cheapestDriver && (
-          <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="rounded-2xl border border-[#34A853]/40 bg-[#34A853]/10 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-xl bg-[#34A853] text-white flex items-center justify-center shrink-0">
                 <Sparkles className="w-4 h-4" />
               </div>
               <div className="min-w-0">
@@ -582,7 +589,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                   finalCentavos: cheapestDriver.priceCentavos,
                 })
               }
-              className="min-h-[38px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shrink-0 transition-colors"
+              className="min-h-[38px] px-4 rounded-xl bg-[#34A853] hover:bg-emerald-600 text-white text-xs font-bold shrink-0 transition-colors chuspa-google-btn"
             >
               Pedir Mejor Precio
             </button>
@@ -590,33 +597,52 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
         )}
       </div>
 
-      {/* Layout principal: Mapa + Panel Viaja a tu precio | Lista de Conductores */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        {/* Columna izquierda: Mapa + Control InDrive "Viaja a tu precio" */}
-        <div className={`lg:col-span-7 space-y-4 ${mobileMode === 'LIST' ? 'hidden lg:block' : ''}`}>
-          <CuscoGeoMap
-            mode="TAXI"
-            userLat={userLat}
-            userLng={userLng}
-            originLabel={gpsLive ? 'Tu GPS' : 'Centro Cusco'}
-            destLat={destCoords.lat}
-            destLng={destCoords.lng}
-            destLabel={destinoText}
-            routeSummary={`${routeEtaMin} min · ${routeDistanceKm.toFixed(1)} km`}
-            pins={mapPins}
-            selectedPinId={selectedDriverId}
-            onSelectPin={(id) => setSelectedDriverId(id)}
-            onRequestPinAction={(id) => {
-              const drv = driverBids.find((d) => d.id === id);
-              if (drv) {
-                setSelectedDriverId(drv.id);
-                setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
-              }
-            }}
-            onRouteComputed={setOsrmRoute}
-            onRequestGps={onRequestGps}
-            gpsLive={gpsLive}
-          />
+      {/* Mapa grande centrado con Carrusel Vertical Translúcido a la Derecha */}
+      <div className="space-y-4">
+        <CuscoGeoMap
+          mode="TAXI"
+          userLat={userLat}
+          userLng={userLng}
+          originLabel={gpsLive ? 'Tu GPS' : 'Centro Cusco'}
+          destLat={destCoords.lat}
+          destLng={destCoords.lng}
+          destLabel={destinoText}
+          routeSummary={`${routeEtaMin} min · ${routeDistanceKm.toFixed(1)} km`}
+          pins={mapPins}
+          selectedPinId={selectedDriverId}
+          onSelectPin={(id) => setSelectedDriverId(id)}
+          onRequestPinAction={(id) => {
+            const drv = driverBids.find((d) => d.id === id);
+            if (drv) {
+              setSelectedDriverId(drv.id);
+              setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
+            }
+          }}
+          onRouteComputed={setOsrmRoute}
+          onRequestGps={onRequestGps}
+          gpsLive={gpsLive}
+          heightClass="h-[64vh] sm:h-[70vh] min-h-[460px]"
+          controlsPosition="left"
+          rightOverlay={
+            <MapEdgeCarousel
+              headerTitle={`Taxis (${driverBids.length})`}
+              items={carouselItems}
+              selectedId={selectedDriverId}
+              onSelect={(id) => setSelectedDriverId(id)}
+              onAction={(id) => {
+                const drv = driverBids.find((d) => d.id === id);
+                if (drv) {
+                  setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
+                }
+              }}
+              accentHex="#34A853"
+            />
+          }
+        />
+
+        {/* Controles InDrive "Viaja a tu precio" + tarjetas de oferta */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          <div className="lg:col-span-5">
 
           {/* Tarjeta inferior InDrive: Viaja a tu precio */}
           <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 shadow-xl space-y-4">
@@ -698,7 +724,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             <button
               type="button"
               onClick={triggerDriverSearch}
-              className="w-full min-h-[48px] rounded-2xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-colors"
+              className="w-full min-h-[48px] rounded-2xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-colors chuspa-google-btn"
             >
               <Zap className="w-4 h-4" />
               <span>Buscar conductores ({driverBids.length} cerca)</span>
@@ -706,8 +732,8 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           </div>
         </div>
 
-        {/* Columna derecha: Lista de ofertas de conductores en vivo */}
-        <div className="lg:col-span-5 space-y-3">
+        {/* Columna derecha: Lista detallada de ofertas de conductores en vivo */}
+        <div className="lg:col-span-7 space-y-3">
           <div className="flex items-center justify-between px-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
               Ofertas de Conductores Verificados ({driverBids.length})
@@ -828,6 +854,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
               </article>
             );
           })}
+        </div>
         </div>
       </div>
 

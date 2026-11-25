@@ -14,9 +14,8 @@ import {
   speakWithAvatarLipSync,
   stopAvatarSpeech,
   subscribeAvatarSpeech,
-  type AvatarConnectionState,
 } from '../lib/heygenAvatar.ts';
-import { apiFetch, subscribeSpeechCadence } from '../lib/api.ts';
+import { apiFetch, playLuxuryChime, subscribeSpeechCadence } from '../lib/api.ts';
 import { detectIntentFromQuery } from '../lib/cuscoMarkets.ts';
 import { formatSoles, type ConciergeOpcion, type Rubro } from '../types.ts';
 
@@ -45,174 +44,211 @@ export const RealisticAvatarPortrait: React.FC<RealisticAvatarPortraitProps> = (
   listening = false,
   speaking = false,
   mouthLevel = 0,
-  webrtcStream = null,
   onClick,
-  ariaLabel = 'Hablar con el asistente La Chuspa',
-  title = 'Haz clic para hablar por voz',
+  ariaLabel = 'Activar boca digital La Chuspa',
+  title = 'Presiona la boca digital para hablar y activar ondas de parlante',
 }) => {
-  const [blinking, setBlinking] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [pulseWaveActive, setPulseWaveActive] = useState(false);
+  const pulseTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (videoRef.current && webrtcStream) {
-      videoRef.current.srcObject = webrtcStream;
-      void videoRef.current.play().catch(() => {});
-    }
-  }, [webrtcStream]);
-
-  // Parpadeo natural estocástico (cada 2.8s - 5.2s, con doble parpadeo ocasional)
-  useEffect(() => {
-    let active = true;
-    let t1: number | undefined;
-    let t2: number | undefined;
-    let t3: number | undefined;
-
-    const scheduleBlink = () => {
-      const nextMs = 2700 + Math.random() * 2600;
-      t1 = window.setTimeout(() => {
-        if (!active) return;
-        setBlinking(true);
-        t2 = window.setTimeout(() => {
-          if (!active) return;
-          setBlinking(false);
-          if (Math.random() < 0.22) {
-            t3 = window.setTimeout(() => {
-              if (!active) return;
-              setBlinking(true);
-              window.setTimeout(() => active && setBlinking(false), 115);
-            }, 130);
-          }
-          scheduleBlink();
-        }, 125);
-      }, nextMs);
-    };
-
-    scheduleBlink();
     return () => {
-      active = false;
-      if (t1) window.clearTimeout(t1);
-      if (t2) window.clearTimeout(t2);
-      if (t3) window.clearTimeout(t3);
+      if (pulseTimerRef.current) {
+        window.clearTimeout(pulseTimerRef.current);
+      }
     };
   }, []);
 
-  const avatarSrc = `${import.meta.env.BASE_URL}assets/concierge_human_avatar.jpg`;
-  const jawDropPx = speaking ? Math.min(3.5, mouthLevel * 4) : 0;
+  function triggerSpeakerRipple() {
+    setPulseWaveActive(true);
+    playLuxuryChime();
+    if (pulseTimerRef.current) {
+      window.clearTimeout(pulseTimerRef.current);
+    }
+    pulseTimerRef.current = window.setTimeout(() => {
+      setPulseWaveActive(false);
+    }, 2200);
+    onClick?.();
+  }
+
+  const wavesOn = listening || speaking || pulseWaveActive;
+  const activeEnergy = speaking
+    ? Math.max(0.32, mouthLevel)
+    : pulseWaveActive
+    ? 0.72
+    : listening
+    ? 0.45
+    : 0.14;
+
+  const eqHeights = [0.42, 0.78, 1.0, 0.85, 1.0, 0.76, 0.44];
 
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={triggerSpeakerRipple}
       aria-label={ariaLabel}
       title={title}
-      className={`relative group rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 transition-transform duration-200 active:scale-95 ${sizeClass}`}
+      className={`relative group rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4285F4] transition-transform duration-200 active:scale-95 ${sizeClass}`}
       style={{
-        filter: listening
-          ? 'drop-shadow(0 14px 28px rgba(56, 189, 248, 0.42))'
-          : speaking
-          ? 'drop-shadow(0 14px 28px rgba(212, 175, 55, 0.35))'
-          : 'drop-shadow(0 18px 34px rgba(0, 0, 0, 0.48))',
+        filter: wavesOn
+          ? 'drop-shadow(0 0 26px rgba(66, 133, 244, 0.52))'
+          : 'drop-shadow(0 16px 30px rgba(0, 0, 0, 0.55))',
       }}
     >
-      {/* Halo sutil al escuchar o hablar (sin bordes cuadrados) */}
-      {(listening || speaking) && (
+      {/* Ondas expansivas de parlante al presionar, escuchar o responder por voz */}
+      {wavesOn && (
+        <>
+          <span
+            aria-hidden="true"
+            className="chuspa-sound-wave-1 absolute -inset-2 rounded-full border-2 border-[#4285F4]/80 pointer-events-none"
+          />
+          <span
+            aria-hidden="true"
+            className="chuspa-sound-wave-2 absolute -inset-3 rounded-full border-2 border-[#FBBC04]/75 pointer-events-none"
+          />
+          <span
+            aria-hidden="true"
+            className="chuspa-sound-wave-3 absolute -inset-4 rounded-full border-2 border-[#34A853]/70 pointer-events-none"
+          />
+        </>
+      )}
+
+      {/* Halo circular Google AI Studio sin marco cuadrado */}
+      <span
+        aria-hidden="true"
+        className="absolute -inset-[3px] rounded-full chuspa-aistudio-glow opacity-90 pointer-events-none"
+        style={{
+          background:
+            'conic-gradient(from 0deg, #4285F4, #EA4335, #FBBC04, #34A853, #D4AF37, #4285F4)',
+        }}
+      />
+
+      {/* Medallón circular obsidiana con boca digital del futuro */}
+      <span className="relative flex items-center justify-center w-full h-full rounded-full bg-gradient-to-b from-[#0C1222] via-[#070B14] to-[#04070D] overflow-hidden border border-white/15">
         <span
           aria-hidden="true"
-          className={`chuspa-sphere-ring absolute -inset-1.5 rounded-full pointer-events-none ${
-            listening
-              ? 'ring-2 ring-sky-400/75 bg-sky-400/10'
-              : 'ring-2 ring-[#D4AF37]/70 bg-[#D4AF37]/10'
-          }`}
+          className="absolute inset-0 opacity-45 pointer-events-none"
+          style={{
+            background:
+              'radial-gradient(circle at 50% 45%, rgba(66,133,244,0.34), rgba(52,168,83,0.12) 55%, transparent 78%)',
+          }}
         />
-      )}
 
-      {/* Contenedor circular sin bordes duros, con máscara radial suave flotante */}
-      <span
-        className="relative block w-full h-full rounded-full overflow-hidden bg-[#182028]"
-        style={{
-          WebkitMaskImage: 'radial-gradient(circle, #000 72%, rgba(0,0,0,0.88) 88%, transparent 100%)',
-          maskImage: 'radial-gradient(circle, #000 72%, rgba(0,0,0,0.88) 88%, transparent 100%)',
-        }}
-      >
-        {webrtcStream ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="w-full h-full object-cover object-top"
+        {/* SVG de Boca Digital Futurista + Arcos laterales de Parlante */}
+        <svg
+          viewBox="0 0 160 120"
+          className="relative w-[86%] h-[68%] overflow-visible"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id="chuspaLipGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#4285F4" />
+              <stop offset="33%" stopColor="#EA4335" />
+              <stop offset="66%" stopColor="#FBBC04" />
+              <stop offset="100%" stopColor="#34A853" />
+            </linearGradient>
+            <linearGradient id="chuspaMouthCore" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.95" />
+              <stop offset="50%" stopColor="#FBBC04" stopOpacity="0.95" />
+              <stop offset="100%" stopColor="#34A853" stopOpacity="0.95" />
+            </linearGradient>
+          </defs>
+
+          {/* Arcos laterales de onda de sonido tipo parlante */}
+          <path
+            d="M 18 44 Q 8 60 18 76"
+            fill="none"
+            stroke="#4285F4"
+            strokeWidth={wavesOn ? '3' : '2'}
+            strokeLinecap="round"
+            opacity={wavesOn ? 0.95 : 0.32}
           />
-        ) : (
-          <span
-            className={`relative block w-full h-full ${
-              speaking ? 'chuspa-avatar-talking' : 'chuspa-avatar-idle'
-            }`}
-          >
-            <img
-              src={avatarSrc}
-              alt="Asistente Humanoide La Chuspa"
-              referrerPolicy="no-referrer"
-              className={`w-full h-full object-cover object-top transition-transform duration-300 ${
-                listening ? 'scale-[1.06]' : 'group-hover:scale-[1.03]'
-              }`}
-            />
+          <path
+            d="M 10 34 Q -2 60 10 86"
+            fill="none"
+            stroke="#34A853"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            opacity={wavesOn ? 0.85 : 0.14}
+          />
+          <path
+            d="M 142 44 Q 152 60 142 76"
+            fill="none"
+            stroke="#FBBC04"
+            strokeWidth={wavesOn ? '3' : '2'}
+            strokeLinecap="round"
+            opacity={wavesOn ? 0.95 : 0.32}
+          />
+          <path
+            d="M 150 34 Q 162 60 150 86"
+            fill="none"
+            stroke="#EA4335"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            opacity={wavesOn ? 0.85 : 0.14}
+          />
 
-            {/* Párpados anatómicos suaves para parpadeo natural en reposo y diálogo */}
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute rounded-full transition-all duration-75"
-              style={{
-                left: '35.5%',
-                top: '34.4%',
-                width: '10.2%',
-                height: blinking ? '3.4%' : '0%',
-                opacity: blinking ? 0.92 : 0,
-                background:
-                  'radial-gradient(ellipse at center, #c89574 20%, #9b6c50 85%, transparent 100%)',
-              }}
-            />
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute rounded-full transition-all duration-75"
-              style={{
-                left: '54.2%',
-                top: '34.4%',
-                width: '10.2%',
-                height: blinking ? '3.4%' : '0%',
-                opacity: blinking ? 0.92 : 0,
-                background:
-                  'radial-gradient(ellipse at center, #c89574 20%, #9b6c50 85%, transparent 100%)',
-              }}
-            />
+          {/* Labio superior futurista esculpido */}
+          <path
+            d={`M 30 60 Q 54 ${38 - activeEnergy * 8} 80 ${45 - activeEnergy * 5} Q 106 ${
+              38 - activeEnergy * 8
+            } 130 60`}
+            fill="none"
+            stroke="url(#chuspaLipGrad)"
+            strokeWidth="4.2"
+            strokeLinecap="round"
+          />
 
-            {/* Sincronización labial orgánica al responder por voz */}
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute -translate-x-1/2 rounded-full transition-all duration-75"
-              style={{
-                left: '50%',
-                top: '51.4%',
-                width: speaking ? `${10.5 + mouthLevel * 3.5}%` : '0%',
-                height: speaking ? `${Math.max(1.2, mouthLevel * 3.8)}%` : '0%',
-                opacity: speaking ? 0.68 : 0,
-                transform: `translateY(${jawDropPx * 0.35}px)`,
-                background:
-                  'radial-gradient(ellipse at center, rgba(42,16,18,0.88) 35%, rgba(162,92,88,0.45) 85%, transparent 100%)',
-              }}
-            />
-          </span>
-        )}
-      </span>
+          {/* Labio inferior futurista sincronizado con voz/ondas */}
+          <path
+            d={`M 30 60 Q 80 ${75 + activeEnergy * 24} 130 60`}
+            fill="none"
+            stroke="url(#chuspaLipGrad)"
+            strokeWidth="4.4"
+            strokeLinecap="round"
+          />
 
-      {/* Indicador táctil de micrófono activo sobre el borde inferior del avatar */}
-      {listening && (
-        <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 h-6 px-2.5 rounded-full bg-sky-500 text-white text-[10px] font-bold flex items-center gap-1 shadow-md whitespace-nowrap">
-          <Mic className="w-3 h-3" />
-          Escuchando
+          {/* Núcleo acústico de barras vocales en tiempo real dentro de la boca */}
+          <g>
+            {eqHeights.map((baseH, idx) => {
+              const barH = Math.max(4, (baseH * 28 + 6) * (0.28 + activeEnergy * 0.92));
+              const x = 49 + idx * 10;
+              const y = 60 - barH / 2;
+              return (
+                <rect
+                  key={idx}
+                  x={x}
+                  y={y}
+                  width="4.5"
+                  height={barH}
+                  rx="2.25"
+                  fill="url(#chuspaMouthCore)"
+                  opacity={wavesOn ? 0.98 : 0.68}
+                />
+              );
+            })}
+          </g>
+        </svg>
+
+        {/* Etiqueta compacta parlante / escucha */}
+        <span
+          className={`absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-1 whitespace-nowrap ${
+            listening
+              ? 'bg-[#4285F4] text-white'
+              : wavesOn
+              ? 'bg-[#FBBC04] text-[#0B0E14]'
+              : 'bg-white/10 text-slate-200 border border-white/15'
+          }`}
+        >
+          <Volume2 className="w-2.5 h-2.5" />
+          <span>{listening ? 'Escuchando' : wavesOn ? 'Parlante ON' : 'Hablar'}</span>
         </span>
-      )}
+      </span>
     </button>
   );
 };
+
+export const DigitalMouthPortrait = RealisticAvatarPortrait;
 
 interface FloatingAvatarWidgetProps {
   hidden?: boolean;
@@ -232,8 +268,6 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
   const [mouthLevel, setMouthLevel] = useState(0);
   const [muted, setMuted] = useState(false);
   const [caption, setCaption] = useState<string | null>(null);
-  const [connState, setConnState] = useState<AvatarConnectionState>('idle');
-  const [webrtcStream, setWebrtcStream] = useState<MediaStream | null>(null);
   const [busy, setBusy] = useState(false);
 
   const controllerRef = useRef<HeygenWebRtcController | null>(null);
@@ -243,8 +277,8 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
     const controller = new HeygenWebRtcController();
     controllerRef.current = controller;
     void controller.connect(
-      (stream) => setWebrtcStream(stream),
-      (state) => setConnState(state)
+      () => {},
+      () => {}
     );
 
     const unsubSpeech = subscribeAvatarSpeech((ev) => {
@@ -373,7 +407,7 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
 
     if (!SpeechRec) {
       setShowTextBox(true);
-      const hint = 'Escribe aquí tu pedido de taxi, market, comida o botica.';
+      const hint = 'Escribe aquí tu pedido de taxi, market, botica o comida.';
       setCaption(hint);
       if (!muted) speakWithAvatarLipSync(hint);
       return;
@@ -387,7 +421,7 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
       rec.interimResults = false;
       rec.maxAlternatives = 1;
       setListening(true);
-      setCaption('Te escucho...');
+      setCaption('Te escucho por micrófono...');
 
       rec.onresult = (event: any) => {
         const transcript = String(event.results?.[0]?.[0]?.transcript || '').trim();
@@ -410,17 +444,16 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
     return (
       <div className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-50">
         <RealisticAvatarPortrait
-          sizeClass="w-14 h-14"
+          sizeClass="w-16 h-16"
           listening={listening}
           speaking={speaking}
           mouthLevel={mouthLevel}
-          webrtcStream={webrtcStream}
           onClick={() => {
             setClosed(false);
             setMinimized(false);
           }}
-          ariaLabel="Reabrir avatar asistente La Chuspa"
-          title="Abrir asistente La Chuspa"
+          ariaLabel="Reabrir boca digital La Chuspa"
+          title="Abrir asistente de voz La Chuspa"
         />
       </div>
     );
@@ -428,14 +461,13 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
 
   return (
     <div
-      aria-label="Asistente humanoide flotante La Chuspa"
+      aria-label="Asistente boca digital flotante La Chuspa"
       className="fixed bottom-20 right-4 md:bottom-6 md:right-6 z-50 flex flex-col items-end gap-2.5 pointer-events-none max-w-[300px]"
     >
-      {/* Globo flotante compacto sin bordes duros cuando hay respuesta o campo de texto */}
       {!minimized && (caption || showTextBox) && (
         <div className="pointer-events-auto w-[268px] sm:w-[290px] space-y-2">
           {caption && (
-            <div className="relative rounded-2xl bg-[#0D1117]/88 text-[#F4F1EA] px-3.5 py-2.5 text-xs leading-relaxed backdrop-blur-md shadow-2xl">
+            <div className="relative rounded-2xl bg-[#090D16]/90 text-[#F4F1EA] px-3.5 py-2.5 text-xs leading-relaxed backdrop-blur-md shadow-2xl chuspa-google-border">
               <div className="flex items-start justify-between gap-2">
                 <p className="flex-1">{caption}</p>
                 <button
@@ -459,20 +491,20 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
                 setTextQuery('');
                 void processAssistantPrompt(val);
               }}
-              className="flex items-center gap-1.5 rounded-full bg-[#0D1117]/90 backdrop-blur-md pl-3.5 pr-1.5 py-1 shadow-xl"
+              className="flex items-center gap-1.5 rounded-full bg-[#090D16]/92 backdrop-blur-md pl-3.5 pr-1.5 py-1 shadow-xl chuspa-google-border"
             >
               <input
                 type="text"
                 value={textQuery}
                 onChange={(e) => setTextQuery(e.target.value)}
-                placeholder="Pide taxi, market o comida..."
+                placeholder="Pide taxi, market o botica..."
                 className="flex-1 bg-transparent text-xs text-white placeholder:text-slate-400 focus:outline-none min-h-[34px]"
               />
               <button
                 type="submit"
                 disabled={busy || !textQuery.trim()}
-                aria-label="Enviar mensaje al avatar"
-                className="w-8 h-8 rounded-full bg-[#D4AF37] text-[#0B0E14] flex items-center justify-center disabled:opacity-40 shrink-0"
+                aria-label="Enviar mensaje al asistente"
+                className="w-8 h-8 rounded-full bg-[#FBBC04] text-[#0B0E14] flex items-center justify-center disabled:opacity-40 shrink-0"
               >
                 <Send className="w-3.5 h-3.5" />
               </button>
@@ -481,7 +513,6 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
         </div>
       )}
 
-      {/* Avatar circular sin marco cuadrado tradicional flotando en la esquina inferior derecha */}
       <div className="pointer-events-auto relative flex items-end gap-2">
         {!minimized && (
           <div className="flex flex-col gap-1.5 mb-1">
@@ -490,7 +521,7 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
               onClick={() => setShowTextBox((v) => !v)}
               aria-label="Escribir texto al asistente"
               title="Escribir texto"
-              className="min-h-[36px] px-3 rounded-full bg-[#0D1117]/82 hover:bg-[#161E2B] text-white/90 text-[11px] font-medium backdrop-blur-md shadow-lg transition-colors whitespace-nowrap"
+              className="min-h-[36px] px-3 rounded-full bg-[#090D16]/88 hover:bg-[#131C2E] text-white/95 text-[11px] font-medium backdrop-blur-md shadow-lg transition-colors whitespace-nowrap chuspa-google-btn"
             >
               {showTextBox ? 'Ocultar texto' : 'Escribir'}
             </button>
@@ -500,24 +531,23 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
                 if (!muted) stopAvatarSpeech();
                 setMuted((m) => !m);
               }}
-              aria-label={muted ? 'Activar voz del avatar' : 'Silenciar voz del avatar'}
-              title={muted ? 'Activar voz' : 'Silenciar voz'}
-              className="self-end w-9 h-9 rounded-full bg-[#0D1117]/82 hover:bg-[#161E2B] text-white/90 flex items-center justify-center backdrop-blur-md shadow-lg transition-colors"
+              aria-label={muted ? 'Activar parlante' : 'Silenciar parlante'}
+              title={muted ? 'Activar parlante' : 'Silenciar parlante'}
+              className="self-end w-9 h-9 rounded-full bg-[#090D16]/88 hover:bg-[#131C2E] text-white flex items-center justify-center backdrop-blur-md shadow-lg transition-colors chuspa-google-btn"
             >
-              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-[#D4AF37]" />}
+              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-[#FBBC04]" />}
             </button>
           </div>
         )}
 
         <div className="relative">
-          {/* Controles flotantes de ventana (Minimizar / Cerrar) */}
           <div className="absolute -top-2 -right-1 z-10 flex items-center gap-1">
             <button
               type="button"
               onClick={() => setMinimized((m) => !m)}
               aria-label={minimized ? 'Expandir asistente' : 'Minimizar asistente'}
               title={minimized ? 'Expandir' : 'Minimizar'}
-              className="w-7 h-7 rounded-full bg-[#0D1117]/88 hover:bg-[#1E293B] text-white flex items-center justify-center shadow-md backdrop-blur-md transition-colors"
+              className="w-7 h-7 rounded-full bg-[#090D16]/90 hover:bg-[#1E293B] text-white flex items-center justify-center shadow-md backdrop-blur-md transition-colors"
             >
               {minimized ? <Maximize2 className="w-3.5 h-3.5" /> : <Minimize2 className="w-3.5 h-3.5" />}
             </button>
@@ -529,37 +559,27 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
               }}
               aria-label="Cerrar asistente"
               title="Cerrar"
-              className="w-7 h-7 rounded-full bg-[#0D1117]/88 hover:bg-rose-600 text-white flex items-center justify-center shadow-md backdrop-blur-md transition-colors"
+              className="w-7 h-7 rounded-full bg-[#090D16]/90 hover:bg-rose-600 text-white flex items-center justify-center shadow-md backdrop-blur-md transition-colors"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
 
           <RealisticAvatarPortrait
-            sizeClass={minimized ? 'w-20 h-20' : 'w-32 h-32 sm:w-36 sm:h-36'}
+            sizeClass={minimized ? 'w-20 h-20' : 'w-28 h-28 sm:w-32 sm:h-32'}
             listening={listening}
             speaking={speaking}
             mouthLevel={mouthLevel}
-            webrtcStream={webrtcStream}
             onClick={() => {
               if (minimized) {
                 setMinimized(false);
               }
               toggleVoiceMicrophone();
             }}
-            ariaLabel={
-              listening
-                ? 'Detener micrófono'
-                : 'Hablar con el avatar realista La Chuspa'
-            }
-            title={
-              connState === 'webrtc-live'
-                ? 'Avatar en vivo WebRTC · Toca para hablar'
-                : 'Toca el avatar para hablar por micrófono'
-            }
+            ariaLabel={listening ? 'Detener micrófono' : 'Presionar boca digital para hablar'}
+            title="Presiona la boca digital para activar micrófono y ondas de sonido"
           />
 
-          {/* Acceso directo de micrófono en esquina inferior izquierda del círculo */}
           {!minimized && (
             <button
               type="button"
@@ -567,8 +587,8 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
               aria-label={listening ? 'Detener dictado' : 'Activar micrófono'}
               className={`absolute -bottom-1 -left-1 w-9 h-9 rounded-full flex items-center justify-center shadow-lg transition-transform active:scale-95 ${
                 listening
-                  ? 'bg-rose-600 text-white'
-                  : 'bg-[#0D1117]/90 text-sky-400 hover:text-sky-300 backdrop-blur-md'
+                  ? 'bg-[#EA4335] text-white'
+                  : 'bg-[#090D16]/92 text-[#4285F4] hover:text-sky-300 backdrop-blur-md chuspa-google-btn'
               }`}
             >
               {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
@@ -579,3 +599,5 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
     </div>
   );
 };
+
+export const FloatingDigitalMouthWidget = FloatingAvatarWidget;

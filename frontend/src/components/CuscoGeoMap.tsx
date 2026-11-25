@@ -11,7 +11,7 @@ export interface GeoMapPin {
   sublabel?: string;
   detailTitle?: string;
   tier: 'cheapest' | 'mid' | 'high' | 'closed';
-  kind: 'DRIVER' | 'MARKET';
+  kind: 'DRIVER' | 'MARKET' | 'BUSINESS';
   isOpen?: boolean;
 }
 
@@ -37,6 +37,8 @@ interface CuscoGeoMapProps {
   onRequestGps?: () => void;
   gpsLive?: boolean;
   heightClass?: string;
+  controlsPosition?: 'left' | 'right';
+  rightOverlay?: React.ReactNode;
 }
 
 function escapeHtml(raw: string): string {
@@ -93,7 +95,10 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
   onRequestGps,
   gpsLive,
   heightClass = 'h-[360px] sm:h-[430px]',
+  controlsPosition,
+  rightOverlay,
 }) => {
+  const effectiveControlsPos = controlsPosition ?? (rightOverlay ? 'left' : 'right');
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -400,7 +405,8 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
       const shadow = selected
         ? '0 0 0 3px #D4AF37, 0 10px 24px rgba(0,0,0,0.45)'
         : '0 6px 16px rgba(0,0,0,0.32)';
-      const iconPrefix = pin.kind === 'DRIVER' ? '🚕 ' : '';
+      const iconPrefix =
+        pin.kind === 'DRIVER' ? '🚕 ' : pin.kind === 'BUSINESS' ? '📍 ' : '';
 
       const pinIcon = L.divIcon({
         className: 'cusco-leaflet-pin',
@@ -456,7 +462,15 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
 
   useEffect(() => {
     fitAllBounds();
-  }, [mode, destLat, destLng, driverLat, driverLng, pins.length]);
+  }, [mode, userLat, userLng, destLat, destLng, driverLat, driverLng, pins.length]);
+
+  useEffect(() => {
+    if (!selectedPinId || !mapRef.current) return;
+    const found = pins.find((p) => p.id === selectedPinId);
+    if (found) {
+      mapRef.current.panTo([found.lat, found.lng], { animate: true, duration: 0.45 });
+    }
+  }, [selectedPinId]);
 
   const selectedPin = useMemo(
     () => pins.find((p) => p.id === selectedPinId) || null,
@@ -468,7 +482,7 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
       className={
         isFullscreen
           ? 'fixed inset-0 z-[100] bg-slate-200 dark:bg-[#0D1117]'
-          : 'relative rounded-3xl overflow-hidden border border-black/15 dark:border-white/15 bg-slate-200 dark:bg-[#0D1117] shadow-xl'
+          : 'relative rounded-3xl overflow-hidden border border-white/15 bg-slate-200 dark:bg-[#0D1117] shadow-2xl chuspa-google-border'
       }
     >
       <div
@@ -477,7 +491,11 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
       />
 
       {/* Controles flotantes de mapa (GPS + Reencuadrar + Agrandar/Encoger) */}
-      <div className="absolute top-3 right-3 z-[400] flex flex-col gap-2">
+      <div
+        className={`absolute top-3 z-[400] flex flex-col gap-2 ${
+          effectiveControlsPos === 'left' ? 'left-3' : 'right-3'
+        }`}
+      >
         <button
           type="button"
           onClick={() => setIsFullscreen((f) => !f)}
@@ -524,12 +542,20 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
         </button>
       </div>
 
-      {/* Tarjeta interactiva en mapa cuando el cliente toca un pin de taxista o market */}
+      {/* Tarjeta interactiva en mapa cuando el cliente toca un pin */}
       {selectedPin && (
-        <div className="absolute bottom-3 left-14 sm:left-16 right-3 sm:right-auto sm:max-w-xs z-[400] rounded-2xl border border-black/15 dark:border-white/15 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md p-3 shadow-2xl flex items-center justify-between gap-3">
+        <div
+          className={`absolute bottom-3 left-14 sm:left-16 z-[400] rounded-2xl border border-white/15 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md p-3 shadow-2xl flex items-center justify-between gap-2.5 chuspa-google-border ${
+            rightOverlay ? 'right-[172px] sm:right-[242px] max-w-xs' : 'right-3 sm:right-auto sm:max-w-xs'
+          }`}
+        >
           <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-              {selectedPin.kind === 'DRIVER' ? 'Taxista en mapa' : 'Minimarket en mapa'}
+            <p className="text-[10px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#FBBC04]">
+              {selectedPin.kind === 'DRIVER'
+                ? 'Taxista en mapa'
+                : selectedPin.kind === 'MARKET'
+                ? 'Minimarket en mapa'
+                : 'Negocio encontrado'}
             </p>
             <p className="text-xs font-bold text-[#14171F] dark:text-white truncate">
               {selectedPin.detailTitle || selectedPin.sublabel || selectedPin.priceText}
@@ -543,17 +569,21 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
             <button
               type="button"
               onClick={() => onRequestPinAction(selectedPin.id)}
-              className="min-h-[38px] px-3 rounded-xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] text-xs font-bold flex items-center gap-1 shrink-0 shadow"
+              className="min-h-[38px] px-3 rounded-xl bg-gradient-to-r from-[#4285F4] via-[#34A853] to-[#D4AF37] text-white text-xs font-bold flex items-center gap-1 shrink-0 shadow chuspa-google-btn"
             >
               <Navigation className="w-3.5 h-3.5" />
-              <span>{selectedPin.kind === 'DRIVER' ? 'Solicitar' : 'Elegir'}</span>
+              <span>{selectedPin.kind === 'MARKET' ? 'Elegir' : 'Solicitar'}</span>
             </button>
           )}
         </div>
       )}
 
       {/* Leyenda estilo Facilito */}
-      <div className="hidden sm:flex absolute bottom-3 right-3 z-[400] items-center gap-2 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md border border-black/10 dark:border-white/15 rounded-xl px-3 py-1.5 text-[10px] font-semibold shadow-md">
+      <div
+        className={`hidden sm:flex absolute bottom-3 z-[400] items-center gap-2 bg-white/95 dark:bg-[#0D1117]/95 backdrop-blur-md border border-black/10 dark:border-white/15 rounded-xl px-3 py-1.5 text-[10px] font-semibold shadow-md ${
+          rightOverlay ? 'left-16 bottom-20' : 'right-3'
+        }`}
+      >
         <span className="flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Mejor tarifa
         </span>
@@ -561,6 +591,9 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = ({
           <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> Estándar
         </span>
       </div>
+
+      {/* Carrusel vertical lateral derecho estilo Samsung Edge Panel */}
+      {rightOverlay}
     </div>
   );
 };

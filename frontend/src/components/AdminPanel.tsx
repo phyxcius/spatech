@@ -471,15 +471,15 @@ export const AdminPanel: React.FC = () => {
   if (!token) {
     return (
       <div className="max-w-md mx-auto py-8 pb-24">
-        <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 sm:p-8 space-y-5">
+        <div className="rounded-3xl border border-[#D4AF37]/45 bg-gradient-to-br from-[#FFFDF7] via-[#FEF9E7] to-white dark:from-[#171104] dark:via-[#0F0C05] dark:to-[#1B1304] p-6 sm:p-8 space-y-5 shadow-2xl chuspa-google-border">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-[#9A7B2C] dark:text-[#D4AF37]">
-              Tesorería & Auditoría
+            <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#F5E199]">
+              Tesorería Dorada & Auditoría HQ
             </p>
-            <h1 className="font-display text-3xl font-semibold mt-1">
+            <h1 className="font-display text-3xl font-semibold mt-1 text-[#14171F] dark:text-[#F5E199]">
               {requiresClaim ? 'Configurar PIN Maestro' : 'Administrador La Chuspa'}
             </h1>
-            <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
+            <p className="text-xs text-[#6A717E] dark:text-[#C5B389] mt-1">
               {requiresClaim
                 ? 'Primer arranque en vista previa: define tu PIN maestro de administración (mínimo 4 caracteres).'
                 : 'Ingresa el PIN maestro de administración para auditar el libro contable y aprobar recargas.'}
@@ -494,19 +494,19 @@ export const AdminPanel: React.FC = () => {
 
           <form onSubmit={handleAdminAuth} className="space-y-4">
             <div className="relative">
-              <KeyRound className="w-4 h-4 text-[#8A8F99] absolute left-3.5 top-3.5" />
+              <KeyRound className="w-4 h-4 text-[#D4AF37] absolute left-3.5 top-3.5" />
               <input
                 type="password"
                 required
                 value={pinInput}
                 onChange={(e) => setPinInput(e.target.value)}
                 placeholder={requiresClaim ? 'Define nuevo PIN maestro' : 'PIN maestro'}
-                className="w-full min-h-[48px] pl-10 pr-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
+                className="w-full min-h-[48px] pl-10 pr-4 rounded-xl border border-[#D4AF37]/35 bg-[#F8F7F4] dark:bg-[#0B0904] text-sm font-mono-tabular"
               />
             </div>
             <button
               type="submit"
-              className="w-full min-h-[48px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-semibold"
+              className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-[#B8860B] via-[#D4AF37] to-[#F5E199] text-[#0B0E14] text-sm font-bold shadow-lg chuspa-google-btn"
             >
               {requiresClaim ? 'Guardar PIN Maestro e Ingresar' : 'Ingresar a Administración'}
             </button>
@@ -518,14 +518,14 @@ export const AdminPanel: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-24 md:pb-12">
-      {/* Cabecera Admin */}
-      <section className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-5">
+      {/* Cabecera Admin · Dorado Elegante Luxury */}
+      <section className="rounded-3xl border border-[#D4AF37]/45 bg-gradient-to-br from-[#FFFDF7] via-[#FEF7DC]/70 to-white dark:from-[#171104] dark:via-[#100C04] dark:to-[#1D1405] p-6 space-y-5 shadow-2xl chuspa-google-border">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <p className="text-xs uppercase tracking-[0.2em] text-[#9A7B2C] dark:text-[#D4AF37]">
-              Control Central · La Chuspa HQ
+            <p className="text-xs uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#F5E199]">
+              Panel Dorado Imperial · Control Central La Chuspa HQ
             </p>
-            <h1 className="font-display text-3xl font-semibold mt-0.5">
+            <h1 className="font-display text-3xl font-semibold mt-0.5 text-[#14171F] dark:text-[#FFF5D6]">
               Tesorería, Comisiones & Auditoría
             </h1>
           </div>
@@ -534,7 +534,7 @@ export const AdminPanel: React.FC = () => {
             <button
               type="button"
               onClick={loadPanel}
-              className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5"
+              className="min-h-[44px] px-3.5 rounded-xl border border-[#D4AF37]/40 bg-[#D4AF37]/10 text-xs font-semibold flex items-center gap-1.5 text-[#7C5E12] dark:text-[#F5E199]"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Actualizar</span>
@@ -542,7 +542,7 @@ export const AdminPanel: React.FC = () => {
             <button
               type="button"
               onClick={() => setToken(null)}
-              className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs text-[#C81E5B] flex items-center gap-1.5"
+              className="min-h-[44px] px-3.5 rounded-xl border border-rose-500/35 text-xs text-[#C81E5B] flex items-center gap-1.5"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>Cerrar Sesión</span>
@@ -551,9 +551,9 @@ export const AdminPanel: React.FC = () => {
         </div>
 
         {data && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-black/8 dark:border-white/8">
-            <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Cuadre del Libro Contable</p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-[#D4AF37]/25">
+            <div className="p-4 rounded-2xl border border-[#D4AF37]/25 bg-white/80 dark:bg-[#0B0904]/90">
+              <p className="text-xs text-[#7C5E12] dark:text-[#C5B389]">Cuadre del Libro Contable</p>
               <p
                 className={`text-lg font-semibold mt-1 flex items-center gap-2 ${
                   data.auditoria.cuadra ? 'text-[#1FA855]' : 'text-[#C81E5B]'
@@ -563,15 +563,15 @@ export const AdminPanel: React.FC = () => {
                 <span>{data.auditoria.cuadra ? 'Cuadre Verificado (100%)' : 'Descuadre Detectado'}</span>
               </p>
             </div>
-            <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Ingreso Neto Plataforma</p>
-              <p className="font-mono-tabular text-2xl font-semibold mt-1">
+            <div className="p-4 rounded-2xl border border-[#D4AF37]/25 bg-white/80 dark:bg-[#0B0904]/90">
+              <p className="text-xs text-[#7C5E12] dark:text-[#C5B389]">Ingreso Neto Plataforma</p>
+              <p className="font-mono-tabular text-2xl font-bold mt-1 text-[#9A7B2C] dark:text-[#F5E199]">
                 {formatSoles(data.auditoria.ingresos_plataforma_centavos)}
               </p>
             </div>
-            <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Recargas Pendientes</p>
-              <p className="font-mono-tabular text-2xl font-semibold mt-1">
+            <div className="p-4 rounded-2xl border border-[#D4AF37]/25 bg-white/80 dark:bg-[#0B0904]/90">
+              <p className="text-xs text-[#7C5E12] dark:text-[#C5B389]">Recargas Pendientes</p>
+              <p className="font-mono-tabular text-2xl font-bold mt-1 text-[#9A7B2C] dark:text-[#F5E199]">
                 {data.recargas.filter((r) => r.estado === 'PENDIENTE').length}
               </p>
             </div>
@@ -592,10 +592,10 @@ export const AdminPanel: React.FC = () => {
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 ${
+              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-all ${
                 tab === t.id
-                  ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37] dark:text-[#0B0E14] dark:border-[#D4AF37]'
-                  : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#A3A9B5]'
+                  ? 'bg-gradient-to-r from-[#B8860B] via-[#D4AF37] to-[#F5E199] text-[#0B0E14] border-[#D4AF37] shadow-md chuspa-google-btn'
+                  : 'border-[#D4AF37]/25 text-[#6A5A2B] dark:text-[#C5B389] hover:border-[#D4AF37]/60'
               }`}
             >
               {t.label}

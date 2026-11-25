@@ -134,13 +134,13 @@ export default function App() {
             })}
           </nav>
 
-          {/* Zona 3: Acciones rápidas SOS + Asistente Digital */}
+          {/* Zona 3: Acciones rápidas SOS + Asistente Boca Digital */}
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={triggerSosModal}
               aria-label="Solicitar emergencia SOS"
-              className="min-h-[40px] px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black tracking-wide whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-sm"
+              className="min-h-[40px] px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-black tracking-wide whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-sm chuspa-google-btn"
             >
               <Siren className="w-3.5 h-3.5 animate-pulse" />
               <span>SOS</span>
@@ -148,7 +148,7 @@ export default function App() {
             <button
               type="button"
               onClick={triggerAssistantSphere}
-              className="min-h-[40px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
+              className="min-h-[40px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity chuspa-google-btn"
             >
               Asistente
             </button>

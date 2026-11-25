@@ -34,54 +34,52 @@ export const GlowingNotificationCardHost: React.FC = () => {
   const isEmergency = current.tone === 'emergency';
   const isWarning = current.tone === 'warning';
 
+  const conicGradient = isEmergency
+    ? 'conic-gradient(from 0deg, #EA4335, #FBBC04, #FF2E63, #4285F4, #EA4335)'
+    : isWarning
+    ? 'conic-gradient(from 0deg, #FBBC04, #4285F4, #EA4335, #34A853, #FBBC04)'
+    : 'conic-gradient(from 0deg, #4285F4, #EA4335, #FBBC04, #34A853, #D4AF37, #4285F4)';
+
+  const blurHalo = isEmergency
+    ? 'linear-gradient(120deg, #EA4335, #FBBC04, #FF2E63)'
+    : isWarning
+    ? 'linear-gradient(120deg, #FBBC04, #4285F4, #EA4335)'
+    : 'linear-gradient(120deg, #4285F4, #EA4335, #FBBC04, #34A853)';
+
   return (
     <div
       role="status"
       aria-live="assertive"
-      className="fixed inset-0 z-[130] flex items-center justify-center p-4 pointer-events-none bg-black/35 backdrop-blur-[2px]"
+      className="fixed inset-0 z-[130] flex items-center justify-center p-4 pointer-events-none bg-black/40 backdrop-blur-[3px]"
     >
-      <div className="pointer-events-auto relative w-full max-w-md rounded-[28px] p-[2.5px] overflow-hidden shadow-[0_0_55px_rgba(99,102,241,0.45)] animate-in fade-in zoom-in-95 duration-200">
-        {/* Borde resplandeciente estilo Google AI Studio con colores llamativos */}
+      <div className="pointer-events-auto relative w-full max-w-md rounded-[28px] p-[3px] overflow-hidden shadow-[0_0_65px_rgba(66,133,244,0.42)] animate-in fade-in zoom-in-95 duration-200">
+        {/* Borde resplandeciente rotatorio con destellos de los 4 colores Google + Luxury Gold */}
         <div
           aria-hidden="true"
-          className="absolute inset-[-150%] chuspa-aistudio-glow"
-          style={{
-            background: isEmergency
-              ? 'conic-gradient(from 0deg, #EF4444, #F97316, #FACC15, #EC4899, #EF4444)'
-              : isWarning
-              ? 'conic-gradient(from 0deg, #F59E0B, #4285F4, #EC4899, #FBBF24, #4285F4, #F59E0B)'
-              : 'conic-gradient(from 0deg, #4285F4, #A855F7, #EC4899, #F59E0B, #10B981, #4285F4)',
-          }}
+          className="absolute inset-[-160%] chuspa-aistudio-glow"
+          style={{ background: conicGradient }}
         />
 
-        {/* Halo externo difuminado */}
+        {/* Halo externo difuminado multi-color */}
         <div
           aria-hidden="true"
-          className="absolute -inset-2 rounded-[32px] opacity-60 blur-xl pointer-events-none"
-          style={{
-            background: isEmergency
-              ? 'linear-gradient(120deg, #EF4444, #F59E0B, #EC4899)'
-              : isWarning
-              ? 'linear-gradient(120deg, #F59E0B, #4285F4, #EC4899)'
-              : 'linear-gradient(120deg, #4285F4, #A855F7, #EC4899, #10B981)',
-          }}
+          className="absolute -inset-3 rounded-[34px] opacity-65 blur-2xl pointer-events-none"
+          style={{ background: blurHalo }}
         />
 
         {/* Tarjeta central interior */}
-        <div className="relative rounded-[26px] bg-[#0B0E14]/98 text-white p-5 sm:p-6 space-y-3 border border-white/10">
+        <div className="relative rounded-[26px] bg-[#090D16]/98 text-white p-5 sm:p-6 space-y-3 border border-white/10">
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <div
-                className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 chuspa-google-border ${
                   isEmergency
-                    ? 'bg-red-500/20 text-red-400 border border-red-500/40'
+                    ? 'bg-[#EA4335]/20 text-red-400'
                     : isWarning
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-400/45'
+                    ? 'bg-[#FBBC04]/20 text-amber-300'
                     : current.tone === 'success'
-                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                    : current.tone === 'ai'
-                    ? 'bg-violet-500/20 text-sky-300 border border-violet-400/40'
-                    : 'bg-sky-500/20 text-sky-300 border border-sky-400/40'
+                    ? 'bg-[#34A853]/20 text-emerald-400'
+                    : 'bg-[#4285F4]/20 text-sky-300'
                 }`}
               >
                 {isEmergency ? (
@@ -97,8 +95,8 @@ export const GlowingNotificationCardHost: React.FC = () => {
                 )}
               </div>
               <div>
-                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-[0.18em] bg-gradient-to-r from-[#60A5FA] via-[#E879F9] to-[#FBBF24] bg-clip-text text-transparent">
-                  <Sparkles className="w-3 h-3 text-[#60A5FA]" />
+                <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-[0.18em] bg-gradient-to-r from-[#4285F4] via-[#FBBC04] to-[#34A853] bg-clip-text text-transparent">
+                  <Sparkles className="w-3 h-3 text-[#FBBC04]" />
                   {current.badge || 'Notificación Instantánea La Chuspa'}
                 </span>
                 <h3 className="text-base sm:text-lg font-bold text-white leading-tight mt-0.5">
@@ -114,7 +112,7 @@ export const GlowingNotificationCardHost: React.FC = () => {
               type="button"
               onClick={() => setQueue((prev) => prev.slice(1))}
               aria-label="Cerrar notificación"
-              className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/15 flex items-center justify-center text-slate-300 shrink-0"
+              className="w-8 h-8 rounded-xl bg-white/8 hover:bg-white/15 flex items-center justify-center text-slate-200 shrink-0 chuspa-google-btn"
             >
               <X className="w-4 h-4" />
             </button>
@@ -126,13 +124,13 @@ export const GlowingNotificationCardHost: React.FC = () => {
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10 text-[11px] text-slate-400">
             <span className="flex items-center gap-1.5 font-mono-tabular text-sky-300">
-              <Timer className="w-3.5 h-3.5" />
+              <Timer className="w-3.5 h-3.5 text-[#34A853]" />
               {(current.responseTimeMs ?? current.responseMs) !== undefined
                 ? `Tiempo real · ${Math.max(12, current.responseTimeMs ?? current.responseMs ?? 12)} ms`
                 : 'Sincronizado al instante'}
             </span>
             {current.meta && (
-              <span className="font-mono-tabular text-[#E5C158] font-semibold">{current.meta}</span>
+              <span className="font-mono-tabular text-[#FBBC04] font-semibold">{current.meta}</span>
             )}
           </div>
 

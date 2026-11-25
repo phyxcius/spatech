@@ -3,13 +3,10 @@ import {
   BadgeCheck,
   CheckCircle2,
   Clock,
-  List,
-  Map as MapIcon,
   Minus,
   Plus,
   ShoppingBasket,
   Sparkles,
-  Star,
   Store,
   Trash2,
 } from 'lucide-react';
@@ -32,6 +29,7 @@ import {
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
+import { MapEdgeCarousel, type EdgeCarouselItem } from './MapEdgeCarousel.tsx';
 
 interface MarketComparatorFlowProps {
   userLat: number;
@@ -64,7 +62,6 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
 }) => {
   const [onlyOpen, setOnlyOpen] = useState(true);
   const [sortBy, setSortBy] = useState<'PRICE' | 'DISTANCE'>('PRICE');
-  const [mobileView, setMobileView] = useState<'MAP' | 'LIST'>('MAP');
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const [addSku, setAddSku] = useState<string>('aceite');
 
@@ -164,6 +161,23 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         isOpen: c.market.abiertoAhora,
       })),
     [comparisons]
+  );
+
+  const carouselItems: EdgeCarouselItem[] = useMemo(
+    () =>
+      comparisons.map((res, idx) => ({
+        id: res.market.id,
+        title: res.market.nombre,
+        subtitle: `${res.market.zona} · ${res.matchedCount}/${requestedItems.length} prod.`,
+        priceText: res.market.abiertoAhora ? fmtSoles(res.totalCentavos) : 'Cerrado',
+        badge: res.market.abiertoAhora ? 'Abierto' : 'Cerrado',
+        etaText: `~${res.etaMin} min · ${res.distanciaKm.toFixed(1)} km`,
+        rating: res.market.calificacion,
+        bestPrice: idx === 0 && res.market.abiertoAhora,
+        closed: !res.market.abiertoAhora || res.totalCentavos === 0,
+        actionLabel: 'Pedir',
+      })),
+    [comparisons, requestedItems.length]
   );
 
   function updateQty(sku: string, delta: number) {
@@ -379,22 +393,6 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
               <option value="PRICE">Ordenar: Menor Precio Total</option>
               <option value="DISTANCE">Ordenar: Más Cercano</option>
             </select>
-
-            <button
-              type="button"
-              onClick={() => setMobileView((v) => (v === 'MAP' ? 'LIST' : 'MAP'))}
-              className="lg:hidden min-h-[38px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold flex items-center gap-1.5"
-            >
-              {mobileView === 'MAP' ? (
-                <>
-                  <List className="w-3.5 h-3.5" /> Lista
-                </>
-              ) : (
-                <>
-                  <MapIcon className="w-3.5 h-3.5" /> Mapa
-                </>
-              )}
-            </button>
           </div>
         </div>
 
@@ -482,30 +480,47 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         </div>
       )}
 
-      {/* Mapa Geolocalizado + Lista Comparativa de Markets Abiertos */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        <div className={`lg:col-span-7 space-y-4 ${mobileView === 'LIST' ? 'hidden lg:block' : ''}`}>
-          <CuscoGeoMap
-            mode="MARKET"
-            userLat={userLat}
-            userLng={userLng}
-            pins={mapPins}
-            selectedPinId={activeResult?.market.id ?? null}
-            onSelectPin={(id) => setSelectedMarketId(id)}
-            onRequestPinAction={(id) => {
+      {/* Mapa grande centrado con Carrusel Vertical Translúcido a la Derecha */}
+      <CuscoGeoMap
+        mode="MARKET"
+        userLat={userLat}
+        userLng={userLng}
+        pins={mapPins}
+        selectedPinId={activeResult?.market.id ?? null}
+        onSelectPin={(id) => setSelectedMarketId(id)}
+        onRequestPinAction={(id) => {
+          const target = comparisons.find((c) => c.market.id === id);
+          if (target && target.market.abiertoAhora && target.totalCentavos > 0) {
+            setSelectedMarketId(id);
+            setCheckoutTarget({ result: target, mode: 'COMPRA' });
+          }
+        }}
+        onRequestGps={onRequestGps}
+        gpsLive={gpsLive}
+        heightClass="h-[64vh] sm:h-[70vh] min-h-[460px]"
+        controlsPosition="left"
+        rightOverlay={
+          <MapEdgeCarousel
+            headerTitle={`Markets (${comparisons.length})`}
+            items={carouselItems}
+            selectedId={activeResult?.market.id ?? null}
+            onSelect={(id) => setSelectedMarketId(id)}
+            onAction={(id) => {
               const target = comparisons.find((c) => c.market.id === id);
               if (target && target.market.abiertoAhora && target.totalCentavos > 0) {
-                setSelectedMarketId(id);
                 setCheckoutTarget({ result: target, mode: 'COMPRA' });
               }
             }}
-            onRequestGps={onRequestGps}
-            gpsLive={gpsLive}
+            accentHex="#34A853"
           />
+        }
+      />
 
-          {/* Detalle del Market Seleccionado en el Mapa */}
+      {/* Detalle del Market Seleccionado + Comparativa Inferior */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        <div className="lg:col-span-7 space-y-4">
           {activeResult && (
-            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 shadow-xl space-y-4">
+            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#0D1322] p-5 shadow-xl space-y-4 chuspa-google-border">
               <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -548,7 +563,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
               </div>
 
               {/* Desglose producto por producto solicitado */}
-              <div className="divide-y divide-black/8 dark:divide-white/8 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14]">
+              <div className="divide-y divide-black/8 dark:divide-white/8 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#080C16]">
                 {activeResult.items.map((item) => (
                   <div
                     key={item.sku}
@@ -579,7 +594,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                   type="button"
                   disabled={!activeResult.market.abiertoAhora || activeResult.totalCentavos === 0}
                   onClick={() => setCheckoutTarget({ result: activeResult, mode: 'COMPRA' })}
-                  className="flex-1 min-h-[46px] px-5 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                  className="flex-1 min-h-[46px] px-5 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 chuspa-google-btn"
                 >
                   <ShoppingBasket className="w-4 h-4" />
                   <span>Comprar Ahora ({fmtSoles(activeResult.totalCentavos)})</span>
@@ -598,12 +613,8 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
           )}
         </div>
 
-        {/* Columna derecha: Ranking comparativo de Markets Abiertos */}
-        <div
-          className={`lg:col-span-5 space-y-3 ${
-            mobileView === 'MAP' ? 'hidden lg:block' : 'block'
-          }`}
-        >
+        {/* Columna derecha: Ranking comparativo completo de Markets Abiertos */}
+        <div className="lg:col-span-5 space-y-3">
           <div className="flex items-center justify-between px-1">
             <h3 className="text-xs font-bold uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
               Comparativa de Precios en Cusco ({comparisons.length})
@@ -618,10 +629,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             return (
               <article
                 key={res.market.id}
-                onClick={() => {
-                  setSelectedMarketId(res.market.id);
-                  setMobileView('MAP');
-                }}
+                onClick={() => setSelectedMarketId(res.market.id)}
                 className={`rounded-3xl border p-4 cursor-pointer transition-all bg-white dark:bg-[#121620] space-y-3 ${
                   selected
                     ? 'border-emerald-500 ring-2 ring-emerald-500/25 shadow-xl'

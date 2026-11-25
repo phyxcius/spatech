@@ -148,6 +148,85 @@ interface ResumenData {
   facturacion_apisperu_activa?: boolean;
 }
 
+const RUBRO_PANEL_THEME: Record<
+  Rubro,
+  {
+    badge: string;
+    cardBg: string;
+    tileBg: string;
+    accentText: string;
+    activeTab: string;
+    primaryBtn: string;
+  }
+> = {
+  TRANSPORTE: {
+    badge: 'Panel Taxista · Cockpit Lima & Asfalto',
+    cardBg:
+      'border-[#84CC16]/45 bg-gradient-to-br from-[#F7FEE7] via-white to-[#ECFDF5] dark:from-[#0A140D] dark:via-[#0B0F12] dark:to-[#0A1812]',
+    tileBg: 'border-[#84CC16]/25 bg-white/80 dark:bg-[#070B09]/90',
+    accentText: 'text-[#4D7C0F] dark:text-[#B6F02B]',
+    activeTab:
+      'bg-[#B6F02B] text-[#0B0E14] border-[#84CC16] shadow-md chuspa-google-btn',
+    primaryBtn:
+      'bg-[#B6F02B] text-[#0B0E14] hover:bg-[#a6e01f] chuspa-google-btn',
+  },
+  FARMACIA: {
+    badge: 'Panel Botica 24h · Esmeralda Clínica',
+    cardBg:
+      'border-emerald-500/45 bg-gradient-to-br from-[#ECFDF5] via-white to-[#ECFEFF] dark:from-[#051B16] dark:via-[#081214] dark:to-[#061C24]',
+    tileBg: 'border-emerald-500/25 bg-white/85 dark:bg-[#061210]/90',
+    accentText: 'text-emerald-700 dark:text-emerald-300',
+    activeTab:
+      'bg-emerald-500 text-[#051612] border-emerald-400 shadow-md chuspa-google-btn',
+    primaryBtn:
+      'bg-gradient-to-r from-emerald-500 to-teal-500 text-white chuspa-google-btn',
+  },
+  RESTAURANTE: {
+    badge: 'Panel Gastronomía · Cobre & Carmesí',
+    cardBg:
+      'border-orange-500/40 bg-gradient-to-br from-[#FFF7ED] via-white to-[#FFF1F2] dark:from-[#1B0D07] dark:via-[#110B0D] dark:to-[#1C0B13]',
+    tileBg: 'border-orange-500/25 bg-white/85 dark:bg-[#140A08]/90',
+    accentText: 'text-orange-700 dark:text-orange-300',
+    activeTab:
+      'bg-gradient-to-r from-orange-500 to-rose-500 text-white border-orange-400 shadow-md chuspa-google-btn',
+    primaryBtn:
+      'bg-gradient-to-r from-orange-500 to-rose-500 text-white chuspa-google-btn',
+  },
+  TURISMO: {
+    badge: 'Panel Turismo VIP · Índigo Cusco',
+    cardBg:
+      'border-indigo-500/40 bg-gradient-to-br from-[#EEF2FF] via-white to-[#F0F9FF] dark:from-[#0B1026] dark:via-[#0B0E16] dark:to-[#0B192C]',
+    tileBg: 'border-indigo-500/25 bg-white/85 dark:bg-[#090D1F]/90',
+    accentText: 'text-indigo-700 dark:text-sky-300',
+    activeTab:
+      'bg-gradient-to-r from-indigo-500 to-sky-500 text-white border-indigo-400 shadow-md chuspa-google-btn',
+    primaryBtn:
+      'bg-gradient-to-r from-indigo-500 to-sky-500 text-white chuspa-google-btn',
+  },
+  HOTEL: {
+    badge: 'Panel Hotelería · Amatista Real',
+    cardBg:
+      'border-purple-500/40 bg-gradient-to-br from-[#FAF5FF] via-white to-[#EEF2FF] dark:from-[#160C26] dark:via-[#0E0B16] dark:to-[#1B0E2E]',
+    tileBg: 'border-purple-500/25 bg-white/85 dark:bg-[#11091F]/90',
+    accentText: 'text-purple-700 dark:text-purple-300',
+    activeTab:
+      'bg-gradient-to-r from-purple-500 to-fuchsia-500 text-white border-purple-400 shadow-md chuspa-google-btn',
+    primaryBtn:
+      'bg-gradient-to-r from-purple-500 to-fuchsia-500 text-white chuspa-google-btn',
+  },
+  CASA_CAMBIO: {
+    badge: 'Panel Mesa de Cambio · Zafiro Perla',
+    cardBg:
+      'border-cyan-500/40 bg-gradient-to-br from-[#F0F9FF] via-white to-[#F0FDFA] dark:from-[#07161F] dark:via-[#091118] dark:to-[#061D1C]',
+    tileBg: 'border-cyan-500/25 bg-white/85 dark:bg-[#071219]/90',
+    accentText: 'text-cyan-700 dark:text-cyan-300',
+    activeTab:
+      'bg-gradient-to-r from-cyan-500 to-emerald-500 text-[#051318] border-cyan-400 shadow-md chuspa-google-btn',
+    primaryBtn:
+      'bg-gradient-to-r from-cyan-500 to-emerald-500 text-[#051318] chuspa-google-btn',
+  },
+};
+
 const DEMO_ACCESS_GUIDE: Array<{ codigo: string; rubro: string; pin: string; nota: string }> = [
   { codigo: 'NEG-TX-01', rubro: 'Transporte VIP', pin: '2468', nota: 'Con saldo y unidades' },
   { codigo: 'NEG-TX-02', rubro: 'Transporte', pin: '1357', nota: 'Saldo S/ 0.00 (prueba 402)' },
@@ -1169,17 +1248,18 @@ export const BusinessPanel: React.FC = () => {
       p.negocio_id === session.negocioId
   );
   const referidosPorMi = pedidos.filter((p) => p.referido_negocio_id === session.negocioId);
+  const roleTheme = RUBRO_PANEL_THEME[session.rubro] || RUBRO_PANEL_THEME.RESTAURANTE;
 
   return (
     <div className="space-y-6 pb-24 md:pb-12">
-      {/* Cabecera financiera del negocio */}
-      <section className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-5">
+      {/* Cabecera financiera del negocio con color temático único por rubro */}
+      <section className={`rounded-3xl border p-6 space-y-5 shadow-2xl chuspa-google-border ${roleTheme.cardBg}`}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <p className="text-xs text-[#9A7B2C] dark:text-[#E5C158] font-medium">
-              {session.codigo} · {RUBRO_LABELS[session.rubro]}
+            <p className={`text-xs uppercase tracking-[0.16em] font-bold ${roleTheme.accentText}`}>
+              {roleTheme.badge} · {session.codigo}
             </p>
-            <h1 className="font-display text-3xl font-semibold">{session.nombre}</h1>
+            <h1 className="font-display text-3xl font-semibold mt-0.5">{session.nombre}</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {resumen && (
@@ -1215,7 +1295,7 @@ export const BusinessPanel: React.FC = () => {
             <button
               type="button"
               onClick={() => setRecargaOpen(true)}
-              className="min-h-[44px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold flex items-center gap-1.5"
+              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold flex items-center gap-1.5 ${roleTheme.primaryBtn}`}
             >
               <Wallet className="w-3.5 h-3.5" />
               <span>Recargar Saldo</span>
@@ -1234,19 +1314,19 @@ export const BusinessPanel: React.FC = () => {
         {/* Strip financiero 3 columnas */}
         {resumen && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-black/8 dark:border-white/8">
-            <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+            <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
               <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Saldo Total</p>
               <p className="font-mono-tabular text-2xl font-semibold mt-1">
                 {formatSoles(resumen.negocio.saldo)}
               </p>
             </div>
-            <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+            <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
               <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Retenido en Curso</p>
               <p className="font-mono-tabular text-2xl font-semibold mt-1 text-[#D97706]">
                 {formatSoles(resumen.negocio.saldo_retenido)}
               </p>
             </div>
-            <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
+            <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
               <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
                 Disponible Libre (Comisión {resumen.regla_comision.porcentaje_plataforma}%)
               </p>
@@ -1276,7 +1356,7 @@ export const BusinessPanel: React.FC = () => {
               onClick={() => setTab(t.id)}
               className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors flex items-center gap-1.5 ${
                 tab === t.id
-                  ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37] dark:text-[#0B0E14] dark:border-[#D4AF37]'
+                  ? roleTheme.activeTab
                   : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#A3A9B5]'
               }`}
             >

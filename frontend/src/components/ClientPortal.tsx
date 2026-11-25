@@ -39,15 +39,18 @@ import {
   formatSoles,
   RUBRO_LABELS,
   type ConciergeOpcion,
+  type DirectorioNegocio,
   type MetodoPago,
   type PedidoPublico,
   type Rubro,
   type SharedCustomerDoc,
 } from '../types.ts';
+import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 import {
   EmergencyDispatchCenter,
   SosActiveModalCard,
 } from './DispatchAndRouteModules.tsx';
+import { MapEdgeCarousel, type EdgeCarouselItem } from './MapEdgeCarousel.tsx';
 import { MarketComparatorFlow } from './MarketComparatorFlow.tsx';
 import {
   BodegaMinimarketModule,
@@ -135,6 +138,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
+  const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
+  const [selectedCatalogKey, setSelectedCatalogKey] = useState<string | null>(null);
   const [requestedMarketItems, setRequestedMarketItems] = useState<RequestedMarketItem[]>(() =>
     parseMarketQuery('leche, atún y arroz')
   );
@@ -289,7 +294,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     onRequestIdentityGate?.();
   }
 
-  // Precarga silenciosa de unidades reales de transporte para el modo Taxi InDrive
+  // Precarga silenciosa de unidades reales y coordenadas de directorio en Cusco
   useEffect(() => {
     apiFetch<{ opciones?: ConciergeOpcion[] }>('/api/public/asistente', {
       method: 'POST',
@@ -301,6 +306,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       },
     })
       .then((res) => setOpciones(Array.isArray(res?.opciones) ? res.opciones : []))
+      .catch(() => {});
+
+    apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio')
+      .then((res) => {
+        if (Array.isArray(res?.negocios)) {
+          setDirectorio(res.negocios);
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -523,6 +536,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       const safeOpciones = Array.isArray(res?.opciones) ? res.opciones : [];
       setActiveCategory(res.categoria || 'RESTAURANTE');
       setOpciones(safeOpciones);
+      if (safeOpciones.length > 0) {
+        const first = safeOpciones[0];
+        setSelectedCatalogKey(`${first.negocio_id}-${first.unidad_id || first.servicio_id || 0}`);
+      } else {
+        setSelectedCatalogKey(null);
+      }
       const ms = Math.max(1, Math.round(performance.now() - t0));
       setLastResponseMs(ms);
       const top = safeOpciones[0];
@@ -899,15 +918,75 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     { label: 'Central SOS', tab: 'DESPACHO', icon: <Siren className="w-4 h-4" /> },
   ];
 
+  const catalogMapEntries = useMemo(() => {
+    const offsets: Array<[number, number]> = [
+      [0.0018, -0.0016],
+      [-0.0021, 0.0024],
+      [0.0028, 0.0019],
+      [-0.0015, -0.0028],
+      [0.0034, -0.0008],
+      [-0.0029, 0.0009],
+    ];
+    return opciones.map((op, idx) => {
+      const key = `${op.negocio_id}-${op.unidad_id || op.servicio_id || idx}`;
+      const biz = directorio.find((d) => d.id === op.negocio_id);
+      const [dLat, dLng] = offsets[idx % offsets.length];
+      const baseLat = biz?.lat ?? coords.lat;
+      const baseLng = biz?.lng ?? coords.lng;
+      const lat = Number((baseLat + (idx === 0 && biz?.lat ? 0 : dLat * 0.45)).toFixed(5));
+      const lng = Number((baseLng + (idx === 0 && biz?.lng ? 0 : dLng * 0.45)).toFixed(5));
+      const priceText =
+        op.tipo === 'DIVISA' && op.tasa_compra
+          ? `S/ ${op.tasa_compra.toFixed(3)}`
+          : formatSoles(op.precio_centavos);
+      return { key, op, lat, lng, priceText };
+    });
+  }, [opciones, directorio, coords.lat, coords.lng]);
+
+  const catalogPins: GeoMapPin[] = useMemo(
+    () =>
+      catalogMapEntries.map((entry, idx) => ({
+        id: entry.key,
+        lat: entry.lat,
+        lng: entry.lng,
+        priceText: entry.priceText,
+        sublabel: entry.op.negocio_nombre,
+        detailTitle: `${entry.op.titulo} · ${entry.op.negocio_nombre}`,
+        tier: entry.op.mejor_precio ? 'cheapest' : idx % 3 === 2 ? 'high' : 'mid',
+        kind: 'BUSINESS',
+        isOpen: true,
+      })),
+    [catalogMapEntries]
+  );
+
+  const catalogCarouselItems: EdgeCarouselItem[] = useMemo(
+    () =>
+      catalogMapEntries.map((entry) => ({
+        id: entry.key,
+        title: entry.op.titulo,
+        subtitle: `${entry.op.negocio_nombre}${entry.op.unidad_medida ? ` · ${entry.op.unidad_medida}` : ''}`,
+        priceText: entry.priceText,
+        badge: RUBRO_LABELS[entry.op.categoria],
+        etaText:
+          entry.op.distancia_km !== undefined
+            ? `${entry.op.eta_min} min · ${entry.op.distancia_km.toFixed(1)} km`
+            : `${entry.op.eta_min} min aprox.`,
+        rating: entry.op.calificacion,
+        bestPrice: Boolean(entry.op.mejor_precio),
+        actionLabel: entry.op.tipo === 'DIVISA' ? 'Cotizar' : 'Solicitar',
+      })),
+    [catalogMapEntries]
+  );
+
   const isCompactSphere = subTab === 'CONCIERGE' && conciergeMode !== 'SPHERE_IDLE';
 
   return (
     <div className="space-y-6 pb-24 md:pb-12">
       {/* ==================================================================== */}
-      {/* CARA HUMANOIDE DIGITAL "LA CHUSPA" (NÚCLEO DEL AGENTE EN TIEMPO REAL) */}
+      {/* BOCA DIGITAL DEL FUTURO "LA CHUSPA" (CONCIERGE ZAFIRO LUXURY)        */}
       {/* ==================================================================== */}
       <section
-        className={`rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#0D1117] transition-all shadow-xl ${
+        className={`rounded-3xl border border-[#4285F4]/25 bg-gradient-to-br from-white via-[#F5F8FF] to-[#EEF4FF] dark:from-[#0A1328] dark:via-[#0B0E14] dark:to-[#0E1930] transition-all shadow-2xl chuspa-google-border ${
           isCompactSphere ? 'p-4 sm:p-5' : 'p-6 sm:p-10'
         }`}
       >
@@ -918,7 +997,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               : 'flex-col items-center text-center gap-6'
           }`}
         >
-          {/* Avatar Humanoide Realista Interactivo */}
+          {/* Boca Digital Futurista con ondas de sonido tipo parlante */}
           <div
             className={`flex items-center gap-5 ${
               isCompactSphere ? 'flex-row' : 'flex-col'
@@ -930,14 +1009,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               speaking={avatarSpeaking}
               mouthLevel={avatarMouthLevel}
               onClick={handleSpherePress}
-              ariaLabel="Tocar asistente humanoide La Chuspa para pedir por voz"
-              title="Haz clic para hablar directamente con el asistente"
+              ariaLabel="Presionar boca digital La Chuspa para activar parlante y voz"
+              title="Presiona la boca digital para activar ondas de parlante y pedir por voz"
             />
 
             <div className={isCompactSphere ? 'text-left' : 'space-y-1.5 max-w-xl'}>
               <div className="flex flex-wrap items-center gap-2 justify-center sm:justify-start">
-                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#E5C158]">
-                  Concierge La Chuspa · Cusco
+                <p className="text-[11px] uppercase tracking-[0.2em] font-bold bg-gradient-to-r from-[#4285F4] via-[#FBBC04] to-[#34A853] bg-clip-text text-transparent">
+                  Panel Cliente Zafiro · Boca Digital La Chuspa
                 </p>
                 {lastResponseMs !== null && (
                   <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD] font-semibold">
@@ -1022,7 +1101,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               <button
                 type="submit"
                 disabled={loading}
-                className="min-h-[46px] px-6 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-bold whitespace-nowrap shrink-0"
+                className="min-h-[46px] px-6 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-bold whitespace-nowrap shrink-0 chuspa-google-btn"
               >
                 {loading ? 'Buscando...' : 'Pedir ahora'}
               </button>
@@ -1283,21 +1362,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       )}
 
       {/* ==================================================================== */}
-      {/* MODO 3: CATÁLOGO CONCIERGE GENERAL (RESTAURANTE, BOTICA, TOUR, ETC.) */}
+      {/* MODO 3: CATÁLOGO + MAPA CENTRADO + CARRUSEL LATERAL DERECHO         */}
       {/* ==================================================================== */}
       {subTab === 'CONCIERGE' && conciergeMode === 'CATALOG' && (
         <section className="space-y-5">
-          <div>
-            <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
-              {RUBRO_LABELS[activeCategory]}
-            </h2>
-            <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
-              Comparador en tiempo real · Prestadores verificados en Cusco
-            </p>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#4285F4] dark:text-[#60A5FA]">
+                Búsqueda Geolocalizada · La Chuspa
+              </p>
+              <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
+                {RUBRO_LABELS[activeCategory]} ({opciones.length} encontrados)
+              </h2>
+              <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
+                Mapa central en Cusco con lista desplazable de negocios encontrados al costado derecho
+              </p>
+            </div>
           </div>
 
           {opciones.length === 0 ? (
-            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center space-y-3">
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#0D1322] p-10 text-center space-y-3 chuspa-google-border">
               <p className="text-sm text-[#6A717E] dark:text-[#98A0AD]">
                 No encontramos disponibilidad para esa búsqueda exacta en este rubro.
               </p>
@@ -1307,85 +1391,141 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   setQuery('');
                   handleSearch('', activeCategory);
                 }}
-                className="min-h-[44px] px-5 rounded-xl border border-[#D4AF37]/50 text-xs font-medium text-[#9A7B2C] dark:text-[#E5C158]"
+                className="min-h-[44px] px-5 rounded-xl border border-[#D4AF37]/50 text-xs font-medium text-[#9A7B2C] dark:text-[#E5C158] chuspa-google-btn"
               >
                 Ver todo el catálogo de {RUBRO_LABELS[activeCategory]}
               </button>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-              {opciones.map((op, idx) => (
-                <article
-                  key={`${op.negocio_id}-${op.unidad_id || op.servicio_id || idx}`}
-                  className={`rounded-2xl border bg-white dark:bg-[#121620] p-6 flex flex-col justify-between gap-5 transition-colors ${
-                    op.mejor_precio
-                      ? 'border-[#D4AF37]/60'
-                      : 'border-black/10 dark:border-white/10'
-                  }`}
-                >
-                  <div className="space-y-2.5">
-                    <div className="flex items-center justify-between gap-2 text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                      <span className="truncate">{op.negocio_nombre}</span>
-                      <span className="font-mono-tabular shrink-0">
-                        ★ {op.calificacion.toFixed(2)}
-                      </span>
-                    </div>
-                    <h3 className="font-display text-2xl font-semibold leading-snug text-[#14171F] dark:text-[#F4F1EA]">
-                      {op.titulo}
-                    </h3>
-                    <p className="text-xs sm:text-sm text-[#555B66] dark:text-[#A3A9B5] leading-relaxed">
-                      {op.descripcion}
-                    </p>
-                    <div className="text-xs text-[#6A717E] dark:text-[#98A0AD] flex flex-wrap items-center gap-2 pt-1">
-                      <span>{op.eta_min} min aprox.</span>
-                      {op.distancia_km !== undefined && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-mono-tabular">{op.distancia_km.toFixed(1)} km</span>
-                        </>
-                      )}
-                      {op.mejor_precio && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="text-[#9A7B2C] dark:text-[#E5C158] font-semibold">
-                            Mejor tarifa
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 pt-4 border-t border-black/8 dark:border-white/8">
-                    <div>
-                      <p className="text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
-                        Tarifa verificada {op.unidad_medida ? `· por ${op.unidad_medida}` : ''}
-                      </p>
-                      <p className="font-mono-tabular text-xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
-                        {op.tipo === 'DIVISA' && op.tasa_compra
-                          ? `S/ ${op.tasa_compra.toFixed(3)}`
-                          : formatSoles(op.precio_centavos)}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (op.tipo === 'DIVISA') {
-                          setSubTab('DIVISAS');
-                        } else {
-                          setSheetError(null);
-                          setSelectedOption(op);
-                          if (!isDocValid) {
-                            notifyDocumentAlertIfNeeded(op.titulo, false);
-                          }
+            <div className="space-y-5">
+              {/* Mapa grande centrado con carrusel derecho de farmacias/restaurantes/negocios encontrados */}
+              <CuscoGeoMap
+                mode="MARKET"
+                userLat={coords.lat}
+                userLng={coords.lng}
+                pins={catalogPins}
+                selectedPinId={selectedCatalogKey ?? catalogMapEntries[0]?.key ?? null}
+                onSelectPin={(id) => setSelectedCatalogKey(id)}
+                onRequestPinAction={(id) => {
+                  const found = catalogMapEntries.find((e) => e.key === id);
+                  if (!found) return;
+                  if (found.op.tipo === 'DIVISA') {
+                    setSubTab('DIVISAS');
+                  } else {
+                    setSheetError(null);
+                    setSelectedOption(found.op);
+                    if (!isDocValid) {
+                      notifyDocumentAlertIfNeeded(found.op.titulo, false);
+                    }
+                  }
+                }}
+                onRequestGps={requestGps}
+                gpsLive={gpsStatus === 'live'}
+                heightClass="h-[64vh] sm:h-[70vh] min-h-[460px]"
+                controlsPosition="left"
+                rightOverlay={
+                  <MapEdgeCarousel
+                    headerTitle={`${RUBRO_LABELS[activeCategory]} (${opciones.length})`}
+                    items={catalogCarouselItems}
+                    selectedId={selectedCatalogKey ?? catalogMapEntries[0]?.key ?? null}
+                    onSelect={(id) => setSelectedCatalogKey(id)}
+                    onAction={(id) => {
+                      const found = catalogMapEntries.find((e) => e.key === id);
+                      if (!found) return;
+                      if (found.op.tipo === 'DIVISA') {
+                        setSubTab('DIVISAS');
+                      } else {
+                        setSheetError(null);
+                        setSelectedOption(found.op);
+                        if (!isDocValid) {
+                          notifyDocumentAlertIfNeeded(found.op.titulo, false);
                         }
-                      }}
-                      className="min-h-[44px] px-5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity"
+                      }
+                    }}
+                    accentHex="#4285F4"
+                  />
+                }
+              />
+
+              {/* Tarjetas completas debajo para detalle extendido */}
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                {catalogMapEntries.map((entry) => {
+                  const op = entry.op;
+                  const isHighlighted = entry.key === selectedCatalogKey;
+                  return (
+                    <article
+                      key={entry.key}
+                      onClick={() => setSelectedCatalogKey(entry.key)}
+                      className={`rounded-2xl border bg-white dark:bg-[#0D1322] p-6 flex flex-col justify-between gap-5 transition-all cursor-pointer ${
+                        isHighlighted
+                          ? 'border-[#4285F4] ring-2 ring-[#4285F4]/35 shadow-xl'
+                          : op.mejor_precio
+                          ? 'border-[#D4AF37]/60'
+                          : 'border-black/10 dark:border-white/10'
+                      }`}
                     >
-                      {op.tipo === 'DIVISA' ? 'Cotizar' : 'Solicitar'}
-                    </button>
-                  </div>
-                </article>
-              ))}
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between gap-2 text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                          <span className="truncate">{op.negocio_nombre}</span>
+                          <span className="font-mono-tabular shrink-0">
+                            ★ {op.calificacion.toFixed(2)}
+                          </span>
+                        </div>
+                        <h3 className="font-display text-2xl font-semibold leading-snug text-[#14171F] dark:text-[#F4F1EA]">
+                          {op.titulo}
+                        </h3>
+                        <p className="text-xs sm:text-sm text-[#555B66] dark:text-[#A3A9B5] leading-relaxed">
+                          {op.descripcion}
+                        </p>
+                        <div className="text-xs text-[#6A717E] dark:text-[#98A0AD] flex flex-wrap items-center gap-2 pt-1">
+                          <span>{op.eta_min} min aprox.</span>
+                          {op.distancia_km !== undefined && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="font-mono-tabular">{op.distancia_km.toFixed(1)} km</span>
+                            </>
+                          )}
+                          {op.mejor_precio && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-[#34A853] font-semibold">Mejor tarifa</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-4 pt-4 border-t border-black/8 dark:border-white/8">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
+                            Tarifa verificada {op.unidad_medida ? `· por ${op.unidad_medida}` : ''}
+                          </p>
+                          <p className="font-mono-tabular text-xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
+                            {entry.priceText}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (op.tipo === 'DIVISA') {
+                              setSubTab('DIVISAS');
+                            } else {
+                              setSheetError(null);
+                              setSelectedOption(op);
+                              if (!isDocValid) {
+                                notifyDocumentAlertIfNeeded(op.titulo, false);
+                              }
+                            }
+                          }}
+                          className="min-h-[44px] px-5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity chuspa-google-btn"
+                        >
+                          {op.tipo === 'DIVISA' ? 'Cotizar' : 'Solicitar'}
+                        </button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>
