@@ -6,6 +6,7 @@ import {
   Globe2,
   Shield,
   ShieldCheck,
+  Siren,
   UserCheck,
   X,
 } from 'lucide-react';
@@ -23,7 +24,7 @@ interface IdentityGateOverlayProps {
   canClose?: boolean;
   onClose?: () => void;
   onVerified: (doc: SharedCustomerDoc) => void;
-  onSwitchView?: (view: 'NEGOCIO' | 'ADMIN') => void;
+  onSwitchView?: (view: 'NEGOCIO' | 'CENTRAL_SOS' | 'ADMIN') => void;
 }
 
 type DocTab = 'DNI' | 'RUC' | 'EXTRANJERO';
@@ -297,9 +298,11 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
         </form>
 
         {onSwitchView && (
-          <div className="pt-4 border-t border-black/10 dark:border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-[#6A717E] dark:text-[#98A0AD]">¿Eres socio conductor o empresa?</span>
-            <div className="flex items-center gap-2">
+          <div className="pt-4 border-t border-black/10 dark:border-white/10 space-y-2.5 text-xs">
+            <span className="block text-[#6A717E] dark:text-[#98A0AD]">
+              ¿Eres socio conductor, empresa o central de emergencias?
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => onSwitchView('NEGOCIO')}
@@ -307,6 +310,14 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
               >
                 <Briefcase className="w-3.5 h-3.5 text-[#D4AF37]" />
                 <span>Panel Negocio / Taxi</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onSwitchView('CENTRAL_SOS')}
+                className="min-h-[38px] px-3 rounded-xl border border-rose-500/45 bg-rose-500/10 text-rose-600 dark:text-rose-300 hover:bg-rose-500/20 font-semibold inline-flex items-center gap-1.5"
+              >
+                <Siren className="w-3.5 h-3.5 text-rose-500" />
+                <span>Central Emergencias (PNP / Bomberos / SAMU / Serenazgo)</span>
               </button>
               <button
                 type="button"
