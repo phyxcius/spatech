@@ -1750,7 +1750,7 @@ export async function handleFirebaseRtdbRequest<T>(
   }
 
   const bizMatch = cleanPath.match(
-    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|reservas-referidas|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|rechazar|entregar|cancelar|contraoferta|emitir-sunat))$/
+    /^\/api\/negocio\/(\d+)\/(resumen|estado|configuracion|pin|pedidos|guias-disponibles|reservas-referidas|servicios|servicios\/\d+|unidades|unidades\/\d+|divisas|divisas\/\d+|recargas|pedidos\/(\d+)\/(aceptar|rechazar|validar-pin|etapa|finalizar-viaje|entregar|cancelar|contraoferta|emitir-sunat))$/
   );
   if (bizMatch) {
     const bizId = Number(bizMatch[1]);
@@ -2075,6 +2075,7 @@ export async function handleFirebaseRtdbRequest<T>(
         await rtdbFetch(`negocios/${biz.codigo}/saldo_retenido`, 'PUT', biz.saldo_retenido + retencion);
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
           estado: 'CONFIRMADO_PREPARACION',
+          viaje_etapa: match.categoria === 'TRANSPORTE' ? 'HACIA_PASAJERO' : match.viaje_etapa || null,
           comision_retenida_centavos: retencion,
         });
         return { ok: true } as T;
@@ -2086,6 +2087,108 @@ export async function handleFirebaseRtdbRequest<T>(
           comision_retenida_centavos: 0,
         });
         return { ok: true } as T;
+      }
+
+      if (action === 'validar-pin' && method === 'POST') {
+        if (match.pin_bloqueado) throw new Error('Pedido bloqueado por intentos fallidos de PIN.');
+        if (match.estado !== 'CONFIRMADO_PREPARACION') {
+          throw new Error('El viaje debe estar en curso para validar PIN.');
+        }
+        if (match.pin_validado !== 1) {
+          const hashedAttempt = await hashPinBrowser(String(payload.pin || '').trim(), match.pin_salt);
+          if (hashedAttempt.hash !== match.pin_hash) {
+            const nextAttempts = (match.intentos_pin || 0) + 1;
+            await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
+              intentos_pin: nextAttempts,
+              pin_bloqueado: nextAttempts >= 5 ? 1 : 0,
+            });
+            throw new Error(nextAttempts >= 5 ? 'Bloqueado tras 5 intentos fallidos.' : 'PIN incorrecto.');
+          }
+        }
+        const nowIso = new Date().toISOString();
+        const patch = {
+          pin_validado: 1,
+          pin_validado_at: match.pin_validado_at || nowIso,
+          viaje_etapa: 'EN_RUTA_DESTINO' as const,
+        };
+        await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', patch);
+        return {
+          ok: true,
+          pedido: { ...match, ...patch },
+        } as T;
+      }
+
+      if (action === 'etapa' && method === 'PATCH') {
+        if (match.estado !== 'CONFIRMADO_PREPARACION') {
+          throw new Error('El viaje no está activo.');
+        }
+        if (match.pin_validado !== 1) {
+          throw new Error('Valida primero el PIN de 4 dígitos del pasajero.');
+        }
+        const etapa = String(payload.etapa || 'EN_RUTA_DESTINO') as 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO';
+        await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', { viaje_etapa: etapa });
+        return {
+          ok: true,
+          pedido: { ...match, viaje_etapa: etapa },
+        } as T;
+      }
+
+      if (action === 'finalizar-viaje' && method === 'POST') {
+        if (match.pin_bloqueado) throw new Error('Pedido bloqueado por intentos fallidos de PIN.');
+        if (match.estado !== 'CONFIRMADO_PREPARACION') {
+          throw new Error('El viaje no está en curso.');
+        }
+        if (match.pin_validado !== 1) {
+          const cleanPin = String(payload.pin || '').trim();
+          if (!/^\d{4}$/.test(cleanPin)) {
+            throw new Error('Debes validar primero el PIN de 4 dígitos del pasajero antes de finalizar el viaje.');
+          }
+          const hashedAttempt = await hashPinBrowser(cleanPin, match.pin_salt);
+          if (hashedAttempt.hash !== match.pin_hash) {
+            const nextAttempts = (match.intentos_pin || 0) + 1;
+            await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
+              intentos_pin: nextAttempts,
+              pin_bloqueado: nextAttempts >= 5 ? 1 : 0,
+            });
+            throw new Error(nextAttempts >= 5 ? 'Bloqueado tras 5 intentos fallidos.' : 'PIN incorrecto.');
+          }
+        }
+        const ret = match.comision_retenida_centavos || 0;
+        const nuevoSaldo = Math.max(0, biz.saldo - ret);
+        await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', {
+          saldo: nuevoSaldo,
+          saldo_retenido: Math.max(0, biz.saldo_retenido - ret),
+        });
+        if (ret > 0) {
+          const movId = Date.now();
+          await rtdbFetch(`movimientos/${movId}`, 'PUT', {
+            id: movId,
+            cuenta_tipo: 'NEGOCIO',
+            negocio_id: biz.id,
+            negocio_nombre: biz.nombre,
+            tipo: 'COBRO_COMISION',
+            monto_centavos: -ret,
+            retenido_delta_centavos: -ret,
+            saldo_posterior_centavos: nuevoSaldo,
+            referencia: match.codigo,
+            motivo: 'Liquidación automática al finalizar viaje en Destino B',
+            created_at: new Date().toISOString(),
+          });
+        }
+        const patch = {
+          estado: 'ENTREGADO_PAGADO' as const,
+          pin_validado: 1,
+          pin_validado_at: match.pin_validado_at || new Date().toISOString(),
+          viaje_etapa: 'FINALIZADO' as const,
+          comision_retenida_centavos: 0,
+        };
+        await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', patch);
+        return {
+          ok: true,
+          puntos_otorgados: 50,
+          pedido: { ...match, ...patch },
+          comprobante: null,
+        } as T;
       }
 
       if (action === 'entregar' && method === 'POST') {

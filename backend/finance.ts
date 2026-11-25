@@ -242,6 +242,7 @@ export function aceptarPedido(db: DatabaseSync, pedidoId: number, negocioId: num
     db.prepare(`
       UPDATE pedidos_ordenes
       SET estado = 'CONFIRMADO_PREPARACION',
+          viaje_etapa = CASE WHEN categoria = 'TRANSPORTE' THEN 'HACIA_PASAJERO' ELSE viaje_etapa END,
           comision_plataforma_centavos = ?,
           comision_referido_centavos = ?,
           comision_retenida_centavos = ?,
@@ -267,6 +268,334 @@ export function aceptarPedido(db: DatabaseSync, pedidoId: number, negocioId: num
   });
 }
 
+function assertActorPuedeValidarPedido(pedido: PedidoRow, actorNegocioId: number) {
+  if (pedido.referido_negocio_id) {
+    if (actorNegocioId === pedido.negocio_id) {
+      throw new HttpError(
+        403,
+        'En una reserva referida solo el negocio que refirió puede validar el PIN'
+      );
+    }
+    if (actorNegocioId !== pedido.referido_negocio_id) {
+      throw new HttpError(403, 'No tienes permiso para validar este pedido referido');
+    }
+  } else if (actorNegocioId !== pedido.negocio_id) {
+    throw new HttpError(403, 'Este pedido pertenece a otro negocio');
+  }
+}
+
+function liquidarYCompletarPedidoTx(db: DatabaseSync, pedido: PedidoRow) {
+  const prestador = db.prepare('SELECT * FROM negocios WHERE id = ?').get(pedido.negocio_id) as unknown as NegocioRow;
+  const totalComision = pedido.comision_retenida_centavos;
+  const comPlat = pedido.comision_plataforma_centavos;
+  const comRef = pedido.comision_referido_centavos;
+
+  let saldoPrestador = prestador.saldo;
+  let retenidoPrestador = prestador.saldo_retenido;
+
+  if (totalComision > 0) {
+    retenidoPrestador = prestador.saldo_retenido - totalComision;
+    if (retenidoPrestador < 0) {
+      throw new HttpError(409, 'Inconsistencia en saldo retenido');
+    }
+    db.prepare(`
+      INSERT INTO ledger_movimientos
+      (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
+      VALUES ('NEGOCIO', ?, 'LIBERACION', 0, ?, ?, ?, ?, 'Liberación de retención al completar servicio')
+    `).run(prestador.id, -totalComision, saldoPrestador, retenidoPrestador, pedido.codigo);
+
+    saldoPrestador = saldoPrestador - totalComision;
+    if (saldoPrestador < retenidoPrestador) {
+      throw new HttpError(409, 'Saldo insuficiente para liquidar comisión');
+    }
+
+    db.prepare(`
+      INSERT INTO ledger_movimientos
+      (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
+      VALUES ('NEGOCIO', ?, 'COMISION', ?, 0, ?, ?, ?, 'Cobro de comisión por servicio concretado')
+    `).run(prestador.id, -totalComision, saldoPrestador, retenidoPrestador, pedido.codigo);
+
+    db.prepare('UPDATE negocios SET saldo = ?, saldo_retenido = ? WHERE id = ?').run(
+      saldoPrestador,
+      retenidoPrestador,
+      prestador.id
+    );
+  }
+
+  if (pedido.referido_negocio_id && comRef > 0) {
+    const referidor = db
+      .prepare('SELECT * FROM negocios WHERE id = ?')
+      .get(pedido.referido_negocio_id) as unknown as NegocioRow;
+    const nuevoSaldoRef = referidor.saldo + comRef;
+    db.prepare('UPDATE negocios SET saldo = ? WHERE id = ?').run(nuevoSaldoRef, referidor.id);
+    db.prepare(`
+      INSERT INTO ledger_movimientos
+      (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
+      VALUES ('NEGOCIO', ?, 'CREDITO_REFERIDO', ?, 0, ?, ?, ?, 'Crédito interno por reserva referida')
+    `).run(referidor.id, comRef, nuevoSaldoRef, referidor.saldo_retenido, pedido.codigo);
+  }
+
+  if (comPlat > 0) {
+    const platRow = db
+      .prepare(
+        "SELECT COALESCE(SUM(monto_centavos), 0) AS total FROM ledger_movimientos WHERE cuenta_tipo = 'PLATAFORMA'"
+      )
+      .get() as { total: number };
+    const nuevoTotalPlat = platRow.total + comPlat;
+    db.prepare(`
+      INSERT INTO ledger_movimientos
+      (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
+      VALUES ('PLATAFORMA', NULL, 'INGRESO_PLATAFORMA', ?, 0, ?, 0, ?, 'Ingreso neto La Chuspa')
+    `).run(comPlat, nuevoTotalPlat, pedido.codigo);
+  }
+
+  if (pedido.promotor_codigo) {
+    const partner = db
+      .prepare('SELECT * FROM partners_afiliados WHERE codigo = ? AND activo = 1')
+      .get(pedido.promotor_codigo) as
+      | { id: number; porcentaje_comision: number }
+      | undefined;
+    if (partner && comPlat > 0) {
+      const bonoPartner = Math.round((comPlat * partner.porcentaje_comision) / 100);
+      if (bonoPartner > 0) {
+        db.prepare(
+          'INSERT INTO partner_comisiones (partner_id, pedido_id, monto_centavos) VALUES (?, ?, ?)'
+        ).run(partner.id, pedido.id, bonoPartner);
+      }
+    }
+  }
+
+  const puntosGanados = Math.max(1, Math.round((pedido.monto_centavos / 100) * 0.15));
+  db.prepare(`
+    INSERT INTO usuarios_clientes (telefono, nombre, puntos)
+    VALUES (?, ?, ?)
+    ON CONFLICT(telefono) DO UPDATE SET
+      nombre = excluded.nombre,
+      puntos = usuarios_clientes.puntos + excluded.puntos
+  `).run(pedido.cliente_telefono, pedido.cliente_nombre, puntosGanados);
+  db.prepare(
+    'INSERT INTO historial_puntos (telefono, pedido_codigo, puntos) VALUES (?, ?, ?)'
+  ).run(pedido.cliente_telefono, pedido.codigo, puntosGanados);
+
+  const isTaxi = pedido.categoria === 'TRANSPORTE';
+  const compTipo = isTaxi
+    ? null
+    : pedido.cliente_documento_tipo === 'RUC'
+      ? 'FACTURA'
+      : 'BOLETA';
+  const compSerie = compTipo ? (compTipo === 'FACTURA' ? 'F001' : 'B001') : null;
+  const compNum = compTipo ? String(pedido.id).padStart(8, '0') : null;
+  const sunatEstado = compTipo ? 'REPRESENTACION_IMPRESA' : null;
+
+  db.prepare(`
+    UPDATE pedidos_ordenes
+    SET estado = 'ENTREGADO_PAGADO',
+        pin_validado = 1,
+        pin_validado_at = COALESCE(pin_validado_at, datetime('now')),
+        viaje_etapa = CASE WHEN categoria = 'TRANSPORTE' THEN 'FINALIZADO' ELSE viaje_etapa END,
+        comprobante_tipo = ?,
+        comprobante_serie = ?,
+        comprobante_numero = ?,
+        comprobante_emitido_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE NULL END,
+        comprobante_sunat_estado = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(compTipo, compSerie, compNum, compTipo, sunatEstado, pedido.id);
+
+  if (pedido.unidad_id) {
+    db.prepare("UPDATE unidades_conductores SET estado = 'DISPONIBLE' WHERE id = ?").run(
+      pedido.unidad_id
+    );
+  }
+
+  logWhatsAppNotification(
+    db,
+    pedido.cliente_telefono,
+    'pedido_listo',
+    pedido.codigo,
+    isTaxi
+      ? `Viaje ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa.`
+      : `Servicio ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa. Comprobante ${compTipo} ${compSerie}-${compNum} listo para imprimir.`
+  );
+
+  return {
+    pedido: db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedido.id) as unknown as PedidoRow,
+    puntosGanados,
+  };
+}
+
+export function validarSoloPin(
+  db: DatabaseSync,
+  pedidoId: number,
+  actorNegocioId: number,
+  pinIngresado: string
+) {
+  const cleanPin = (pinIngresado || '').trim();
+  if (!/^\d{4}$/.test(cleanPin)) {
+    throw new HttpError(400, 'El PIN de validación debe tener 4 dígitos');
+  }
+
+  let lockExceeded = false;
+  let remainingAttempts = 0;
+
+  const result = runInTransaction(db, () => {
+    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
+      | PedidoRow
+      | undefined;
+    if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
+
+    assertActorPuedeValidarPedido(pedido, actorNegocioId);
+
+    if (pedido.estado !== 'CONFIRMADO_PREPARACION') {
+      throw new HttpError(409, `El viaje debe estar en curso para validar PIN (estado: ${pedido.estado})`);
+    }
+    if (pedido.pin_bloqueado === 1 || pedido.intentos_pin >= 5) {
+      throw new HttpError(423, 'PIN bloqueado por demasiados intentos fallidos. Solo puede cancelarse.');
+    }
+
+    if (pedido.pin_validado === 1) {
+      return pedido;
+    }
+
+    const ok = verifyPin(cleanPin, pedido.pin_hash, pedido.pin_salt);
+    if (!ok) {
+      const nuevosIntentos = pedido.intentos_pin + 1;
+      const bloqueado = nuevosIntentos >= 5 ? 1 : 0;
+      db.prepare(`
+        UPDATE pedidos_ordenes
+        SET intentos_pin = ?, pin_bloqueado = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).run(nuevosIntentos, bloqueado, pedido.id);
+
+      lockExceeded = bloqueado === 1;
+      remainingAttempts = Math.max(0, 5 - nuevosIntentos);
+      return null;
+    }
+
+    db.prepare(`
+      UPDATE pedidos_ordenes
+      SET pin_validado = 1,
+          pin_validado_at = datetime('now'),
+          viaje_etapa = 'EN_RUTA_DESTINO',
+          updated_at = datetime('now')
+      WHERE id = ?
+    `).run(pedido.id);
+
+    logWhatsAppNotification(
+      db,
+      pedido.cliente_telefono,
+      'pasajero_abordo',
+      pedido.codigo,
+      `PIN verificado para el traslado ${pedido.codigo}. Viaje iniciado rumbo a ${pedido.destino_texto || 'tu destino'}.`
+    );
+
+    return db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedido.id) as unknown as PedidoRow;
+  });
+
+  if (result === null) {
+    if (lockExceeded) {
+      throw new HttpError(423, 'PIN bloqueado tras 5 intentos fallidos. El viaje solo puede cancelarse.');
+    }
+    throw new HttpError(400, `PIN incorrecto. Intentos restantes: ${remainingAttempts}`);
+  }
+
+  return { pedido: result };
+}
+
+export function actualizarEtapaViaje(
+  db: DatabaseSync,
+  pedidoId: number,
+  actorNegocioId: number,
+  etapa: 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO'
+) {
+  return runInTransaction(db, () => {
+    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
+      | PedidoRow
+      | undefined;
+    if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
+    assertActorPuedeValidarPedido(pedido, actorNegocioId);
+    if (pedido.estado !== 'CONFIRMADO_PREPARACION') {
+      throw new HttpError(409, 'El viaje no está activo');
+    }
+    if (pedido.pin_validado !== 1) {
+      throw new HttpError(409, 'Valida primero el PIN de 4 dígitos del pasajero');
+    }
+    db.prepare(`
+      UPDATE pedidos_ordenes
+      SET viaje_etapa = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(etapa, pedido.id);
+
+    if (etapa === 'LLEGADO_DESTINO') {
+      logWhatsAppNotification(
+        db,
+        pedido.cliente_telefono,
+        'llegada_destino',
+        pedido.codigo,
+        `¡Has llegado a tu destino (${pedido.destino_texto || 'Cusco'})! Código ${pedido.codigo}.`
+      );
+    }
+
+    return db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedido.id) as unknown as PedidoRow;
+  });
+}
+
+export function finalizarViajeConfirmado(
+  db: DatabaseSync,
+  pedidoId: number,
+  actorNegocioId: number,
+  pinOpcional?: string
+) {
+  let lockExceeded = false;
+  let remainingAttempts = 0;
+
+  const result = runInTransaction(db, () => {
+    const pedido = db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedidoId) as unknown as
+      | PedidoRow
+      | undefined;
+    if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
+    assertActorPuedeValidarPedido(pedido, actorNegocioId);
+
+    if (pedido.estado !== 'CONFIRMADO_PREPARACION') {
+      throw new HttpError(409, `El viaje debe estar en curso para finalizar (estado: ${pedido.estado})`);
+    }
+    if (pedido.pin_bloqueado === 1 || pedido.intentos_pin >= 5) {
+      throw new HttpError(423, 'PIN bloqueado por demasiados intentos fallidos. Solo puede cancelarse.');
+    }
+
+    if (pedido.pin_validado !== 1) {
+      const cleanPin = (pinOpcional || '').trim();
+      if (!/^\d{4}$/.test(cleanPin)) {
+        throw new HttpError(409, 'Debes validar primero el PIN de 4 dígitos del pasajero antes de finalizar el viaje.');
+      }
+      const ok = verifyPin(cleanPin, pedido.pin_hash, pedido.pin_salt);
+      if (!ok) {
+        const nuevosIntentos = pedido.intentos_pin + 1;
+        const bloqueado = nuevosIntentos >= 5 ? 1 : 0;
+        db.prepare(`
+          UPDATE pedidos_ordenes
+          SET intentos_pin = ?, pin_bloqueado = ?, updated_at = datetime('now')
+          WHERE id = ?
+        `).run(nuevosIntentos, bloqueado, pedido.id);
+        lockExceeded = bloqueado === 1;
+        remainingAttempts = Math.max(0, 5 - nuevosIntentos);
+        return null;
+      }
+    }
+
+    return liquidarYCompletarPedidoTx(db, pedido);
+  });
+
+  if (result === null) {
+    if (lockExceeded) {
+      throw new HttpError(423, 'PIN bloqueado tras 5 intentos fallidos. El pedido solo puede cancelarse.');
+    }
+    throw new HttpError(400, `PIN incorrecto. Intentos restantes: ${remainingAttempts}`);
+  }
+
+  return result;
+}
+
 export function validarPinYEntregar(
   db: DatabaseSync,
   pedidoId: number,
@@ -287,20 +616,7 @@ export function validarPinYEntregar(
       | undefined;
     if (!pedido) throw new HttpError(404, 'Pedido no encontrado');
 
-    // Regla general: quien valida es el referidor si existe, y si no, el prestador.
-    if (pedido.referido_negocio_id) {
-      if (actorNegocioId === pedido.negocio_id) {
-        throw new HttpError(
-          403,
-          'En una reserva referida solo el negocio que refirió puede validar el PIN'
-        );
-      }
-      if (actorNegocioId !== pedido.referido_negocio_id) {
-        throw new HttpError(403, 'No tienes permiso para validar este pedido referido');
-      }
-    } else if (actorNegocioId !== pedido.negocio_id) {
-      throw new HttpError(403, 'Este pedido pertenece a otro negocio');
-    }
+    assertActorPuedeValidarPedido(pedido, actorNegocioId);
 
     if (pedido.estado !== 'CONFIRMADO_PREPARACION') {
       throw new HttpError(409, `El pedido debe estar en curso para validar PIN (estado: ${pedido.estado})`);
@@ -324,143 +640,7 @@ export function validarPinYEntregar(
       return null;
     }
 
-    // PIN correcto: liberar retención + cobrar comisión al prestador + acreditar referidor + registrar ingreso plataforma
-    const prestador = db.prepare('SELECT * FROM negocios WHERE id = ?').get(pedido.negocio_id) as unknown as NegocioRow;
-    const totalComision = pedido.comision_retenida_centavos;
-    const comPlat = pedido.comision_plataforma_centavos;
-    const comRef = pedido.comision_referido_centavos;
-
-    let saldoPrestador = prestador.saldo;
-    let retenidoPrestador = prestador.saldo_retenido;
-
-    if (totalComision > 0) {
-      retenidoPrestador = prestador.saldo_retenido - totalComision;
-      if (retenidoPrestador < 0) {
-        throw new HttpError(409, 'Inconsistencia en saldo retenido');
-      }
-      db.prepare(`
-        INSERT INTO ledger_movimientos
-        (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
-        VALUES ('NEGOCIO', ?, 'LIBERACION', 0, ?, ?, ?, ?, 'Liberación de retención al completar servicio')
-      `).run(prestador.id, -totalComision, saldoPrestador, retenidoPrestador, pedido.codigo);
-
-      saldoPrestador = saldoPrestador - totalComision;
-      if (saldoPrestador < retenidoPrestador) {
-        throw new HttpError(409, 'Saldo insuficiente para liquidar comisión');
-      }
-
-      db.prepare(`
-        INSERT INTO ledger_movimientos
-        (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
-        VALUES ('NEGOCIO', ?, 'COMISION', ?, 0, ?, ?, ?, 'Cobro de comisión por servicio concretado')
-      `).run(prestador.id, -totalComision, saldoPrestador, retenidoPrestador, pedido.codigo);
-
-      db.prepare('UPDATE negocios SET saldo = ?, saldo_retenido = ? WHERE id = ?').run(
-        saldoPrestador,
-        retenidoPrestador,
-        prestador.id
-      );
-    }
-
-    if (pedido.referido_negocio_id && comRef > 0) {
-      const referidor = db
-        .prepare('SELECT * FROM negocios WHERE id = ?')
-        .get(pedido.referido_negocio_id) as unknown as NegocioRow;
-      const nuevoSaldoRef = referidor.saldo + comRef;
-      db.prepare('UPDATE negocios SET saldo = ? WHERE id = ?').run(nuevoSaldoRef, referidor.id);
-      db.prepare(`
-        INSERT INTO ledger_movimientos
-        (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
-        VALUES ('NEGOCIO', ?, 'CREDITO_REFERIDO', ?, 0, ?, ?, ?, 'Crédito interno por reserva referida')
-      `).run(referidor.id, comRef, nuevoSaldoRef, referidor.saldo_retenido, pedido.codigo);
-    }
-
-    if (comPlat > 0) {
-      const platRow = db
-        .prepare(
-          "SELECT COALESCE(SUM(monto_centavos), 0) AS total FROM ledger_movimientos WHERE cuenta_tipo = 'PLATAFORMA'"
-        )
-        .get() as { total: number };
-      const nuevoTotalPlat = platRow.total + comPlat;
-      db.prepare(`
-        INSERT INTO ledger_movimientos
-        (cuenta_tipo, negocio_id, tipo, monto_centavos, retenido_delta_centavos, saldo_posterior_centavos, retenido_posterior_centavos, referencia, motivo)
-        VALUES ('PLATAFORMA', NULL, 'INGRESO_PLATAFORMA', ?, 0, ?, 0, ?, 'Ingreso neto La Chuspa')
-      `).run(comPlat, nuevoTotalPlat, pedido.codigo);
-    }
-
-    // Comisión de promotor / partner (si aplica)
-    if (pedido.promotor_codigo) {
-      const partner = db
-        .prepare('SELECT * FROM partners_afiliados WHERE codigo = ? AND activo = 1')
-        .get(pedido.promotor_codigo) as
-        | { id: number; porcentaje_comision: number }
-        | undefined;
-      if (partner && comPlat > 0) {
-        const bonoPartner = Math.round((comPlat * partner.porcentaje_comision) / 100);
-        if (bonoPartner > 0) {
-          db.prepare(
-            'INSERT INTO partner_comisiones (partner_id, pedido_id, monto_centavos) VALUES (?, ?, ?)'
-          ).run(partner.id, pedido.id, bonoPartner);
-        }
-      }
-    }
-
-    // Puntos de fidelización: 15% del monto en S/, mínimo 1
-    const puntosGanados = Math.max(1, Math.round((pedido.monto_centavos / 100) * 0.15));
-    db.prepare(`
-      INSERT INTO usuarios_clientes (telefono, nombre, puntos)
-      VALUES (?, ?, ?)
-      ON CONFLICT(telefono) DO UPDATE SET
-        nombre = excluded.nombre,
-        puntos = usuarios_clientes.puntos + excluded.puntos
-    `).run(pedido.cliente_telefono, pedido.cliente_nombre, puntosGanados);
-    db.prepare(
-      'INSERT INTO historial_puntos (telefono, pedido_codigo, puntos) VALUES (?, ?, ?)'
-    ).run(pedido.cliente_telefono, pedido.codigo, puntosGanados);
-
-    const isTaxi = pedido.categoria === 'TRANSPORTE';
-    const compTipo = isTaxi
-      ? null
-      : pedido.cliente_documento_tipo === 'RUC'
-        ? 'FACTURA'
-        : 'BOLETA';
-    const compSerie = compTipo ? (compTipo === 'FACTURA' ? 'F001' : 'B001') : null;
-    const compNum = compTipo ? String(pedido.id).padStart(8, '0') : null;
-    const sunatEstado = compTipo ? 'REPRESENTACION_IMPRESA' : null;
-
-    db.prepare(`
-      UPDATE pedidos_ordenes
-      SET estado = 'ENTREGADO_PAGADO',
-          comprobante_tipo = ?,
-          comprobante_serie = ?,
-          comprobante_numero = ?,
-          comprobante_emitido_at = CASE WHEN ? IS NOT NULL THEN datetime('now') ELSE NULL END,
-          comprobante_sunat_estado = ?,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(compTipo, compSerie, compNum, compTipo, sunatEstado, pedido.id);
-
-    if (pedido.unidad_id) {
-      db.prepare("UPDATE unidades_conductores SET estado = 'DISPONIBLE' WHERE id = ?").run(
-        pedido.unidad_id
-      );
-    }
-
-    logWhatsAppNotification(
-      db,
-      pedido.cliente_telefono,
-      'pedido_listo',
-      pedido.codigo,
-      isTaxi
-        ? `Viaje ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa.`
-        : `Servicio ${pedido.codigo} completado con éxito. Ganaste ${puntosGanados} puntos La Chuspa. Comprobante ${compTipo} ${compSerie}-${compNum} listo para imprimir.`
-    );
-
-    return {
-      pedido: db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedido.id) as unknown as PedidoRow,
-      puntosGanados,
-    };
+    return liquidarYCompletarPedidoTx(db, pedido);
   });
 
   if (result === null) {

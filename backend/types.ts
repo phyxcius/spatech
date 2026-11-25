@@ -182,6 +182,9 @@ export interface PedidoRow {
   pin_cifrado: string | null;
   intentos_pin: number;
   pin_bloqueado: number;
+  pin_validado?: number;
+  pin_validado_at?: string | null;
+  viaje_etapa?: 'HACIA_PASAJERO' | 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO' | 'FINALIZADO' | null;
   comision_plataforma_centavos: number;
   comision_referido_centavos: number;
   comision_retenida_centavos: number;

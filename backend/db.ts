@@ -374,6 +374,9 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['destino_lng', 'REAL'],
     ['conductor_lat', 'REAL'],
     ['conductor_lng', 'REAL'],
+    ['pin_validado', 'INTEGER NOT NULL DEFAULT 0'],
+    ['pin_validado_at', 'TEXT'],
+    ['viaje_etapa', 'TEXT'],
   ]);
 
   ensureCols('alertas_emergencias', [

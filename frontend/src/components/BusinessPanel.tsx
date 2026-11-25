@@ -4,18 +4,23 @@ import {
   Bell,
   CarFront,
   Check,
+  CheckCircle2,
   Crosshair,
   FileCheck2,
+  Flag,
   Gauge,
+  History,
   KeyRound,
   ListChecks,
   LogOut,
   MapPin,
+  Navigation,
   Pencil,
   Plus,
   Power,
   Printer,
   RefreshCw,
+  Route,
   Send,
   Settings,
   Star,
@@ -281,6 +286,10 @@ export const BusinessPanel: React.FC = () => {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const seenPendingIdsRef = useRef<Set<number>>(new Set());
   const seededOrdersRef = useRef(false);
+  const canNotifyIncomingRef = useRef(true);
+  const arrivedTriggeredIdsRef = useRef<Set<number>>(new Set());
+  const arrivalInFlightRef = useRef(false);
+  const [arrivalModalOrder, setArrivalModalOrder] = useState<PedidoNegocio | null>(null);
 
   // Recarga modal
   const [recargaOpen, setRecargaOpen] = useState(false);
@@ -407,10 +416,58 @@ export const BusinessPanel: React.FC = () => {
       const pendingItems = nextPedidos.filter(
         (p) => p.estado === 'PENDIENTE_CONFIRMACION' && p.negocio_id === session.negocioId
       );
+
+      const activeTaxi =
+        session.rubro === 'TRANSPORTE'
+          ? nextPedidos.find(
+              (p) => p.estado === 'CONFIRMADO_PREPARACION' && p.negocio_id === session.negocioId
+            ) || null
+          : null;
+
+      let isNearFinishOrIdle = true;
+      if (session.rubro === 'TRANSPORTE' && activeTaxi) {
+        if (activeTaxi.pin_validado === 1) {
+          if (activeTaxi.viaje_etapa === 'LLEGADO_DESTINO') {
+            isNearFinishOrIdle = true;
+          } else {
+            const unidadesList = Array.isArray(resRes?.unidades) ? resRes.unidades : [];
+            const drvUnit =
+              unidadesList.find((u) => u.id === activeUnitId) ||
+              unidadesList.find((u) => u.id === activeTaxi.unidad_id) ||
+              unidadesList[0];
+            const drvLat =
+              drvUnit?.lat ?? activeTaxi.conductor_lat ?? resRes?.negocio?.lat ?? -13.5174;
+            const drvLng =
+              drvUnit?.lng ?? activeTaxi.conductor_lng ?? resRes?.negocio?.lng ?? -71.9765;
+            const dLat = activeTaxi.destino_lat ?? -13.5356;
+            const dLng = activeTaxi.destino_lng ?? -71.9388;
+            const remKm = haversineKm(drvLat, drvLng, dLat, dLng);
+            const remEta = Math.max(0, Math.round(remKm * 3.1 + 1));
+            isNearFinishOrIdle = remKm <= 1.0 || remEta <= 3;
+          }
+        } else {
+          // Recién aceptado o yendo al Punto A: NO interrumpir al conductor
+          isNearFinishOrIdle = false;
+        }
+      }
+      canNotifyIncomingRef.current = isNearFinishOrIdle;
+
+      if (
+        activeTaxi &&
+        activeTaxi.pin_validado === 1 &&
+        activeTaxi.viaje_etapa === 'LLEGADO_DESTINO' &&
+        !arrivedTriggeredIdsRef.current.has(activeTaxi.id)
+      ) {
+        arrivedTriggeredIdsRef.current.add(activeTaxi.id);
+        setArrivalModalOrder(activeTaxi);
+      }
+
       if (!seededOrdersRef.current) {
         seededOrdersRef.current = true;
-        seenPendingIdsRef.current = new Set(pendingItems.map((p) => p.id));
-      } else {
+        if (isNearFinishOrIdle) {
+          seenPendingIdsRef.current = new Set(pendingItems.map((p) => p.id));
+        }
+      } else if (isNearFinishOrIdle) {
         const ms = Math.max(1, Math.round(performance.now() - t0));
         for (const newest of pendingItems) {
           if (!seenPendingIdsRef.current.has(newest.id)) {
@@ -421,16 +478,23 @@ export const BusinessPanel: React.FC = () => {
                 : '';
             emitCenterNotification({
               id: `biz-ord-${newest.id}-${newest.estado}`,
-              title: `Nuevo Pedido · ${newest.codigo}`,
+              title:
+                activeTaxi && session.rubro === 'TRANSPORTE'
+                  ? `Próximo Pasajero Cerca · ${newest.codigo}`
+                  : `Nuevo Pedido · ${newest.codigo}`,
               subtitle: `${newest.item_nombre} · ${formatSoles(newest.monto_centavos)}`,
               detail: `Cliente: ${newest.cliente_nombre}${docLabel}`,
               tone: 'ai',
               responseMs: ms,
               speakText:
                 soundEnabled && resRes?.negocio?.alerta_voz_activa !== false
-                  ? `Nuevo pedido para ${resRes.negocio.nombre}: ${newest.item_nombre}, por ${(
-                      newest.monto_centavos / 100
-                    ).toFixed(2)} soles.`
+                  ? activeTaxi && session.rubro === 'TRANSPORTE'
+                    ? `Atención conductor, estás por finalizar tu ruta y hay otro pasajero pidiendo taxi por ${(
+                        newest.monto_centavos / 100
+                      ).toFixed(2)} soles.`
+                    : `Nuevo pedido para ${resRes.negocio.nombre}: ${newest.item_nombre}, por ${(
+                        newest.monto_centavos / 100
+                      ).toFixed(2)} soles.`
                   : undefined,
             });
           }
@@ -845,6 +909,149 @@ export const BusinessPanel: React.FC = () => {
     }
   }
 
+  async function submitTaxiPinVerify(pedidoId: number) {
+    if (!session) return;
+    setActionMsg(null);
+    try {
+      await apiFetch<{ ok: boolean; pedido?: PedidoNegocio }>(
+        `/api/negocio/${session.negocioId}/pedidos/${pedidoId}/validar-pin`,
+        {
+          method: 'POST',
+          body: { pin: pinInputs[pedidoId] || '' },
+          token: session.token,
+        }
+      );
+      setPinInputs((prev) => ({ ...prev, [pedidoId]: '' }));
+      setActionMsg({
+        type: 'ok',
+        text: 'PIN verificado · Pasajero a bordo. Mapa centrado en tu GPS rumbo al Destino B.',
+      });
+      if (soundEnabled) {
+        playLuxuryChime();
+        speakSpanish('PIN verificado. Pasajero a bordo. Iniciando recorrido hacia el destino.');
+      }
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error validando PIN del pasajero',
+      });
+      await loadWorkspace(true);
+    }
+  }
+
+  async function handleMarkArrivedAtDestination(pedido: PedidoNegocio) {
+    if (!session || arrivalInFlightRef.current) return;
+    arrivalInFlightRef.current = true;
+    arrivedTriggeredIdsRef.current.add(pedido.id);
+    try {
+      const res = await apiFetch<{ ok: boolean; pedido?: PedidoNegocio }>(
+        `/api/negocio/${session.negocioId}/pedidos/${pedido.id}/etapa`,
+        {
+          method: 'PATCH',
+          body: { etapa: 'LLEGADO_DESTINO' },
+          token: session.token,
+        }
+      );
+      const updated = res?.pedido || { ...pedido, viaje_etapa: 'LLEGADO_DESTINO' as const };
+      setArrivalModalOrder(updated);
+      if (soundEnabled) {
+        playLuxuryChime();
+        speakSpanish('Usted ha llegado a su destino. Presione finalizar viaje para cerrar y liquidar.');
+      }
+      emitCenterNotification({
+        id: `taxi-arrived-${pedido.id}`,
+        title: '¡Usted ha llegado a su destino!',
+        subtitle: `${pedido.destino_texto || 'Destino B'} · ${formatSoles(pedido.monto_centavos)}`,
+        detail: `Pasajero: ${pedido.cliente_nombre}. Pulsa Finalizar Viaje para completar.`,
+        tone: 'ai',
+      });
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'No se pudo marcar la llegada al destino',
+      });
+    } finally {
+      arrivalInFlightRef.current = false;
+    }
+  }
+
+  async function handleStepDriverTowardDestination(
+    pedido: PedidoNegocio,
+    stepMode: 'STEP' | 'ARRIVE'
+  ) {
+    if (!session || !resumen) return;
+    const unit =
+      resumen.unidades.find((u) => u.id === activeUnitId) ||
+      resumen.unidades.find((u) => u.id === pedido.unidad_id) ||
+      resumen.unidades[0];
+    if (!unit) return;
+    const dLat = pedido.destino_lat ?? -13.5356;
+    const dLng = pedido.destino_lng ?? -71.9388;
+    const curLat = unit.lat ?? pedido.conductor_lat ?? pedido.origen_lat ?? -13.5167;
+    const curLng = unit.lng ?? pedido.conductor_lng ?? pedido.origen_lng ?? -71.9788;
+    const nextLat =
+      stepMode === 'ARRIVE' ? dLat : Number((curLat + (dLat - curLat) * 0.65).toFixed(6));
+    const nextLng =
+      stepMode === 'ARRIVE' ? dLng : Number((curLng + (dLng - curLng) * 0.65).toFixed(6));
+
+    setDriverGpsSending(true);
+    try {
+      await apiFetch(`/api/negocio/${session.negocioId}/unidades/${unit.id}`, {
+        method: 'PATCH',
+        body: { lat: nextLat, lng: nextLng },
+        token: session.token,
+      });
+      const distAfter = haversineKm(nextLat, nextLng, dLat, dLng);
+      if (stepMode === 'ARRIVE' || distAfter <= 0.15) {
+        await handleMarkArrivedAtDestination(pedido);
+      } else {
+        setActionMsg({
+          type: 'ok',
+          text: `Avance GPS hacia Destino B: faltan ${distAfter.toFixed(2)} km.`,
+        });
+        await loadWorkspace(true);
+      }
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error actualizando posición GPS',
+      });
+    } finally {
+      setDriverGpsSending(false);
+    }
+  }
+
+  async function handleFinalizeTaxiTrip(pedidoId: number) {
+    if (!session) return;
+    setActionMsg(null);
+    try {
+      const res = await apiFetch<{
+        ok: boolean;
+        puntos_otorgados: number;
+        pedido?: PedidoNegocio;
+      }>(`/api/negocio/${session.negocioId}/pedidos/${pedidoId}/finalizar-viaje`, {
+        method: 'POST',
+        body: {},
+        token: session.token,
+      });
+      setArrivalModalOrder(null);
+      setPinInputs((prev) => ({ ...prev, [pedidoId]: '' }));
+      setActionMsg({
+        type: 'ok',
+        text: `¡Viaje finalizado y liquidado! (+${res.puntos_otorgados} pts al pasajero). Tu unidad vuelve a estar Disponible.`,
+      });
+      if (soundEnabled) playLuxuryChime();
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'No se pudo finalizar el viaje',
+      });
+    }
+  }
+
   async function submitPinValidation(pedidoId: number) {
     if (!session) return;
     setActionMsg(null);
@@ -1032,6 +1239,74 @@ export const BusinessPanel: React.FC = () => {
       });
     }
   }
+
+  const activeEnRouteTaxi =
+    session?.rubro === 'TRANSPORTE'
+      ? pedidos.find(
+          (p) =>
+            p.estado === 'CONFIRMADO_PREPARACION' &&
+            p.negocio_id === session.negocioId &&
+            p.pin_validado === 1 &&
+            p.viaje_etapa !== 'LLEGADO_DESTINO'
+        ) || null
+      : null;
+
+  useEffect(() => {
+    if (!session || session.rubro !== 'TRANSPORTE' || !activeEnRouteTaxi || !resumen) {
+      return;
+    }
+    const unit =
+      resumen.unidades.find((u) => u.id === activeUnitId) ||
+      resumen.unidades.find((u) => u.id === activeEnRouteTaxi.unidad_id) ||
+      resumen.unidades[0];
+    if (!unit || typeof navigator === 'undefined' || !navigator.geolocation) {
+      return;
+    }
+
+    let lastSentAt = 0;
+    const dLat = activeEnRouteTaxi.destino_lat ?? -13.5356;
+    const dLng = activeEnRouteTaxi.destino_lng ?? -71.9388;
+
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const now = Date.now();
+        if (now - lastSentAt < 3500) return;
+        lastSentAt = now;
+        const nextLat = pos.coords.latitude;
+        const nextLng = pos.coords.longitude;
+        void apiFetch(`/api/negocio/${session.negocioId}/unidades/${unit.id}`, {
+          method: 'PATCH',
+          body: { lat: nextLat, lng: nextLng },
+          token: session.token,
+        })
+          .then(() => {
+            const distKm = haversineKm(nextLat, nextLng, dLat, dLng);
+            if (distKm <= 0.15 && !arrivedTriggeredIdsRef.current.has(activeEnRouteTaxi.id)) {
+              void handleMarkArrivedAtDestination(activeEnRouteTaxi);
+            }
+          })
+          .catch(() => {
+            // silent GPS tick retry on next interval
+          });
+      },
+      () => {
+        // user declined live geolocation watch
+      },
+      { enableHighAccuracy: true, maximumAge: 2500, timeout: 8000 }
+    );
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [
+    session?.negocioId,
+    session?.rubro,
+    session?.token,
+    activeEnRouteTaxi?.id,
+    activeEnRouteTaxi?.pin_validado,
+    activeEnRouteTaxi?.viaje_etapa,
+    activeUnitId,
+  ]);
 
   if (!session) {
     return (
@@ -1439,8 +1714,41 @@ export const BusinessPanel: React.FC = () => {
   const roleTheme = RUBRO_PANEL_THEME[session.rubro] || RUBRO_PANEL_THEME.RESTAURANTE;
   const panelIa = resumen?.negocio?.panel_ia || null;
 
+  const activeTaxiTrip = session.rubro === 'TRANSPORTE' ? enCurso[0] || null : null;
+  const activeTaxiUnit =
+    session.rubro === 'TRANSPORTE' && resumen
+      ? resumen.unidades.find((u) => u.id === activeUnitId) ||
+        resumen.unidades.find((u) => u.id === activeTaxiTrip?.unidad_id) ||
+        resumen.unidades[0] ||
+        null
+      : null;
+  let canNotifyNextRide = true;
+  let activeTaxiRemKm = 0;
+  let activeTaxiRemEta = 0;
+  if (activeTaxiTrip) {
+    const drvLat =
+      activeTaxiUnit?.lat ??
+      activeTaxiTrip.conductor_lat ??
+      resumen?.negocio.lat ??
+      -13.5174;
+    const drvLng =
+      activeTaxiUnit?.lng ??
+      activeTaxiTrip.conductor_lng ??
+      resumen?.negocio.lng ??
+      -71.9765;
+    const dLat = activeTaxiTrip.destino_lat ?? -13.5356;
+    const dLng = activeTaxiTrip.destino_lng ?? -71.9388;
+    activeTaxiRemKm = haversineKm(drvLat, drvLng, dLat, dLng);
+    activeTaxiRemEta = Math.max(0, Math.round(activeTaxiRemKm * 3.1 + 1));
+    canNotifyNextRide =
+      activeTaxiTrip.pin_validado === 1 &&
+      (activeTaxiTrip.viaje_etapa === 'LLEGADO_DESTINO' ||
+        activeTaxiRemKm <= 1.0 ||
+        activeTaxiRemEta <= 3);
+  }
+
   return (
-    <div className="space-y-6 pb-24 md:pb-12">
+    <div className={`space-y-6 ${session.rubro === 'TRANSPORTE' ? 'pb-36 md:pb-24' : 'pb-24 md:pb-12'}`}>
       {/* Cabecera financiera del negocio con color temático único por rubro / IA */}
       <section
         style={panelIa ? { borderColor: `${panelIa.tema_color.primaryHex}66` } : undefined}
@@ -1756,14 +2064,26 @@ export const BusinessPanel: React.FC = () => {
                   );
                 })()}
 
-                {enCurso.length > 0 && (
-                  <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-xs">
+                {activeTaxiTrip && (
+                  <div
+                    className={`rounded-2xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
+                      canNotifyNextRide
+                        ? 'border-[#84CC16]/50 bg-[#84CC16]/15'
+                        : 'border-emerald-500/40 bg-emerald-500/10'
+                    }`}
+                  >
+                    <div className="text-xs space-y-0.5">
                       <p className="font-bold text-emerald-700 dark:text-emerald-300">
-                        Tienes {enCurso.length} traslado{enCurso.length > 1 ? 's' : ''} aceptado{enCurso.length > 1 ? 's' : ''} en curso
+                        {canNotifyNextRide
+                          ? `¡Estás a ${activeTaxiRemEta} min (${activeTaxiRemKm.toFixed(1)} km) de finalizar tu ruta!`
+                          : activeTaxiTrip.pin_validado === 1
+                            ? `Viaje en ruta hacia Destino B · Faltan ${activeTaxiRemEta} min (${activeTaxiRemKm.toFixed(1)} km)`
+                            : 'Traslado aceptado · En camino a recoger al pasajero (Punto A)'}
                       </p>
                       <p className="text-[#555B66] dark:text-[#A3A9B5]">
-                        Mantén tu GPS actualizado y solicita el PIN de 4 dígitos al pasajero al finalizar.
+                        {canNotifyNextRide
+                          ? `Alertas de próximo pasajero ACTIVADAS (${nuevos.length} solicitudes esperando). Acepta tu siguiente carrera al concluir.`
+                          : 'Modo enfoque activo: las notificaciones sonoras de nuevos pedidos se activarán automáticamente cuando estés a ≤ 3 min (1 km) de terminar.'}
                       </p>
                     </div>
                     <button
@@ -2080,22 +2400,72 @@ export const BusinessPanel: React.FC = () => {
                 const pickupEta = Math.max(1, Math.round(pickupKm * 3.2 + 1));
                 const tripKm = Math.max(0.8, p.distancia_km ?? haversineKm(oLat, oLng, dLat, dLng));
                 const tripEta = p.eta_min || Math.max(4, Math.round(tripKm * 3.1 + 2));
+                const pinValidated = p.pin_validado === 1;
+                const arrivedDest = p.viaje_etapa === 'LLEGADO_DESTINO';
+                const remDestKm = haversineKm(drvLat, drvLng, dLat, dLng);
+                const remDestEta = Math.max(0, Math.round(remDestKm * 3.1 + 1));
+                const nearFinish = pinValidated && (arrivedDest || remDestKm <= 1.0 || remDestEta <= 3);
 
                 return (
                   <article
                     key={p.id}
-                    className="md:col-span-2 rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 sm:p-6"
+                    className="md:col-span-2 rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 sm:p-6 chuspa-google-border"
                   >
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-                      {/* Izquierda: Mapa de Ruta del Taxista (Conductor -> Punto A -> Destino B) */}
+                      {/* Izquierda: Mapa de Ruta del Taxista */}
                       <div className="lg:col-span-7 flex flex-col gap-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <p className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                              Ruta en Vivo · Recoger en A y llevar a B
-                            </p>
+                          <div className="space-y-0.5">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold uppercase tracking-wider ${
+                                arrivedDest
+                                  ? 'bg-emerald-500 text-white'
+                                  : pinValidated
+                                    ? 'bg-[#2563EB] text-white'
+                                    : 'bg-amber-400 text-[#0B0E14]'
+                              }`}
+                            >
+                              {arrivedDest ? (
+                                <>
+                                  <Flag className="w-3.5 h-3.5" />
+                                  <span>Llegada confirmada · Destino B</span>
+                                </>
+                              ) : pinValidated ? (
+                                <>
+                                  <Navigation className="w-3.5 h-3.5" />
+                                  <span>Etapa 2/2 · En ruta GPS al Destino B</span>
+                                </>
+                              ) : (
+                                <>
+                                  <KeyRound className="w-3.5 h-3.5" />
+                                  <span>Etapa 1/2 · Recoger en A y validar PIN</span>
+                                </>
+                              )}
+                            </span>
                             <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                              Para recoger: <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">{pickupEta} min ({pickupKm.toFixed(1)} km)</span> · Viaje A → B: <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">{tripEta} min ({tripKm.toFixed(1)} km)</span>
+                              {pinValidated ? (
+                                <>
+                                  Restante al Destino B:{' '}
+                                  <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">
+                                    {remDestEta} min ({remDestKm.toFixed(2)} km)
+                                  </span>{' '}
+                                  ·{' '}
+                                  {nearFinish
+                                    ? 'Alertas de próximo viaje ACTIVAS'
+                                    : 'Alertas en espera hasta ≤ 3 min'}
+                                </>
+                              ) : (
+                                <>
+                                  Para recoger:{' '}
+                                  <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">
+                                    {pickupEta} min ({pickupKm.toFixed(1)} km)
+                                  </span>{' '}
+                                  · Viaje A → B:{' '}
+                                  <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">
+                                    {tripEta} min ({tripKm.toFixed(1)} km)
+                                  </span>
+                                </>
+                              )}
                             </p>
                           </div>
                           <button
@@ -2115,7 +2485,9 @@ export const BusinessPanel: React.FC = () => {
                               A
                             </span>
                             <div className="min-w-0">
-                              <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">Punto de recojo</p>
+                              <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                                {pinValidated ? 'Pasajero abordó en' : 'Punto de recojo'}
+                              </p>
                               <p className="font-semibold truncate">{p.origen_texto || 'Ubicación GPS del pasajero'}</p>
                             </div>
                           </div>
@@ -2147,16 +2519,26 @@ export const BusinessPanel: React.FC = () => {
                                 ? `${p.conductor_nombre} (${p.placa || 'Taxi'})`
                                 : 'Mi Taxi GPS'
                           }
-                          driverEtaBadge={`${pickupEta} min\n${pickupKm.toFixed(1)} km`}
-                          routeBadge={`${tripEta} min\n${tripKm.toFixed(1)} km`}
-                          gpsLive={Boolean(activeUnit?.lat && activeUnit?.lng)}
+                          followDriver={pinValidated}
+                          activeLeg={pinValidated ? 'TO_DESTINATION' : 'BOTH'}
+                          driverEtaBadge={
+                            pinValidated
+                              ? `${remDestEta} min\n${remDestKm.toFixed(1)} km`
+                              : `${pickupEta} min\n${pickupKm.toFixed(1)} km`
+                          }
+                          routeBadge={
+                            pinValidated
+                              ? `${remDestEta} min\n${remDestKm.toFixed(1)} km`
+                              : `${tripEta} min\n${tripKm.toFixed(1)} km`
+                          }
+                          gpsLive={Boolean(activeUnit?.lat && activeUnit?.lng) || pinValidated}
                           onRequestGps={() => void handleSendDriverGps()}
                           pins={[]}
-                          heightClass="h-[290px] sm:h-[340px]"
+                          heightClass="h-[300px] sm:h-[360px]"
                         />
                       </div>
 
-                      {/* Derecha: Pasajero verificado + Teclado PIN */}
+                      {/* Derecha: Pasajero verificado + Validación PIN (Etapa 1) o Ruta Activa GPS (Etapa 2) */}
                       <div className="lg:col-span-5 flex flex-col justify-between gap-4">
                         <div className="space-y-2">
                           <div className="flex items-start justify-between gap-3">
@@ -2202,19 +2584,83 @@ export const BusinessPanel: React.FC = () => {
                           <p className="text-xs text-[#C81E5B] font-medium">
                             PIN bloqueado tras 5 intentos fallidos. Solo el pasajero puede cancelar el viaje.
                           </p>
+                        ) : !pinValidated ? (
+                          <div className="space-y-2.5">
+                            <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-3.5 py-2.5 text-xs text-[#14171F] dark:text-[#F5F2EA]">
+                              <p className="font-bold">Paso 1 · Confirmar identidad del pasajero</p>
+                              <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5] mt-0.5">
+                                Al validar el PIN de 4 dígitos, confirmas que subió el pasajero y el mapa centrará tu GPS para iniciar el recorrido hacia el Destino B (aún no finaliza el viaje).
+                              </p>
+                            </div>
+                            <PinKeypadCard
+                              value={pinInputs[p.id] || ''}
+                              onChange={(next) =>
+                                setPinInputs((prev) => ({
+                                  ...prev,
+                                  [p.id]: next.replace(/\D/g, '').slice(0, 4),
+                                }))
+                              }
+                              onSubmit={() => void submitTaxiPinVerify(p.id)}
+                              submitLabel="Validar PIN del Pasajero (Iniciar Viaje)"
+                              attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
+                            />
+                          </div>
                         ) : (
-                          <PinKeypadCard
-                            value={pinInputs[p.id] || ''}
-                            onChange={(next) =>
-                              setPinInputs((prev) => ({
-                                ...prev,
-                                [p.id]: next.replace(/\D/g, '').slice(0, 4),
-                              }))
-                            }
-                            onSubmit={() => void submitPinValidation(p.id)}
-                            submitLabel="Validar PIN y Finalizar Viaje"
-                            attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
-                          />
+                          <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/8 p-4 space-y-3.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  <span>PIN Verificado · Pasajero a bordo</span>
+                                </p>
+                                <p className="text-xs text-[#555B66] dark:text-[#A3A9B5] mt-1">
+                                  Sigue la ruta azul en tiempo real hasta llegar al Destino B.
+                                </p>
+                              </div>
+                              <span className="px-2.5 py-1 rounded-lg bg-[#2563EB]/15 text-[#2563EB] dark:text-[#60A5FA] font-mono-tabular text-xs font-bold shrink-0">
+                                {remDestEta} min · {remDestKm.toFixed(1)} km
+                              </span>
+                            </div>
+
+                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#0B0E14]/80 px-3 py-2 text-[11px] text-[#555B66] dark:text-[#CBD5E1]">
+                              {nearFinish ? (
+                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                  ● Cerca del destino (≤ 3 min): ya puedes recibir alertas del siguiente pasajero en Pedidos.
+                                </span>
+                              ) : (
+                                <span>
+                                  ● En ruta: las alertas de otros pasajeros están silenciadas hasta que faltes ≤ 3 min para llegar.
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              <button
+                                type="button"
+                                disabled={driverGpsSending || arrivedDest}
+                                onClick={() => void handleStepDriverTowardDestination(p, 'STEP')}
+                                className="min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
+                              >
+                                <Navigation className="w-3.5 h-3.5 text-[#2563EB]" />
+                                <span>Avanzar GPS en ruta</span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={driverGpsSending}
+                                onClick={() =>
+                                  arrivedDest
+                                    ? setArrivalModalOrder(p)
+                                    : void handleStepDriverTowardDestination(p, 'ARRIVE')
+                                }
+                                className="min-h-[42px] px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shadow-md"
+                              >
+                                <Flag className="w-3.5 h-3.5" />
+                                <span>
+                                  {arrivedDest ? 'Abrir Tarjeta de Llegada' : '¡Ya llegué al Destino B!'}
+                                </span>
+                              </button>
+                            </div>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -3192,6 +3638,67 @@ export const BusinessPanel: React.FC = () => {
         );
       })()}
 
+      {/* TARJETA CENTRADA DE LLEGADA AL DESTINO (TAXI) */}
+      {arrivalModalOrder && session.rubro === 'TRANSPORTE' && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Usted ha llegado a su destino"
+          className="fixed inset-0 z-[130] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#121620] border border-[#84CC16]/50 chuspa-google-border p-6 space-y-5 shadow-2xl text-center">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-[#B6F02B] to-[#16A34A] text-[#0B0E14] flex items-center justify-center shadow-lg">
+              <Flag className="w-8 h-8" />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-mono-tabular uppercase tracking-[0.18em] text-emerald-600 dark:text-[#B6F02B] font-bold">
+                Ruta completada · {arrivalModalOrder.codigo}
+              </p>
+              <h3 className="font-display text-2xl sm:text-3xl font-bold">
+                ¡Usted ha llegado a su destino!
+              </h3>
+              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                Destino B: <span className="font-semibold text-[#14171F] dark:text-white">{arrivalModalOrder.destino_texto || 'Destino en Cusco'}</span>
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-4 flex items-center justify-between text-left">
+              <div>
+                <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">Pasajero</p>
+                <p className="text-sm font-bold">{arrivalModalOrder.cliente_nombre}</p>
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                  Pago: {arrivalModalOrder.metodo_pago}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">Tarifa total</p>
+                <p className="font-mono-tabular text-2xl font-extrabold text-emerald-600 dark:text-[#B6F02B]">
+                  {formatSoles(arrivalModalOrder.monto_centavos)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => void handleFinalizeTaxiTrip(arrivalModalOrder.id)}
+                className="w-full min-h-[52px] rounded-2xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] text-base font-extrabold shadow-lg chuspa-google-btn flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 className="w-5 h-5" />
+                <span>Finalizar Viaje</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setArrivalModalOrder(null)}
+                className="w-full min-h-[40px] rounded-xl text-xs font-semibold text-[#6A717E] dark:text-[#98A0AD] hover:underline"
+              >
+                Mantener mapa abierto
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL COMPROBANTE ELECTRÓNICO (SOLO NEGOCIOS NO-TAXI) */}
       {invoiceModal && session.rubro !== 'TRANSPORTE' && (
         <ElectronicInvoiceModal
@@ -3199,6 +3706,85 @@ export const BusinessPanel: React.FC = () => {
           comprobante={invoiceModal.comprobante}
           onClose={() => setInvoiceModal(null)}
         />
+      )}
+
+      {/* BARRA DE MENÚ INFERIOR PERSISTENTE PARA EL TAXISTA (ESTILO CLIENTE) */}
+      {session.rubro === 'TRANSPORTE' && (
+        <nav
+          aria-label="Menú inferior del taxista"
+          className="sticky bottom-[68px] md:bottom-3 z-30 mx-auto max-w-2xl rounded-2xl border border-black/10 dark:border-white/15 bg-white/95 dark:bg-[#0B0F17]/95 backdrop-blur-xl shadow-2xl chuspa-google-border px-2 py-1.5 grid grid-cols-5 gap-1"
+        >
+          {(
+            [
+              {
+                id: 'NUEVOS' as BizTab,
+                label: 'Pedidos',
+                icon: ListChecks,
+                badge: nuevos.length > 0 ? nuevos.length : null,
+                pulse: canNotifyNextRide && nuevos.length > 0,
+              },
+              {
+                id: 'EN_CURSO' as BizTab,
+                label: 'En Curso',
+                icon: Navigation,
+                badge: enCurso.length > 0 ? enCurso.length : null,
+                pulse: enCurso.length > 0,
+              },
+              {
+                id: 'HISTORIAL' as BizTab,
+                label: 'Historial',
+                icon: History,
+                badge: null,
+                pulse: false,
+              },
+              {
+                id: 'RUTAS_SOS' as BizTab,
+                label: 'Colectivo',
+                icon: Route,
+                badge: null,
+                pulse: false,
+              },
+              {
+                id: 'CONFIGURACION' as BizTab,
+                label: 'Mi Taxi',
+                icon: CarFront,
+                badge: null,
+                pulse: false,
+              },
+            ]
+          ).map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id)}
+                className={`relative min-h-[48px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold transition-all ${
+                  active
+                    ? 'bg-[#B6F02B] text-[#0B0E14] shadow-md'
+                    : 'text-[#555B66] dark:text-[#A3A9B5] hover:bg-black/5 dark:hover:bg-white/5'
+                }`}
+              >
+                <div className="relative">
+                  <Icon className="w-4 h-4" />
+                  {item.badge !== null && (
+                    <span
+                      className={`absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-full text-[9px] font-extrabold flex items-center justify-center ${
+                        item.pulse
+                          ? 'bg-[#16A34A] text-white'
+                          : 'bg-[#6A717E] text-white'
+                      }`}
+                    >
+                      {item.badge}
+                    </span>
+                  )}
+                </div>
+                <span className="truncate max-w-full px-0.5">{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
       )}
     </div>
   );

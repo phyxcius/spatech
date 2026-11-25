@@ -277,8 +277,14 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                   const dLng = pedido.destino_lng ?? -71.9388;
                   const cLat = pedido.conductor_lat ?? pedido.unidad_lat ?? undefined;
                   const cLng = pedido.conductor_lng ?? pedido.unidad_lng ?? undefined;
-                  const tripKm = Math.max(0.8, haversineKm(oLat, oLng, dLat, dLng));
-                  const tripEta = pedido.eta_min || Math.max(5, Math.round(tripKm * 3.1 + 2));
+                  const isOnBoard = pedido.pin_validado === 1 || pedido.viaje_etapa === 'EN_RUTA_DESTINO' || pedido.viaje_etapa === 'LLEGADO_DESTINO';
+                  const hasArrived = pedido.viaje_etapa === 'LLEGADO_DESTINO';
+                  const activeStartLat = isOnBoard && typeof cLat === 'number' ? cLat : oLat;
+                  const activeStartLng = isOnBoard && typeof cLng === 'number' ? cLng : oLng;
+                  const tripKm = Math.max(0.2, haversineKm(activeStartLat, activeStartLng, dLat, dLng));
+                  const tripEta = isOnBoard
+                    ? Math.max(1, Math.round(tripKm * 3.1 + 1))
+                    : pedido.eta_min || Math.max(5, Math.round(tripKm * 3.1 + 2));
                   const drvDistKm =
                     typeof cLat === 'number' && typeof cLng === 'number'
                       ? Math.max(0.2, haversineKm(cLat, cLng, oLat, oLng))
@@ -287,19 +293,35 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
 
                   return (
                     <div className="space-y-2.5">
-                      <div className="rounded-2xl border border-blue-500/30 bg-blue-500/8 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div
+                        className={`rounded-2xl border px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs ${
+                          hasArrived
+                            ? 'border-emerald-500/45 bg-emerald-500/12'
+                            : isOnBoard
+                              ? 'border-indigo-500/40 bg-indigo-500/10'
+                              : 'border-blue-500/30 bg-blue-500/8'
+                        }`}
+                      >
                         <div className="flex items-center gap-2 font-semibold text-blue-700 dark:text-blue-300">
                           <CarFront className="w-4 h-4 shrink-0" />
                           <span>
-                            {pedido.conductor_nombre
-                              ? `${pedido.conductor_nombre} (${pedido.placa || 'Taxi Cusco'})`
-                              : 'Buscando ubicación del conductor'}
+                            {hasArrived
+                              ? `¡Llegaste a tu destino! · ${pedido.conductor_nombre || 'Taxi Cusco'}`
+                              : isOnBoard
+                                ? `Pasajero a bordo · Rumbo a ${pedido.destino_texto || 'Destino B'}`
+                                : pedido.conductor_nombre
+                                  ? `${pedido.conductor_nombre} (${pedido.placa || 'Taxi Cusco'})`
+                                  : 'Buscando ubicación del conductor'}
                           </span>
                         </div>
                         <span className="font-mono-tabular font-bold text-[#14171F] dark:text-white">
-                          {drvDistKm !== null && drvEta !== null
-                            ? `Acercándose: ${drvEta} min · ${drvDistKm.toFixed(1)} km del punto A`
-                            : `Ruta A → B: ${tripKm.toFixed(1)} km`}
+                          {hasArrived
+                            ? 'En Destino B · Listo para finalizar'
+                            : isOnBoard
+                              ? `Restante: ${tripEta} min · ${tripKm.toFixed(1)} km`
+                              : drvDistKm !== null && drvEta !== null
+                                ? `Acercándose: ${drvEta} min · ${drvDistKm.toFixed(1)} km del punto A`
+                                : `Ruta A → B: ${tripKm.toFixed(1)} km`}
                         </span>
                       </div>
 
@@ -319,11 +341,13 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                             : 'Conductor'
                         }
                         driverEtaBadge={
-                          drvEta !== null && drvDistKm !== null
+                          !isOnBoard && drvEta !== null && drvDistKm !== null
                             ? `${drvEta} min\n${drvDistKm.toFixed(1)} km`
                             : undefined
                         }
                         routeBadge={`${tripEta} min\n${tripKm.toFixed(1)} km`}
+                        followDriver={isOnBoard && pedido.estado === 'CONFIRMADO_PREPARACION'}
+                        activeLeg={isOnBoard ? 'TO_DESTINATION' : 'BOTH'}
                         pins={[]}
                         heightClass="h-[260px] sm:h-[300px]"
                       />

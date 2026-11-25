@@ -48,11 +48,8 @@
 
 .leaflet-container {
   font-family: var(--font-sans) !important;
+  background: #e5e3df !important;
   z-index: 1;
-}
-
-.dark .cusco-osm-tiles .leaflet-tile-pane {
-  filter: brightness(0.92) contrast(1.04) saturate(0.92);
 }
 
 @keyframes chuspa-pulse-ring {

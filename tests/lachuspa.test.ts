@@ -1397,3 +1397,137 @@ test('13. Agente IA Multi-Rubro: endpoint de diseño IA, registro de Ferretería
   }
 });
 
+test('14. Flujo taxi en 2 pasos: validar-pin no finaliza el viaje, activa ruta GPS al Destino B y finalizar-viaje liquida al llegar', async () => {
+  const { db, server, req } = await startTestServer();
+  try {
+    const loginAdmin = await req('POST', '/api/admin/login', { pin: '998877' });
+    assert.equal(loginAdmin.status, 200);
+    const adminToken = loginAdmin.data.token;
+
+    const loginTx1 = await req('POST', '/api/negocio/login', { codigo: 'NEG-TX-01', pin: '2468' });
+    assert.equal(loginTx1.status, 200);
+    const tx1Id = loginTx1.data.negocio.id;
+    const tx1Token = loginTx1.data.token;
+
+    await req(
+      'POST',
+      '/api/admin/ajustes-saldo',
+      { negocio_id: tx1Id, delta_centavos: 10000, motivo: 'Saldo test flujo taxi 2 pasos' },
+      adminToken
+    );
+
+    const dir = await req('GET', '/api/public/directorio');
+    const unitTx1 = dir.data.unidades.find((u: any) => u.negocio_id === tx1Id);
+    assert.ok(unitTx1);
+
+    const rideRes = await req('POST', '/api/public/taxi/pedir', {
+      unidad_id: unitTx1.id,
+      metodo_pago: 'Efectivo',
+      cliente_nombre: 'Mateo Paredes',
+      cliente_telefono: '+51984223344',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
+      origen_texto: 'Plaza de Armas, Cusco',
+      destino_texto: 'Real Plaza Cusco',
+      origen_lat: -13.5167,
+      origen_lng: -71.9788,
+      destino_lat: -13.5245,
+      destino_lng: -71.9498,
+    });
+    assert.equal(rideRes.status, 201);
+    const pedidoId = rideRes.data.pedido.id;
+    const pedidoCodigo = rideRes.data.pedido.codigo;
+    const pinCliente = rideRes.data.cliente_pin;
+
+    // 1) Aceptar viaje -> viaja hacia el Punto A (HACIA_PASAJERO)
+    const acceptRes = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/aceptar`,
+      {},
+      tx1Token
+    );
+    assert.equal(acceptRes.status, 200);
+    assert.equal(acceptRes.data.pedido.estado, 'CONFIRMADO_PREPARACION');
+    assert.equal(acceptRes.data.pedido.viaje_etapa, 'HACIA_PASAJERO');
+    assert.equal(acceptRes.data.pedido.pin_validado, 0);
+
+    const resBefore = await req('GET', `/api/negocio/${tx1Id}/resumen`, undefined, tx1Token);
+    assert.ok(resBefore.data.negocio.saldo_retenido > 0);
+
+    // 2) No se puede finalizar viaje sin validar PIN primero -> 409
+    const earlyFinish = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/finalizar-viaje`,
+      {},
+      tx1Token
+    );
+    assert.equal(earlyFinish.status, 409);
+
+    // 3) PIN incorrecto en /validar-pin -> 400 e incrementa intentos_pin
+    const wrongPin = pinCliente === '1122' ? '3344' : '1122';
+    const badPinRes = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/validar-pin`,
+      { pin: wrongPin },
+      tx1Token
+    );
+    assert.equal(badPinRes.status, 400);
+
+    // 4) PIN correcto en /validar-pin -> valida identidad, inicia EN_RUTA_DESTINO, NO finaliza todavía
+    const verifyRes = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/validar-pin`,
+      { pin: pinCliente },
+      tx1Token
+    );
+    assert.equal(verifyRes.status, 200);
+    assert.equal(verifyRes.data.ok, true);
+    assert.equal(verifyRes.data.pedido.pin_validado, 1);
+    assert.equal(verifyRes.data.pedido.viaje_etapa, 'EN_RUTA_DESTINO');
+    assert.equal(verifyRes.data.pedido.estado, 'CONFIRMADO_PREPARACION');
+
+    const resMid = await req('GET', `/api/negocio/${tx1Id}/resumen`, undefined, tx1Token);
+    assert.ok(resMid.data.negocio.saldo_retenido > 0);
+
+    // Tracking público refleja pin_validado = 1 y viaje_etapa = EN_RUTA_DESTINO
+    const trackMid = await req('GET', `/api/public/pedidos/${pedidoCodigo}`);
+    assert.equal(trackMid.status, 200);
+    assert.equal(trackMid.data.pedido.pin_validado, 1);
+    assert.equal(trackMid.data.pedido.viaje_etapa, 'EN_RUTA_DESTINO');
+
+    // 5) Marcar llegada al Destino B -> LLEGADO_DESTINO
+    const arrivedRes = await req(
+      'PATCH',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/etapa`,
+      { etapa: 'LLEGADO_DESTINO' },
+      tx1Token
+    );
+    assert.equal(arrivedRes.status, 200);
+    assert.equal(arrivedRes.data.pedido.viaje_etapa, 'LLEGADO_DESTINO');
+
+    // 6) Finalizar viaje desde la tarjeta de llegada -> ENTREGADO_PAGADO, FINALIZADO, saldo_retenido = 0, unidad DISPONIBLE
+    const finishRes = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/finalizar-viaje`,
+      {},
+      tx1Token
+    );
+    assert.equal(finishRes.status, 200);
+    assert.equal(finishRes.data.ok, true);
+    assert.equal(finishRes.data.pedido.estado, 'ENTREGADO_PAGADO');
+    assert.equal(finishRes.data.pedido.viaje_etapa, 'FINALIZADO');
+    assert.ok(finishRes.data.puntos_otorgados >= 1);
+
+    const resAfter = await req('GET', `/api/negocio/${tx1Id}/resumen`, undefined, tx1Token);
+    assert.equal(resAfter.data.negocio.saldo_retenido, 0);
+    const updatedUnit = resAfter.data.unidades.find((u: any) => u.id === unitTx1.id);
+    assert.equal(updatedUnit.estado, 'DISPONIBLE');
+
+    assert.equal(auditarLibroContable(db).cuadra, true);
+  } finally {
+    server.close();
+  }
+});
+
+

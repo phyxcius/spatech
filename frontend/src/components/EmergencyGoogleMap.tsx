@@ -248,6 +248,7 @@ const GoogleMapInner: React.FC<GoogleMapInnerProps> = ({
       mapId="DEMO_MAP_ID"
       defaultCenter={{ lat: emergencyLat, lng: emergencyLng }}
       defaultZoom={15}
+      colorScheme="LIGHT"
       gestureHandling="greedy"
       disableDefaultUI={false}
       fullscreenControl={false}

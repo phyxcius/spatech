@@ -22,14 +22,17 @@ import {
 } from './apisperuBilling.ts';
 import {
   aceptarPedido,
+  actualizarEtapaViaje,
   ajustarSaldoAdmin,
   aprobarRecarga,
   auditarLibroContable,
   cancelarPedido,
+  finalizarViajeConfirmado,
   logWhatsAppNotification,
   rechazarRecarga,
   solicitarRecarga,
   validarPinYEntregar,
+  validarSoloPin,
 } from './finance.ts';
 import {
   getFirebaseSyncState,
@@ -2677,6 +2680,73 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         );
         res.json({
           pedido: sanitizeOrderForBusiness(updated as unknown as Record<string, unknown>, negocioId),
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  app.post(
+    '/api/negocio/:negocioId/pedidos/:pedidoId/validar-pin',
+    requireBusinessAuth,
+    (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const pedidoId = Number(req.params.pedidoId);
+        const { pin } = req.body || {};
+        const result = validarSoloPin(db, pedidoId, negocioId, String(pin || ''));
+        res.json({
+          ok: true,
+          pedido: sanitizeOrderForBusiness(result.pedido as unknown as Record<string, unknown>, negocioId),
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  app.patch(
+    '/api/negocio/:negocioId/pedidos/:pedidoId/etapa',
+    requireBusinessAuth,
+    (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const pedidoId = Number(req.params.pedidoId);
+        const etapaRaw = String(req.body?.etapa || '').toUpperCase();
+        if (etapaRaw !== 'EN_RUTA_DESTINO' && etapaRaw !== 'LLEGADO_DESTINO') {
+          throw new HttpError(400, 'Etapa inválida (usa EN_RUTA_DESTINO o LLEGADO_DESTINO)');
+        }
+        const updated = actualizarEtapaViaje(
+          db,
+          pedidoId,
+          negocioId,
+          etapaRaw as 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO'
+        );
+        res.json({
+          ok: true,
+          pedido: sanitizeOrderForBusiness(updated as unknown as Record<string, unknown>, negocioId),
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  app.post(
+    '/api/negocio/:negocioId/pedidos/:pedidoId/finalizar-viaje',
+    requireBusinessAuth,
+    (req: AuthedRequest, res, next) => {
+      try {
+        const negocioId = Number(req.params.negocioId);
+        const pedidoId = Number(req.params.pedidoId);
+        const pin = req.body?.pin ? String(req.body.pin) : undefined;
+        const result = finalizarViajeConfirmado(db, pedidoId, negocioId, pin);
+        res.json({
+          ok: true,
+          pedido: sanitizeOrderForBusiness(result.pedido as unknown as Record<string, unknown>, negocioId),
+          puntos_otorgados: result.puntosGanados,
+          comprobante: null,
         });
       } catch (err) {
         next(err);

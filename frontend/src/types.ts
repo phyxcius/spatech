@@ -247,6 +247,9 @@ export interface PedidoPublico {
   conductor_nombre?: string;
   placa?: string;
   modelo?: string;
+  pin_validado?: number;
+  pin_validado_at?: string | null;
+  viaje_etapa?: 'HACIA_PASAJERO' | 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO' | 'FINALIZADO' | null;
   created_at: string;
 }
 
@@ -296,6 +299,9 @@ export interface PedidoNegocio {
   fecha_hora_reserva?: string | null;
   intentos_pin: number;
   pin_bloqueado: number;
+  pin_validado?: number;
+  pin_validado_at?: string | null;
+  viaje_etapa?: 'HACIA_PASAJERO' | 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO' | 'FINALIZADO' | null;
   comision_plataforma_centavos: number;
   comision_referido_centavos: number;
   comision_retenida_centavos: number;
