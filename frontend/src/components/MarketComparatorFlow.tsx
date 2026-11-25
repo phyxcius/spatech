@@ -29,7 +29,6 @@ import {
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
-import { MapEdgeCarousel, type EdgeCarouselItem } from './MapEdgeCarousel.tsx';
 
 interface MarketComparatorFlowProps {
   userLat: number;
@@ -161,23 +160,6 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         isOpen: c.market.abiertoAhora,
       })),
     [comparisons]
-  );
-
-  const carouselItems: EdgeCarouselItem[] = useMemo(
-    () =>
-      comparisons.map((res, idx) => ({
-        id: res.market.id,
-        title: res.market.nombre,
-        subtitle: `${res.market.zona} · ${res.matchedCount}/${requestedItems.length} prod.`,
-        priceText: res.market.abiertoAhora ? fmtSoles(res.totalCentavos) : 'Cerrado',
-        badge: res.market.abiertoAhora ? 'Abierto' : 'Cerrado',
-        etaText: `~${res.etaMin} min · ${res.distanciaKm.toFixed(1)} km`,
-        rating: res.market.calificacion,
-        bestPrice: idx === 0 && res.market.abiertoAhora,
-        closed: !res.market.abiertoAhora || res.totalCentavos === 0,
-        actionLabel: 'Pedir',
-      })),
-    [comparisons, requestedItems.length]
   );
 
   function updateQty(sku: string, delta: number) {
@@ -480,14 +462,20 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         </div>
       )}
 
-      {/* Mapa grande centrado con Carrusel Vertical Translúcido a la Derecha */}
+      {/* Mapa grande centrado · al tocar un precio de minimarket se superpone el popup */}
       <CuscoGeoMap
         mode="MARKET"
         userLat={userLat}
         userLng={userLng}
         pins={mapPins}
         selectedPinId={activeResult?.market.id ?? null}
-        onSelectPin={(id) => setSelectedMarketId(id)}
+        onSelectPin={(id) => {
+          setSelectedMarketId(id);
+          const target = comparisons.find((c) => c.market.id === id);
+          if (target && target.market.abiertoAhora && target.totalCentavos > 0) {
+            setCheckoutTarget({ result: target, mode: 'COMPRA' });
+          }
+        }}
         onRequestPinAction={(id) => {
           const target = comparisons.find((c) => c.market.id === id);
           if (target && target.market.abiertoAhora && target.totalCentavos > 0) {
@@ -497,23 +485,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         }}
         onRequestGps={onRequestGps}
         gpsLive={gpsLive}
-        heightClass="h-[64vh] sm:h-[70vh] min-h-[460px]"
-        controlsPosition="left"
-        rightOverlay={
-          <MapEdgeCarousel
-            headerTitle={`Markets (${comparisons.length})`}
-            items={carouselItems}
-            selectedId={activeResult?.market.id ?? null}
-            onSelect={(id) => setSelectedMarketId(id)}
-            onAction={(id) => {
-              const target = comparisons.find((c) => c.market.id === id);
-              if (target && target.market.abiertoAhora && target.totalCentavos > 0) {
-                setCheckoutTarget({ result: target, mode: 'COMPRA' });
-              }
-            }}
-            accentHex="#34A853"
-          />
-        }
+        heightClass="h-[58vh] sm:h-[66vh] min-h-[430px]"
       />
 
       {/* Detalle del Market Seleccionado + Comparativa Inferior */}
@@ -726,11 +698,11 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+          className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
         >
           <form
             onSubmit={handleConfirmPurchase}
-            className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto"
+            className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto chuspa-google-border"
           >
             <div>
               <p className="text-[11px] uppercase tracking-wider font-bold text-emerald-600 dark:text-emerald-400">

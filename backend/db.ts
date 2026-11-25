@@ -312,6 +312,14 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
       source TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS dev_api_config (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      proveedor_consultas TEXT NOT NULL DEFAULT 'auto' CHECK(proveedor_consultas IN ('auto','apisperu','apisnetpe')),
+      token_consultas TEXT NOT NULL DEFAULT '',
+      token_facturacion TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Migración idempotente para bases SQLite existentes

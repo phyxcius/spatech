@@ -50,7 +50,6 @@ import {
   EmergencyDispatchCenter,
   SosActiveModalCard,
 } from './DispatchAndRouteModules.tsx';
-import { MapEdgeCarousel, type EdgeCarouselItem } from './MapEdgeCarousel.tsx';
 import { MarketComparatorFlow } from './MarketComparatorFlow.tsx';
 import {
   BodegaMinimarketModule,
@@ -959,25 +958,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     [catalogMapEntries]
   );
 
-  const catalogCarouselItems: EdgeCarouselItem[] = useMemo(
-    () =>
-      catalogMapEntries.map((entry) => ({
-        id: entry.key,
-        title: entry.op.titulo,
-        subtitle: `${entry.op.negocio_nombre}${entry.op.unidad_medida ? ` · ${entry.op.unidad_medida}` : ''}`,
-        priceText: entry.priceText,
-        badge: RUBRO_LABELS[entry.op.categoria],
-        etaText:
-          entry.op.distancia_km !== undefined
-            ? `${entry.op.eta_min} min · ${entry.op.distancia_km.toFixed(1)} km`
-            : `${entry.op.eta_min} min aprox.`,
-        rating: entry.op.calificacion,
-        bestPrice: Boolean(entry.op.mejor_precio),
-        actionLabel: entry.op.tipo === 'DIVISA' ? 'Cotizar' : 'Solicitar',
-      })),
-    [catalogMapEntries]
-  );
-
   const isCompactSphere = subTab === 'CONCIERGE' && conciergeMode !== 'SPHERE_IDLE';
 
   return (
@@ -1375,7 +1355,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 {RUBRO_LABELS[activeCategory]} ({opciones.length} encontrados)
               </h2>
               <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
-                Mapa central en Cusco con lista desplazable de negocios encontrados al costado derecho
+                Mapa centrado en Cusco · Toca cualquier precio del negocio en el mapa para abrir su petición superpuesta
               </p>
             </div>
           </div>
@@ -1398,14 +1378,27 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
           ) : (
             <div className="space-y-5">
-              {/* Mapa grande centrado con carrusel derecho de farmacias/restaurantes/negocios encontrados */}
+              {/* Mapa grande centrado · al tocar un precio se superpone el popup de petición */}
               <CuscoGeoMap
                 mode="MARKET"
                 userLat={coords.lat}
                 userLng={coords.lng}
                 pins={catalogPins}
                 selectedPinId={selectedCatalogKey ?? catalogMapEntries[0]?.key ?? null}
-                onSelectPin={(id) => setSelectedCatalogKey(id)}
+                onSelectPin={(id) => {
+                  setSelectedCatalogKey(id);
+                  const found = catalogMapEntries.find((e) => e.key === id);
+                  if (!found) return;
+                  if (found.op.tipo === 'DIVISA') {
+                    setSubTab('DIVISAS');
+                  } else {
+                    setSheetError(null);
+                    setSelectedOption(found.op);
+                    if (!isDocValid) {
+                      notifyDocumentAlertIfNeeded(found.op.titulo, false);
+                    }
+                  }
+                }}
                 onRequestPinAction={(id) => {
                   const found = catalogMapEntries.find((e) => e.key === id);
                   if (!found) return;
@@ -1421,30 +1414,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 }}
                 onRequestGps={requestGps}
                 gpsLive={gpsStatus === 'live'}
-                heightClass="h-[64vh] sm:h-[70vh] min-h-[460px]"
-                controlsPosition="left"
-                rightOverlay={
-                  <MapEdgeCarousel
-                    headerTitle={`${RUBRO_LABELS[activeCategory]} (${opciones.length})`}
-                    items={catalogCarouselItems}
-                    selectedId={selectedCatalogKey ?? catalogMapEntries[0]?.key ?? null}
-                    onSelect={(id) => setSelectedCatalogKey(id)}
-                    onAction={(id) => {
-                      const found = catalogMapEntries.find((e) => e.key === id);
-                      if (!found) return;
-                      if (found.op.tipo === 'DIVISA') {
-                        setSubTab('DIVISAS');
-                      } else {
-                        setSheetError(null);
-                        setSelectedOption(found.op);
-                        if (!isDocValid) {
-                          notifyDocumentAlertIfNeeded(found.op.titulo, false);
-                        }
-                      }
-                    }}
-                    accentHex="#4285F4"
-                  />
-                }
+                heightClass="h-[58vh] sm:h-[66vh] min-h-[430px]"
               />
 
               {/* Tarjetas completas debajo para detalle extendido */}
@@ -2059,9 +2029,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           role="dialog"
           aria-modal="true"
           aria-label="Confirmar solicitud"
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
         >
-          <div className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl bg-white dark:bg-[#121620] border border-black/10 dark:border-white/15 p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+          <div className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl bg-white dark:bg-[#121620] border border-black/10 dark:border-white/15 p-6 space-y-5 max-h-[90vh] overflow-y-auto chuspa-google-border">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs text-[#9A7B2C] dark:text-[#E5C158] font-medium">

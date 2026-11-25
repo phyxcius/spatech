@@ -2,12 +2,17 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   BadgeCheck,
   CheckCircle2,
+  Code2,
+  Eye,
+  EyeOff,
   KeyRound,
   LockOpen,
   LogOut,
   Plus,
   RefreshCw,
   ShieldCheck,
+  Terminal,
+  Trash2,
   XCircle,
 } from 'lucide-react';
 import { apiFetch, ApiError } from '../lib/api.ts';
@@ -18,6 +23,10 @@ import {
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import {
+  guardarTokenEnFirebase,
+  type ProveedorConsultas,
+} from '../lib/reniecSunatService.ts';
+import {
   BUSINESS_CATEGORIES,
   formatSoles,
   RUBRO_LABELS,
@@ -26,7 +35,7 @@ import {
   type Rubro,
 } from '../types.ts';
 
-type AdminTab = 'RECARGAS' | 'LIBRO' | 'COMISIONES' | 'NEGOCIOS' | 'ALERTAS';
+type AdminTab = 'RECARGAS' | 'LIBRO' | 'COMISIONES' | 'NEGOCIOS' | 'ALERTAS' | 'MODO_DEV';
 
 interface AdminPanelData {
   recargas: Array<{
@@ -161,6 +170,26 @@ export const AdminPanel: React.FC = () => {
   const [partnerName, setPartnerName] = useState('');
   const [partnerPct, setPartnerPct] = useState('10');
 
+  // Modo Desarrollador (ApisPerú / Apis.net.pe / Firebase /dev_api)
+  const [devProveedor, setDevProveedor] = useState<ProveedorConsultas>('auto');
+  const [devTokenConsultasInput, setDevTokenConsultasInput] = useState('');
+  const [devTokenFacturacionInput, setDevTokenFacturacionInput] = useState('');
+  const [devShowConsultas, setDevShowConsultas] = useState(false);
+  const [devShowFacturacion, setDevShowFacturacion] = useState(false);
+  const [devStatus, setDevStatus] = useState<{
+    hasTokenConsultas: boolean;
+    tokenConsultasPreview: string;
+    hasTokenFacturacion: boolean;
+    tokenFacturacionPreview: string;
+    firebaseDevApiUrl: string;
+    updatedAt: string | null;
+  } | null>(null);
+  const [devSaving, setDevSaving] = useState(false);
+  const [devTestDoc, setDevTestDoc] = useState('');
+  const [devTestLoading, setDevTestLoading] = useState(false);
+  const [devTestResult, setDevTestResult] = useState<PeruDocumentLookupResult | null>(null);
+  const [devTestError, setDevTestError] = useState<string | null>(null);
+
   const seenRechargeIdsRef = useRef<Set<number>>(new Set());
   const seenSosIdsRef = useRef<Set<number>>(new Set());
   const seededAdminRef = useRef(false);
@@ -179,6 +208,7 @@ export const AdminPanel: React.FC = () => {
       return;
     }
     void loadPanel();
+    void loadDevApiConfig();
     const id = setInterval(() => void loadPanel(), 4000);
     const unsubRec = subscribeFirebaseRtdbPath('recargas', () => void loadPanel());
     const unsubSos = subscribeFirebaseRtdbPath('emergencias', () => void loadPanel());
@@ -188,6 +218,32 @@ export const AdminPanel: React.FC = () => {
       unsubSos();
     };
   }, [token]);
+
+  async function loadDevApiConfig() {
+    if (!token) return;
+    try {
+      const res = await apiFetch<{
+        proveedorConsultas: ProveedorConsultas;
+        hasTokenConsultas: boolean;
+        tokenConsultasPreview: string;
+        hasTokenFacturacion: boolean;
+        tokenFacturacionPreview: string;
+        firebaseDevApiUrl: string;
+        updatedAt: string | null;
+      }>('/api/admin/dev-api', { token });
+      setDevProveedor(res.proveedorConsultas || 'auto');
+      setDevStatus({
+        hasTokenConsultas: res.hasTokenConsultas,
+        tokenConsultasPreview: res.tokenConsultasPreview,
+        hasTokenFacturacion: res.hasTokenFacturacion,
+        tokenFacturacionPreview: res.tokenFacturacionPreview,
+        firebaseDevApiUrl: res.firebaseDevApiUrl,
+        updatedAt: res.updatedAt,
+      });
+    } catch {
+      // Non-blocking
+    }
+  }
 
   async function loadPanel() {
     if (!token) return;
@@ -446,6 +502,102 @@ export const AdminPanel: React.FC = () => {
     }
   }
 
+  async function handleSaveDevApi(
+    e: React.FormEvent,
+    opts?: { clearConsultas?: boolean; clearFacturacion?: boolean }
+  ) {
+    e.preventDefault();
+    if (!token) return;
+    setDevSaving(true);
+    setStatusMsg(null);
+    try {
+      const nextConsultas = devTokenConsultasInput.trim();
+      const nextFacturacion = devTokenFacturacionInput.trim();
+      const res = await apiFetch<{
+        ok: boolean;
+        syncedFirebase: boolean;
+        proveedorConsultas: ProveedorConsultas;
+        hasTokenConsultas: boolean;
+        tokenConsultasPreview: string;
+        hasTokenFacturacion: boolean;
+        tokenFacturacionPreview: string;
+        updatedAt: string | null;
+      }>('/api/admin/dev-api', {
+        method: 'PUT',
+        body: {
+          proveedorConsultas: devProveedor,
+          tokenConsultasDniRuc: nextConsultas || undefined,
+          tokenFacturacionApisperu: nextFacturacion || undefined,
+          clearConsultas: opts?.clearConsultas,
+          clearFacturacion: opts?.clearFacturacion,
+        },
+        token,
+      });
+
+      if (nextConsultas || nextFacturacion || opts?.clearConsultas || opts?.clearFacturacion) {
+        void guardarTokenEnFirebase({
+          proveedorConsultas: devProveedor,
+          tokenConsultasDniRuc: opts?.clearConsultas ? '' : nextConsultas,
+          tokenFacturacionApisperu: opts?.clearFacturacion ? '' : nextFacturacion,
+        }).catch(() => {});
+      }
+
+      setDevStatus((prev) => ({
+        hasTokenConsultas: res.hasTokenConsultas,
+        tokenConsultasPreview: res.tokenConsultasPreview,
+        hasTokenFacturacion: res.hasTokenFacturacion,
+        tokenFacturacionPreview: res.tokenFacturacionPreview,
+        firebaseDevApiUrl: prev?.firebaseDevApiUrl || '',
+        updatedAt: res.updatedAt,
+      }));
+      setDevTokenConsultasInput('');
+      setDevTokenFacturacionInput('');
+      setStatusMsg({
+        type: 'ok',
+        text: `Tokens ApisPerú guardados y sincronizados${res.syncedFirebase ? ' con Firebase (/dev_api.json)' : ''}.`,
+      });
+      emitCenterNotification({
+        id: `admin-dev-api-${Date.now()}`,
+        badge: 'MODO DESARROLLADOR',
+        title: 'Tokens ApisPerú Actualizados',
+        subtitle: `Proveedor: ${devProveedor.toUpperCase()}`,
+        detail: `Consultas DNI/RUC: ${res.hasTokenConsultas ? 'Activo' : 'Sin token'} · Facturación SUNAT: ${res.hasTokenFacturacion ? 'Activo' : 'Sin token'}`,
+        tone: 'ai',
+      });
+    } catch (err) {
+      setStatusMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'No se pudieron guardar los tokens',
+      });
+    } finally {
+      setDevSaving(false);
+    }
+  }
+
+  async function handleTestDevLookup(e: React.FormEvent) {
+    e.preventDefault();
+    setDevTestError(null);
+    setDevTestResult(null);
+    const digits = devTestDoc.replace(/\D/g, '');
+    const tipo: 'DNI' | 'RUC' = digits.length === 11 ? 'RUC' : 'DNI';
+    const localErr = formatPeruLookupError(tipo, digits);
+    if (localErr) {
+      setDevTestError(localErr);
+      return;
+    }
+    setDevTestLoading(true);
+    try {
+      const res = await apiFetch<PeruDocumentLookupResult>(
+        `/api/public/consulta-documento?tipo=${tipo}&numero=${encodeURIComponent(digits)}&nocache=1`
+      );
+      setDevTestResult(res);
+    } catch (err) {
+      setDevTestError(err instanceof Error ? err.message : 'Error consultando ApisPerú');
+    } finally {
+      setDevTestLoading(false);
+    }
+  }
+
   async function handleCreatePartner(e: React.FormEvent) {
     e.preventDefault();
     if (!token) return;
@@ -586,19 +738,21 @@ export const AdminPanel: React.FC = () => {
               { id: 'COMISIONES', label: 'Reglas de Comisión' },
               { id: 'NEGOCIOS', label: 'Negocios y Unidades' },
               { id: 'ALERTAS', label: 'Emergencias SOS y Partners' },
+              { id: 'MODO_DEV', label: 'Modo Desarrollador (Tokens)' },
             ] as Array<{ id: AdminTab; label: string }>
           ).map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => setTab(t.id)}
-              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-all ${
+              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-all inline-flex items-center gap-1.5 ${
                 tab === t.id
                   ? 'bg-gradient-to-r from-[#B8860B] via-[#D4AF37] to-[#F5E199] text-[#0B0E14] border-[#D4AF37] shadow-md chuspa-google-btn'
                   : 'border-[#D4AF37]/25 text-[#6A5A2B] dark:text-[#C5B389] hover:border-[#D4AF37]/60'
               }`}
             >
-              {t.label}
+              {t.id === 'MODO_DEV' && <Code2 className="w-3.5 h-3.5" />}
+              <span>{t.label}</span>
             </button>
           ))}
         </div>
@@ -1254,6 +1408,225 @@ export const AdminPanel: React.FC = () => {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+      {tab === 'MODO_DEV' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          <form
+            onSubmit={handleSaveDevApi}
+            className="lg:col-span-7 rounded-3xl border border-[#D4AF37]/40 bg-white dark:bg-[#12100A] p-6 space-y-5 shadow-xl chuspa-google-border"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-[#9A7B2C] dark:text-[#F5E199] flex items-center gap-1.5">
+                  <Terminal className="w-4 h-4" />
+                  Modo Desarrollador · Integración ApisPerú & Firebase
+                </p>
+                <h2 className="font-display text-2xl font-semibold mt-1 text-[#14171F] dark:text-[#FFF5D6]">
+                  Tokens RENIEC / SUNAT & Facturación Electrónica
+                </h2>
+                <p className="text-xs text-[#6A717E] dark:text-[#C5B389] mt-1">
+                  Sincroniza tus tokens en el backend y en Firebase RTDB (/dev_api.json) para que todas las pantallas consulten DNI, RUC y emitan comprobantes SUNAT en tiempo real.
+                </p>
+              </div>
+              {devStatus?.updatedAt && (
+                <span className="text-[10px] font-mono-tabular px-2.5 py-1 rounded-full border border-[#D4AF37]/30 bg-[#D4AF37]/10 text-[#7C5E12] dark:text-[#F5E199]">
+                  Actualizado: {new Date(devStatus.updatedAt).toLocaleTimeString()}
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-[#555B66] dark:text-[#C5B389]">
+                Proveedor de Consultas DNI / RUC
+              </label>
+              <select
+                value={devProveedor}
+                onChange={(e) => setDevProveedor(e.target.value as ProveedorConsultas)}
+                className="w-full min-h-[46px] px-3.5 rounded-xl border border-[#D4AF37]/35 bg-[#F8F7F4] dark:bg-[#0B0904] text-sm font-medium"
+              >
+                <option value="auto">Automático (ApisPerú principal + respaldo Apis.net.pe)</option>
+                <option value="apisperu">Solo ApisPerú (dniruc.apisperu.com)</option>
+                <option value="apisnetpe">Solo Apis.net.pe (api.apis.net.pe/v2)</option>
+              </select>
+            </div>
+
+            {/* Token 1: Consultas DNI / RUC */}
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0904] p-4 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-[#14171F] dark:text-white">
+                  1. Token Consultas DNI (RENIEC) y RUC (SUNAT) · ApisPerú
+                </label>
+                <span
+                  className={`text-[10px] font-mono-tabular px-2 py-0.5 rounded-full font-bold ${
+                    devStatus?.hasTokenConsultas
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
+                  }`}
+                >
+                  {devStatus?.hasTokenConsultas
+                    ? `Activo (${devStatus.tokenConsultasPreview})`
+                    : 'Sin configurar'}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={devShowConsultas ? 'text' : 'password'}
+                    value={devTokenConsultasInput}
+                    onChange={(e) => setDevTokenConsultasInput(e.target.value)}
+                    placeholder="Pega tu nuevo token JWT de ApisPerú DNI/RUC (eyJ0eX...)"
+                    className="w-full min-h-[44px] pl-3.5 pr-10 rounded-xl border border-[#D4AF37]/30 bg-white dark:bg-[#14110A] font-mono-tabular text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDevShowConsultas((v) => !v)}
+                    aria-label="Mostrar u ocultar token DNI/RUC"
+                    className="absolute right-2 top-2.5 text-[#6A717E] hover:text-[#D4AF37] p-1"
+                  >
+                    {devShowConsultas ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {devStatus?.hasTokenConsultas && (
+                  <button
+                    type="button"
+                    disabled={devSaving}
+                    onClick={(e) => void handleSaveDevApi(e, { clearConsultas: true })}
+                    title="Limpiar token de consultas"
+                    className="min-h-[44px] px-3 rounded-xl border border-rose-500/35 text-[#C81E5B] text-xs font-semibold flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Token 2: Facturación Electrónica ApisPerú */}
+            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0904] p-4 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-[#14171F] dark:text-white">
+                  2. Token Facturación Electrónica ApisPerú (Boletas y Facturas SUNAT)
+                </label>
+                <span
+                  className={`text-[10px] font-mono-tabular px-2 py-0.5 rounded-full font-bold ${
+                    devStatus?.hasTokenFacturacion
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30'
+                  }`}
+                >
+                  {devStatus?.hasTokenFacturacion
+                    ? `Activo (${devStatus.tokenFacturacionPreview})`
+                    : 'Sin configurar'}
+                </span>
+              </div>
+              <p className="text-[11px] text-[#6A717E] dark:text-[#A3A9B5]">
+                Se aplica únicamente a minimarkets, boticas/farmacias, restaurantes, hoteles y tours. Los taxistas nunca emiten comprobantes electrónicos.
+              </p>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={devShowFacturacion ? 'text' : 'password'}
+                    value={devTokenFacturacionInput}
+                    onChange={(e) => setDevTokenFacturacionInput(e.target.value)}
+                    placeholder="Pega tu token Bearer de Facturación Electrónica ApisPerú"
+                    className="w-full min-h-[44px] pl-3.5 pr-10 rounded-xl border border-[#D4AF37]/30 bg-white dark:bg-[#14110A] font-mono-tabular text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setDevShowFacturacion((v) => !v)}
+                    aria-label="Mostrar u ocultar token de facturación"
+                    className="absolute right-2 top-2.5 text-[#6A717E] hover:text-[#D4AF37] p-1"
+                  >
+                    {devShowFacturacion ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                {devStatus?.hasTokenFacturacion && (
+                  <button
+                    type="button"
+                    disabled={devSaving}
+                    onClick={(e) => void handleSaveDevApi(e, { clearFacturacion: true })}
+                    title="Limpiar token de facturación"
+                    className="min-h-[44px] px-3 rounded-xl border border-rose-500/35 text-[#C81E5B] text-xs font-semibold flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={devSaving}
+              className="w-full min-h-[48px] rounded-2xl bg-gradient-to-r from-[#B8860B] via-[#D4AF37] to-[#F5E199] text-[#0B0E14] text-sm font-bold shadow-lg chuspa-google-btn disabled:opacity-60"
+            >
+              {devSaving ? 'Sincronizando tokens...' : 'Guardar Tokens en Firebase (/dev_api) y Servidor'}
+            </button>
+          </form>
+
+          {/* Probador en vivo RENIEC / SUNAT */}
+          <div className="lg:col-span-5 space-y-4">
+            <form
+              onSubmit={handleTestDevLookup}
+              className="rounded-3xl border border-[#D4AF37]/35 bg-white dark:bg-[#12100A] p-6 space-y-4 shadow-xl"
+            >
+              <div>
+                <p className="text-[11px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#F5E199]">
+                  Verificación en Vivo
+                </p>
+                <h3 className="font-display text-xl font-semibold mt-0.5">
+                  Probar Token DNI (RENIEC) o RUC (SUNAT)
+                </h3>
+                <p className="text-xs text-[#6A717E] dark:text-[#A3A9B5] mt-1">
+                  Ejecuta una consulta sin caché usando el proveedor y token configurados arriba.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={11}
+                  required
+                  value={devTestDoc}
+                  onChange={(e) => setDevTestDoc(e.target.value.replace(/\D/g, ''))}
+                  placeholder="DNI (8 dígitos) o RUC (11 dígitos)"
+                  className="flex-1 min-h-[44px] px-3.5 rounded-xl border border-[#D4AF37]/35 bg-[#F8F7F4] dark:bg-[#0B0904] font-mono-tabular text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={devTestLoading}
+                  className="min-h-[44px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap chuspa-google-btn"
+                >
+                  {devTestLoading ? 'Consultando...' : 'Probar'}
+                </button>
+              </div>
+
+              {devTestError && (
+                <div className="rounded-xl border border-[#C81E5B]/40 bg-[#C81E5B]/10 p-3 text-xs text-[#C81E5B]">
+                  {devTestError}
+                </div>
+              )}
+
+              {devTestResult && (
+                <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 space-y-1.5 text-xs">
+                  <p className="font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                    <BadgeCheck className="w-4 h-4" />
+                    {devTestResult.tipo} {devTestResult.numero} · Fuente: {devTestResult.fuente || devTestResult.source}
+                  </p>
+                  <p className="text-sm font-semibold text-[#14171F] dark:text-white">
+                    {devTestResult.nombre_completo}
+                  </p>
+                  {devTestResult.direccion && (
+                    <p className="text-[#555B66] dark:text-[#A3A9B5]">{devTestResult.direccion}</p>
+                  )}
+                  {(devTestResult.estado || devTestResult.condicion) && (
+                    <p className="font-mono-tabular text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                      Estado: {devTestResult.estado || '—'} · Condición: {devTestResult.condicion || '—'}
+                    </p>
+                  )}
+                </div>
+              )}
+            </form>
           </div>
         </div>
       )}

@@ -57,6 +57,14 @@ import {
 
 const ENTIDADES_EMERGENCIA = ['SAMU', 'SERENAZGO', 'PNP_105', 'BOMBEROS'] as const;
 type EntidadEmergencia = (typeof ENTIDADES_EMERGENCIA)[number];
+type ProveedorConsultas = 'auto' | 'apisperu' | 'apisnetpe';
+
+function maskSecretPreview(raw: string): string {
+  const clean = (raw || '').trim();
+  if (!clean) return '';
+  if (clean.length <= 10) return '••••••••';
+  return `${clean.slice(0, 6)}••••••${clean.slice(-4)}`;
+}
 
 function isValidDni(raw: string): boolean {
   return /^\d{8}$/.test(raw.trim());
@@ -247,6 +255,81 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   const authLimiter = skipRateLimit
     ? (_req: Request, _res: Response, next: NextFunction) => next()
     : createRateLimiter(20, 60_000);
+
+  function getLocalDevApiConfig(): {
+    proveedorConsultas: ProveedorConsultas;
+    tokenConsultasDniRuc: string;
+    tokenFacturacionApisperu: string;
+    updatedAt: string | null;
+  } {
+    const row = db
+      .prepare('SELECT * FROM dev_api_config WHERE id = 1')
+      .get() as
+      | {
+          proveedor_consultas: string;
+          token_consultas: string;
+          token_facturacion: string;
+          updated_at: string;
+        }
+      | undefined;
+
+    const envConsultas = (process.env.PERU_DNI_RUC_TOKEN || '').trim();
+    const envFacturacion = (process.env.APISPERU_FACTURACION_TOKEN || '').trim();
+    const prov: ProveedorConsultas =
+      row?.proveedor_consultas === 'apisperu' || row?.proveedor_consultas === 'apisnetpe'
+        ? row.proveedor_consultas
+        : 'auto';
+
+    return {
+      proveedorConsultas: prov,
+      tokenConsultasDniRuc: (row?.token_consultas || '').trim() || envConsultas,
+      tokenFacturacionApisperu: (row?.token_facturacion || '').trim() || envFacturacion,
+      updatedAt: row?.updated_at || null,
+    };
+  }
+
+  async function resolveDevApiConfig() {
+    const local = getLocalDevApiConfig();
+    if (
+      (local.tokenConsultasDniRuc && local.tokenFacturacionApisperu) ||
+      process.env.NODE_ENV === 'test' ||
+      process.env.DISABLE_FIREBASE_SYNC === 'true'
+    ) {
+      return local;
+    }
+
+    const baseUrl = getRtdbBaseUrl();
+    if (baseUrl) {
+      try {
+        const res = await fetch(`${baseUrl}/dev_api.json`, {
+          method: 'GET',
+          signal: AbortSignal.timeout(3000),
+        });
+        if (res.ok) {
+          const remote = (await res.json()) as Record<string, any> | null;
+          if (remote && typeof remote === 'object') {
+            const prov: ProveedorConsultas =
+              remote.proveedorConsultas === 'apisperu' || remote.proveedorConsultas === 'apisnetpe'
+                ? remote.proveedorConsultas
+                : local.proveedorConsultas;
+            const tokConsultas =
+              local.tokenConsultasDniRuc || String(remote.tokenConsultasDniRuc || '').trim();
+            const tokFacturacion =
+              local.tokenFacturacionApisperu || String(remote.tokenFacturacionApisperu || '').trim();
+            return {
+              proveedorConsultas: prov,
+              tokenConsultasDniRuc: tokConsultas,
+              tokenFacturacionApisperu: tokFacturacion,
+              updatedAt: remote.updated_at ? String(remote.updated_at) : local.updatedAt,
+            };
+          }
+        }
+      } catch {
+        // Keep local fallback
+      }
+    }
+    return local;
+  }
 
   // =========================================================================
   // 1. RUTAS PÚBLICAS DE CLIENTE / TURISTA
@@ -522,19 +605,22 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         throw new HttpError(400, 'El RUC peruano debe tener 11 dígitos válidos (SUNAT)');
       }
 
-      const cached = db
-        .prepare('SELECT * FROM documentos_peru WHERE tipo = ? AND numero = ?')
-        .get(tipo, numero) as
-        | {
-            tipo: 'DNI' | 'RUC';
-            numero: string;
-            nombre_completo: string;
-            razon_social: string | null;
-            estado: string | null;
-            condicion: string | null;
-            direccion: string | null;
-          }
-        | undefined;
+      const bypassCache = String(req.query.nocache || '') === '1';
+      const cached = !bypassCache
+        ? (db
+            .prepare('SELECT * FROM documentos_peru WHERE tipo = ? AND numero = ?')
+            .get(tipo, numero) as
+            | {
+                tipo: 'DNI' | 'RUC';
+                numero: string;
+                nombre_completo: string;
+                razon_social: string | null;
+                estado: string | null;
+                condicion: string | null;
+                direccion: string | null;
+              }
+            | undefined)
+        : undefined;
 
       if (cached) {
         res.json({
@@ -559,10 +645,14 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       let condicion: string | null = null;
       let direccion: string | null = null;
       let source: 'RENIEC' | 'SUNAT' | 'VALIDACION_LOCAL' = 'VALIDACION_LOCAL';
+      let providerUsed: 'apisperu' | 'apisnetpe' | undefined;
 
       if (process.env.NODE_ENV !== 'test') {
-        const apisperuToken = (process.env.PERU_DNI_RUC_TOKEN || '').trim();
-        if (apisperuToken) {
+        const devCfg = await resolveDevApiConfig();
+        const apisperuToken = devCfg.tokenConsultasDniRuc;
+        const prov = devCfg.proveedorConsultas;
+
+        if (apisperuToken && (prov === 'apisperu' || prov === 'auto')) {
           try {
             const apisperuEndpoint =
               tipo === 'DNI'
@@ -581,7 +671,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
                     .join(' ')
                     .trim();
                   nombreCompleto = String(joined || apData.nombre || '').trim();
-                  if (nombreCompleto) source = 'RENIEC';
+                  if (nombreCompleto) {
+                    source = 'RENIEC';
+                    providerUsed = 'apisperu';
+                  }
                 } else {
                   razonSocial =
                     String(apData.razonSocial || apData.nombreComercial || apData.nombre || '').trim() || null;
@@ -589,7 +682,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
                   estado = apData.estado ? String(apData.estado) : null;
                   condicion = apData.condicion ? String(apData.condicion) : null;
                   direccion = apData.direccion ? String(apData.direccion) : null;
-                  if (nombreCompleto) source = 'SUNAT';
+                  if (nombreCompleto) {
+                    source = 'SUNAT';
+                    providerUsed = 'apisperu';
+                  }
                 }
               }
             }
@@ -598,36 +694,53 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           }
         }
 
-        if (!nombreCompleto) {
-          try {
-            const endpoint =
-              tipo === 'DNI'
-                ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
-                : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
-            const upstream = await fetch(endpoint, {
-              headers: { Accept: 'application/json' },
-              signal: AbortSignal.timeout(4500),
-            });
-            if (upstream.ok) {
-              const data = (await upstream.json()) as Record<string, any>;
-              if (tipo === 'DNI') {
-                const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
-                  .filter(Boolean)
-                  .join(' ')
-                  .trim();
-                nombreCompleto = String(data.nombre || joined || '').trim();
-                if (nombreCompleto) source = 'RENIEC';
-              } else {
-                razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
-                nombreCompleto = razonSocial || '';
-                estado = data.estado ? String(data.estado) : null;
-                condicion = data.condicion ? String(data.condicion) : null;
-                direccion = data.direccion ? String(data.direccion) : null;
-                if (nombreCompleto) source = 'SUNAT';
+        if (!nombreCompleto && (prov === 'apisnetpe' || prov === 'auto')) {
+          const candidates = [
+            apisperuToken
+              ? tipo === 'DNI'
+                ? `https://api.apis.net.pe/v2/reniec/dni?numero=${encodeURIComponent(numero)}&token=${encodeURIComponent(apisperuToken)}`
+                : `https://api.apis.net.pe/v2/sunat/ruc?numero=${encodeURIComponent(numero)}&token=${encodeURIComponent(apisperuToken)}`
+              : '',
+            tipo === 'DNI'
+              ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
+              : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`,
+          ].filter(Boolean);
+
+          for (const endpoint of candidates) {
+            try {
+              const upstream = await fetch(endpoint, {
+                headers: { Accept: 'application/json' },
+                signal: AbortSignal.timeout(4500),
+              });
+              if (upstream.ok) {
+                const data = (await upstream.json()) as Record<string, any>;
+                if (tipo === 'DNI') {
+                  const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
+                    .filter(Boolean)
+                    .join(' ')
+                    .trim();
+                  nombreCompleto = String(data.nombreCompleto || data.nombre || joined || '').trim();
+                  if (nombreCompleto) {
+                    source = 'RENIEC';
+                    providerUsed = 'apisnetpe';
+                    break;
+                  }
+                } else {
+                  razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
+                  nombreCompleto = razonSocial || '';
+                  estado = data.estado ? String(data.estado) : null;
+                  condicion = data.condicion ? String(data.condicion) : null;
+                  direccion = data.direccion ? String(data.direccion) : null;
+                  if (nombreCompleto) {
+                    source = 'SUNAT';
+                    providerUsed = 'apisnetpe';
+                    break;
+                  }
+                }
               }
+            } catch {
+              // Try next endpoint
             }
-          } catch {
-            // Fallback to validated local format below when offline / upstream unavailable
           }
         }
       }
@@ -683,7 +796,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         condicion: condicion || undefined,
         direccion: direccion || undefined,
         source,
-        fuente: source,
+        fuente: providerUsed || source,
       });
     } catch (err) {
       next(err);
@@ -1880,7 +1993,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         },
         regla_comision: regla,
         facturacion_apisperu_activa:
-          negocio.rubro === 'TRANSPORTE' ? false : isApisperuBillingConfigured(),
+          negocio.rubro === 'TRANSPORTE'
+            ? false
+            : isApisperuBillingConfigured(getLocalDevApiConfig().tokenFacturacionApisperu),
         movimientos,
         recargas,
         servicios,
@@ -2260,7 +2375,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         let comprobantePayload: ReturnType<typeof buildComprobantePayload> | null = null;
         if (enriched.categoria !== 'TRANSPORTE') {
           const initialComp = buildComprobantePayload(enriched);
-          const apisperuRes = await enviarComprobanteApisperu(enriched.categoria, initialComp);
+          const devCfg = await resolveDevApiConfig();
+          const apisperuRes = await enviarComprobanteApisperu(
+            enriched.categoria,
+            initialComp,
+            devCfg.tokenFacturacionApisperu
+          );
           db.prepare(
             'UPDATE pedidos_ordenes SET comprobante_hash = ?, comprobante_sunat_estado = ? WHERE id = ?'
           ).run(apisperuRes.hash, apisperuRes.estado, enriched.id);
@@ -2323,7 +2443,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         }
 
         const comp = buildComprobantePayload(row);
-        const apisperuRes = await enviarComprobanteApisperu(row.categoria, comp);
+        const devCfg = await resolveDevApiConfig();
+        const apisperuRes = await enviarComprobanteApisperu(
+          row.categoria,
+          comp,
+          devCfg.tokenFacturacionApisperu
+        );
         db.prepare(
           'UPDATE pedidos_ordenes SET comprobante_hash = ?, comprobante_sunat_estado = ? WHERE id = ?'
         ).run(apisperuRes.hash, apisperuRes.estado, row.id);
@@ -3312,6 +3437,97 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         'INSERT INTO partners_afiliados (codigo, nombre, telefono, porcentaje_comision, activo) VALUES (?, ?, ?, ?, 1)'
       ).run(cleanCode, nombre.trim(), String(telefono || '+51984000000').trim(), porcentaje_comision);
       res.status(201).json({ ok: true, codigo: cleanCode });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/admin/dev-api', requireAdminAuth, async (_req, res, next) => {
+    try {
+      const cfg = await resolveDevApiConfig();
+      res.json({
+        proveedorConsultas: cfg.proveedorConsultas,
+        hasTokenConsultas: Boolean(cfg.tokenConsultasDniRuc),
+        tokenConsultasPreview: maskSecretPreview(cfg.tokenConsultasDniRuc),
+        hasTokenFacturacion: Boolean(cfg.tokenFacturacionApisperu),
+        tokenFacturacionPreview: maskSecretPreview(cfg.tokenFacturacionApisperu),
+        firebaseDevApiUrl: `${getRtdbBaseUrl()}/dev_api.json`,
+        updatedAt: cfg.updatedAt,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/api/admin/dev-api', requireAdminAuth, async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const current = getLocalDevApiConfig();
+      const proveedor: ProveedorConsultas =
+        body.proveedorConsultas === 'apisperu' || body.proveedorConsultas === 'apisnetpe'
+          ? body.proveedorConsultas
+          : 'auto';
+
+      const clearConsultas = body.clearConsultas === true;
+      const clearFacturacion = body.clearFacturacion === true;
+      const rawConsultas =
+        typeof body.tokenConsultasDniRuc === 'string' ? body.tokenConsultasDniRuc.trim() : '';
+      const rawFacturacion =
+        typeof body.tokenFacturacionApisperu === 'string' ? body.tokenFacturacionApisperu.trim() : '';
+
+      if (rawConsultas.length > 1024 || rawFacturacion.length > 1024) {
+        throw new HttpError(400, 'Longitud de token inválida');
+      }
+
+      const nextConsultas = clearConsultas ? '' : rawConsultas || current.tokenConsultasDniRuc;
+      const nextFacturacion = clearFacturacion
+        ? ''
+        : rawFacturacion || current.tokenFacturacionApisperu;
+
+      const nowIso = new Date().toISOString();
+      db.prepare(`
+        INSERT INTO dev_api_config (id, proveedor_consultas, token_consultas, token_facturacion, updated_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          proveedor_consultas = excluded.proveedor_consultas,
+          token_consultas = excluded.token_consultas,
+          token_facturacion = excluded.token_facturacion,
+          updated_at = excluded.updated_at
+      `).run(proveedor, nextConsultas, nextFacturacion, nowIso);
+
+      let syncedFirebase = false;
+      if (process.env.NODE_ENV !== 'test' && process.env.DISABLE_FIREBASE_SYNC !== 'true') {
+        const baseUrl = getRtdbBaseUrl();
+        if (baseUrl) {
+          try {
+            const fbRes = await fetch(`${baseUrl}/dev_api.json`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                proveedorConsultas: proveedor,
+                tokenConsultasDniRuc: nextConsultas,
+                tokenFacturacionApisperu: nextFacturacion,
+                updated_at: nowIso,
+              }),
+              signal: AbortSignal.timeout(4500),
+            });
+            syncedFirebase = fbRes.ok;
+          } catch {
+            syncedFirebase = false;
+          }
+        }
+      }
+
+      res.json({
+        ok: true,
+        syncedFirebase,
+        proveedorConsultas: proveedor,
+        hasTokenConsultas: Boolean(nextConsultas),
+        tokenConsultasPreview: maskSecretPreview(nextConsultas),
+        hasTokenFacturacion: Boolean(nextFacturacion),
+        tokenFacturacionPreview: maskSecretPreview(nextFacturacion),
+        updatedAt: nowIso,
+      });
     } catch (err) {
       next(err);
     }

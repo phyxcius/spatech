@@ -34,13 +34,14 @@ export interface ApisperuBillingResult {
   mensaje?: string | null;
 }
 
-export function isApisperuBillingConfigured(): boolean {
-  return Boolean((process.env.APISPERU_FACTURACION_TOKEN || '').trim());
+export function isApisperuBillingConfigured(overrideToken?: string): boolean {
+  return Boolean(((overrideToken || '').trim() || (process.env.APISPERU_FACTURACION_TOKEN || '').trim()));
 }
 
 export async function enviarComprobanteApisperu(
   categoria: string,
-  comprobante: ComprobanteApisperuInput
+  comprobante: ComprobanteApisperuInput,
+  overrideToken?: string
 ): Promise<ApisperuBillingResult> {
   // Regla estricta: taxis / transporte NUNCA emiten facturación electrónica
   if (categoria === 'TRANSPORTE') {
@@ -52,7 +53,7 @@ export async function enviarComprobanteApisperu(
     };
   }
 
-  const token = (process.env.APISPERU_FACTURACION_TOKEN || '').trim();
+  const token = (overrideToken || '').trim() || (process.env.APISPERU_FACTURACION_TOKEN || '').trim();
   if (!token || process.env.NODE_ENV === 'test') {
     return {
       sent: false,

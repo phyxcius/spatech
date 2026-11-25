@@ -28,7 +28,6 @@ import {
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
-import { MapEdgeCarousel, type EdgeCarouselItem } from './MapEdgeCarousel.tsx';
 
 interface TaxiInDriveFlowProps {
   userLat: number;
@@ -319,22 +318,6 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     [driverBids]
   );
 
-  const carouselItems: EdgeCarouselItem[] = useMemo(
-    () =>
-      driverBids.map((d, idx) => ({
-        id: d.id,
-        title: d.conductor_nombre,
-        subtitle: `${d.modelo} · ${d.placa}`,
-        priceText: formatSoles(d.priceCentavos),
-        badge: d.negocio_nombre.split(' ')[0],
-        etaText: `${d.etaMin} min · ${d.distanciaKm.toFixed(1)} km`,
-        rating: d.calificacion,
-        bestPrice: idx === 0,
-        actionLabel: 'Solicitar',
-      })),
-    [driverBids]
-  );
-
   const cheapestDriver = driverBids[0];
 
   function triggerDriverSearch() {
@@ -501,7 +484,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
               Taxi por Geolocalización · Modo InDrive / La Chuspa
             </p>
             <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
-              Mapa central en vivo y carrusel de conductores cercanos
+              Mapa centrado en vivo · Toca un precio para solicitar tu taxi
             </h2>
           </div>
         </div>
@@ -597,7 +580,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
         )}
       </div>
 
-      {/* Mapa grande centrado con Carrusel Vertical Translúcido a la Derecha */}
+      {/* Mapa grande centrado · al tocar un precio se superpone el popup de petición */}
       <div className="space-y-4">
         <CuscoGeoMap
           mode="TAXI"
@@ -610,7 +593,13 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           routeSummary={`${routeEtaMin} min · ${routeDistanceKm.toFixed(1)} km`}
           pins={mapPins}
           selectedPinId={selectedDriverId}
-          onSelectPin={(id) => setSelectedDriverId(id)}
+          onSelectPin={(id) => {
+            setSelectedDriverId(id);
+            const drv = driverBids.find((d) => d.id === id);
+            if (drv) {
+              setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
+            }
+          }}
           onRequestPinAction={(id) => {
             const drv = driverBids.find((d) => d.id === id);
             if (drv) {
@@ -621,23 +610,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           onRouteComputed={setOsrmRoute}
           onRequestGps={onRequestGps}
           gpsLive={gpsLive}
-          heightClass="h-[64vh] sm:h-[70vh] min-h-[460px]"
-          controlsPosition="left"
-          rightOverlay={
-            <MapEdgeCarousel
-              headerTitle={`Taxis (${driverBids.length})`}
-              items={carouselItems}
-              selectedId={selectedDriverId}
-              onSelect={(id) => setSelectedDriverId(id)}
-              onAction={(id) => {
-                const drv = driverBids.find((d) => d.id === id);
-                if (drv) {
-                  setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
-                }
-              }}
-              accentHex="#34A853"
-            />
-          }
+          heightClass="h-[58vh] sm:h-[66vh] min-h-[430px]"
         />
 
         {/* Controles InDrive "Viaja a tu precio" + tarjetas de oferta */}
@@ -863,11 +836,11 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+          className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
         >
             <form
               onSubmit={handleDispatchTaxi}
-              className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto"
+              className="w-full max-w-md rounded-3xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] p-6 space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto chuspa-google-border"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>

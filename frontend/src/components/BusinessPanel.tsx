@@ -45,7 +45,7 @@ import {
   type Rubro,
 } from '../types.ts';
 import { BusinessConfigTab } from './BusinessConfigTab.tsx';
-import { CuscoGeoMap } from './CuscoGeoMap.tsx';
+import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 import {
   ColectivoSeatControl,
   EmergencyDispatchCenter,
@@ -304,6 +304,7 @@ export const BusinessPanel: React.FC = () => {
   const [driverSubTab, setDriverSubTab] = useState<'SOLICITUDES' | 'DESEMPENO'>('SOLICITUDES');
   const [activeUnitId, setActiveUnitId] = useState<number | null>(null);
   const [selectedRideOrder, setSelectedRideOrder] = useState<PedidoNegocio | null>(null);
+  const [selectedBizOrder, setSelectedBizOrder] = useState<PedidoNegocio | null>(null);
   const [customCounterOpen, setCustomCounterOpen] = useState(false);
   const [customCounterSoles, setCustomCounterSoles] = useState('');
   const [driverGpsSending, setDriverGpsSending] = useState(false);
@@ -380,6 +381,9 @@ export const BusinessPanel: React.FC = () => {
       const nextGuias = Array.isArray(guiasRes?.guias) ? guiasRes.guias : [];
       setPedidos(nextPedidos);
       setSelectedRideOrder((prev) =>
+        prev ? nextPedidos.find((p) => p.id === prev.id && p.estado === 'PENDIENTE_CONFIRMACION') || null : null
+      );
+      setSelectedBizOrder((prev) =>
         prev ? nextPedidos.find((p) => p.id === prev.id && p.estado === 'PENDIENTE_CONFIRMACION') || null : null
       );
       setGuias(nextGuias);
@@ -1489,7 +1493,64 @@ export const BusinessPanel: React.FC = () => {
             </div>
 
             {driverSubTab === 'SOLICITUDES' ? (
-              <div className="space-y-3">
+              <div className="space-y-4">
+                {(() => {
+                  const drvLat = activeUnit?.lat ?? resumen?.negocio.lat ?? -13.5174;
+                  const drvLng = activeUnit?.lng ?? resumen?.negocio.lng ?? -71.9765;
+                  const driverPins: GeoMapPin[] = nuevos.map((p, idx) => {
+                    const angle = (idx * 72 * Math.PI) / 180;
+                    const pLat = p.origen_lat ?? drvLat + Math.sin(angle) * 0.0045;
+                    const pLng = p.origen_lng ?? drvLng + Math.cos(angle) * 0.0045;
+                    return {
+                      id: `ride-${p.id}`,
+                      lat: pLat,
+                      lng: pLng,
+                      priceText: formatSoles(p.monto_centavos),
+                      sublabel: p.cliente_nombre,
+                      detailTitle: `${p.origen_texto || 'Pasajero'} → ${p.destino_texto || 'Cusco'}`,
+                      tier: p.monto_centavos >= 2000 ? 'cheapest' : 'mid',
+                      kind: 'DRIVER',
+                      isOpen: true,
+                    };
+                  });
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                        <p className="text-xs font-semibold text-[#14213D] dark:text-[#E5C158]">
+                          Mapa de solicitudes en vivo ({nuevos.length}) · Pulsa un precio en el mapa para responder
+                        </p>
+                        <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                          {activeUnit ? `Unidad ${activeUnit.placa}` : 'Tu unidad'}
+                        </span>
+                      </div>
+                      <CuscoGeoMap
+                        mode="TAXI"
+                        userLat={drvLat}
+                        userLng={drvLng}
+                        originLabel={activeUnit ? `${activeUnit.conductor_nombre} (${activeUnit.placa})` : 'Tu ubicación actual'}
+                        pins={driverPins}
+                        selectedPinId={selectedRideOrder ? `ride-${selectedRideOrder.id}` : null}
+                        onSelectPin={(pinId) => {
+                          const found = nuevos.find((p) => `ride-${p.id}` === pinId);
+                          if (found) {
+                            setSelectedRideOrder(found);
+                            setCustomCounterOpen(false);
+                          }
+                        }}
+                        onRequestPinAction={(pinId) => {
+                          const found = nuevos.find((p) => `ride-${p.id}` === pinId);
+                          if (found) {
+                            setSelectedRideOrder(found);
+                            setCustomCounterOpen(false);
+                          }
+                        }}
+                        gpsLive={driverGpsSending}
+                        heightClass="h-[300px] sm:h-[360px]"
+                      />
+                    </div>
+                  );
+                })()}
+
                 {enCurso.length > 0 && (
                   <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="text-xs">
@@ -1657,64 +1718,126 @@ export const BusinessPanel: React.FC = () => {
         );
       })()}
 
-      {/* TAB NUEVOS (Negocios no-taxi) */}
-      {tab === 'NUEVOS' && session.rubro !== 'TRANSPORTE' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {nuevos.length === 0 ? (
-            <div className="md:col-span-2 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center text-sm text-[#6A717E] dark:text-[#98A0AD]">
-              No hay solicitudes nuevas en este momento. Solo recibes pedidos de tu categoría ({RUBRO_LABELS[session.rubro]}).
-            </div>
-          ) : (
-            nuevos.map((p) => (
-              <article
-                key={p.id}
-                className="rounded-2xl border border-[#D4AF37]/40 bg-white dark:bg-[#121620] p-6 space-y-4"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
-                      {p.codigo} · {p.metodo_pago}
-                    </p>
-                    <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
-                      Cliente: {p.cliente_nombre} · {p.transcripcion}
-                    </p>
-                    {p.cliente_documento_numero && (
-                      <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
-                        <BadgeCheck className="w-3.5 h-3.5" />
-                        {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}{' '}
-                        {p.cliente_documento_verificado ? '· RENIEC/SUNAT Verificado' : ''}
-                      </p>
-                    )}
-                  </div>
-                  <p className="font-mono-tabular text-xl font-semibold shrink-0">
-                    {formatSoles(p.monto_centavos)}
-                  </p>
-                </div>
+      {/* TAB NUEVOS (Negocios no-taxi con Mapa Centrado + Popup Superpuesto) */}
+      {tab === 'NUEVOS' && session.rubro !== 'TRANSPORTE' && (() => {
+        const bizLat = resumen?.negocio.lat ?? -13.5167;
+        const bizLng = resumen?.negocio.lng ?? -71.9788;
+        const bizOrderPins: GeoMapPin[] = nuevos.map((p, idx) => {
+          const angle = (idx * 68 * Math.PI) / 180;
+          const radius = 0.0028 + (idx % 3) * 0.0014;
+          return {
+            id: `biz-ord-${p.id}`,
+            lat: p.origen_lat ?? bizLat + Math.sin(angle) * radius,
+            lng: p.origen_lng ?? bizLng + Math.cos(angle) * radius,
+            priceText: formatSoles(p.monto_centavos),
+            sublabel: p.cliente_nombre,
+            detailTitle: p.item_nombre,
+            tier: p.monto_centavos >= 5000 ? 'cheapest' : 'mid',
+            kind: 'MARKET',
+            isOpen: true,
+          };
+        });
 
-                <div className="flex gap-3 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => handleReject(p.id)}
-                    className="flex-1 min-h-[48px] rounded-xl border border-[#C81E5B]/40 text-[#C81E5B] text-sm font-semibold flex items-center justify-center gap-1.5"
-                  >
-                    <X className="w-4 h-4" />
-                    <span>Rechazar</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleAccept(p.id)}
-                    className="flex-1 min-h-[48px] rounded-xl bg-[#1FA855] text-white text-sm font-semibold flex items-center justify-center gap-1.5"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>Aceptar</span>
-                  </button>
+        return (
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                <p className="text-xs font-semibold text-[#14213D] dark:text-[#E5C158]">
+                  Mapa de pedidos entrantes ({nuevos.length}) · Pulsa un pin de precio para abrir la ficha del cliente
+                </p>
+                <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                  {resumen?.negocio.zona || 'Cusco'}
+                </span>
+              </div>
+              <CuscoGeoMap
+                mode="MARKET"
+                userLat={bizLat}
+                userLng={bizLng}
+                originLabel={resumen?.negocio.nombre || 'Tu local'}
+                pins={bizOrderPins}
+                selectedPinId={selectedBizOrder ? `biz-ord-${selectedBizOrder.id}` : null}
+                onSelectPin={(pinId) => {
+                  const found = nuevos.find((p) => `biz-ord-${p.id}` === pinId);
+                  if (found) setSelectedBizOrder(found);
+                }}
+                onRequestPinAction={(pinId) => {
+                  const found = nuevos.find((p) => `biz-ord-${p.id}` === pinId);
+                  if (found) setSelectedBizOrder(found);
+                }}
+                heightClass="h-[300px] sm:h-[360px]"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {nuevos.length === 0 ? (
+                <div className="md:col-span-2 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center text-sm text-[#6A717E] dark:text-[#98A0AD]">
+                  No hay solicitudes nuevas en este momento. Solo recibes pedidos de tu categoría ({RUBRO_LABELS[session.rubro]}).
                 </div>
-              </article>
-            ))
-          )}
-        </div>
-      )}
+              ) : (
+                nuevos.map((p) => (
+                  <article
+                    key={p.id}
+                    onClick={() => setSelectedBizOrder(p)}
+                    className="rounded-2xl border border-[#D4AF37]/40 bg-white dark:bg-[#121620] p-6 space-y-4 cursor-pointer hover:border-[#D4AF37] transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
+                          {p.codigo} · {p.metodo_pago}
+                        </p>
+                        <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
+                        <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
+                          Cliente: {p.cliente_nombre} · {p.transcripcion}
+                        </p>
+                        {p.cliente_documento_numero && (
+                          <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
+                            <BadgeCheck className="w-3.5 h-3.5" />
+                            {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}{' '}
+                            {p.cliente_documento_verificado ? '· RENIEC/SUNAT Verificado' : ''}
+                          </p>
+                        )}
+                      </div>
+                      <p className="font-mono-tabular text-xl font-semibold shrink-0">
+                        {formatSoles(p.monto_centavos)}
+                      </p>
+                    </div>
+
+                    <div
+                      className="flex flex-wrap gap-2.5 pt-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBizOrder(p)}
+                        className="min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 text-xs font-semibold flex items-center justify-center gap-1.5"
+                      >
+                        <MapPin className="w-3.5 h-3.5 text-[#2563EB]" />
+                        <span>Ver ficha</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleReject(p.id)}
+                        className="flex-1 min-h-[44px] rounded-xl border border-[#C81E5B]/40 text-[#C81E5B] text-sm font-semibold flex items-center justify-center gap-1.5"
+                      >
+                        <X className="w-4 h-4" />
+                        <span>Rechazar</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleAccept(p.id)}
+                        className="flex-1 min-h-[44px] rounded-xl bg-[#1FA855] text-white text-sm font-semibold flex items-center justify-center gap-1.5"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>Aceptar</span>
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* TAB EN CURSO */}
       {tab === 'EN_CURSO' && (
@@ -2336,9 +2459,9 @@ export const BusinessPanel: React.FC = () => {
           role="dialog"
           aria-modal="true"
           aria-label="Recargar Saldo"
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
         >
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#121620] border border-black/10 dark:border-white/15 p-6 space-y-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#121620] border border-black/10 dark:border-white/15 chuspa-google-border p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="font-display text-2xl font-semibold">Recargar Saldo Prepago</h3>
               <button
@@ -2412,9 +2535,9 @@ export const BusinessPanel: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="Solicitud de viaje"
-            className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4"
+            className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4"
           >
-            <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#121620] border border-black/15 dark:border-white/15 overflow-hidden shadow-2xl max-h-[94vh] flex flex-col">
+            <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#121620] border border-black/15 dark:border-white/15 chuspa-google-border overflow-hidden shadow-2xl max-h-[94vh] flex flex-col">
               <div className="px-5 py-3.5 flex items-center justify-between border-b border-black/10 dark:border-white/10">
                 <h3 className="font-display text-xl font-semibold">Solicitud de viaje</h3>
                 <button
@@ -2583,6 +2706,136 @@ export const BusinessPanel: React.FC = () => {
                   >
                     Cerrar
                   </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* MODAL POPUP SOLICITUD DE PEDIDO (NEGOCIOS NO-TAXI) */}
+      {selectedBizOrder && session.rubro !== 'TRANSPORTE' && (() => {
+        const bizLat = resumen?.negocio.lat ?? -13.5167;
+        const bizLng = resumen?.negocio.lng ?? -71.9788;
+        const orderLat = selectedBizOrder.origen_lat ?? bizLat + 0.0028;
+        const orderLng = selectedBizOrder.origen_lng ?? bizLng + 0.0028;
+        const comprobanteLabel =
+          (selectedBizOrder.cliente_documento_tipo || 'DNI') === 'RUC'
+            ? 'Factura Electrónica (RUC 11 dígitos)'
+            : 'Boleta de Venta Electrónica';
+
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Detalle del pedido entrante"
+            className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4"
+          >
+            <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#121620] border border-black/15 dark:border-white/15 chuspa-google-border overflow-hidden shadow-2xl max-h-[94vh] flex flex-col">
+              <div className="px-5 py-3.5 flex items-center justify-between border-b border-black/10 dark:border-white/10">
+                <div>
+                  <p className="text-[11px] font-mono-tabular uppercase tracking-wider text-[#9A7B2C] dark:text-[#E5C158]">
+                    {selectedBizOrder.codigo} · {selectedBizOrder.metodo_pago}
+                  </p>
+                  <h3 className="font-display text-xl font-semibold">Pedido entrante del cliente</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBizOrder(null)}
+                  aria-label="Cerrar pedido entrante"
+                  className="min-h-[40px] min-w-[40px] rounded-xl border border-black/10 dark:border-white/10 flex items-center justify-center"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="overflow-y-auto flex-1">
+                <CuscoGeoMap
+                  mode="MARKET"
+                  userLat={orderLat}
+                  userLng={orderLng}
+                  originLabel={`Cliente: ${selectedBizOrder.cliente_nombre}`}
+                  destLat={bizLat}
+                  destLng={bizLng}
+                  destLabel={resumen?.negocio.nombre || 'Tu local'}
+                  pins={[
+                    {
+                      id: `popup-biz-${selectedBizOrder.id}`,
+                      lat: orderLat,
+                      lng: orderLng,
+                      priceText: formatSoles(selectedBizOrder.monto_centavos),
+                      sublabel: selectedBizOrder.cliente_nombre,
+                      detailTitle: selectedBizOrder.item_nombre,
+                      tier: 'cheapest',
+                      kind: 'MARKET',
+                      isOpen: true,
+                    },
+                  ]}
+                  heightClass="h-[210px] sm:h-[250px]"
+                />
+
+                <div className="p-5 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <h4 className="font-display text-2xl font-semibold">{selectedBizOrder.item_nombre}</h4>
+                      <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
+                        {selectedBizOrder.transcripcion}
+                      </p>
+                    </div>
+                    <p className="font-mono-tabular text-2xl font-extrabold shrink-0 text-[#1FA855]">
+                      {formatSoles(selectedBizOrder.monto_centavos)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-4 space-y-1.5 text-xs">
+                    <p className="font-semibold">
+                      Titular: {selectedBizOrder.cliente_nombre}
+                    </p>
+                    {selectedBizOrder.cliente_documento_numero && (
+                      <p className="font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold flex items-center gap-1.5">
+                        <BadgeCheck className="w-4 h-4 shrink-0" />
+                        <span>
+                          {selectedBizOrder.cliente_documento_tipo || 'DNI'}: {selectedBizOrder.cliente_documento_numero}
+                          {selectedBizOrder.cliente_documento_verificado ? ' · Verificado RENIEC/SUNAT' : ''}
+                        </span>
+                      </p>
+                    )}
+                    {selectedBizOrder.cliente_direccion_fiscal && (
+                      <p className="text-[#555B66] dark:text-[#A3A9B5]">
+                        Dirección fiscal: {selectedBizOrder.cliente_direccion_fiscal}
+                      </p>
+                    )}
+                    <p className="text-[#9A7B2C] dark:text-[#E5C158] font-medium">
+                      Comprobante al finalizar: {comprobanteLabel}
+                    </p>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = selectedBizOrder.id;
+                        setSelectedBizOrder(null);
+                        void handleReject(id);
+                      }}
+                      className="flex-1 min-h-[48px] rounded-2xl border border-[#C81E5B]/45 text-[#C81E5B] text-sm font-bold flex items-center justify-center gap-1.5"
+                    >
+                      <X className="w-4 h-4" />
+                      <span>Rechazar</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const id = selectedBizOrder.id;
+                        setSelectedBizOrder(null);
+                        void handleAccept(id);
+                      }}
+                      className="flex-1 min-h-[48px] rounded-2xl bg-[#1FA855] text-white text-sm font-bold flex items-center justify-center gap-1.5 shadow-md"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>Aceptar Pedido</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

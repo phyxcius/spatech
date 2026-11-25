@@ -10,6 +10,13 @@ import {
   formatPeruLookupError,
   type PeruDocumentLookupResult,
 } from './peruDocs.ts';
+import {
+  consultarDNI,
+  consultarRUC,
+  guardarTokenEnFirebase,
+  leerDevApiConfig,
+  type ProveedorConsultas,
+} from './reniecSunatService.ts';
 
 const DEFAULT_RTDB_URL = 'https://spatech-b3edf-default-rtdb.firebaseio.com';
 const envRtdbUrl = (
@@ -876,65 +883,103 @@ export async function handleFirebaseRtdbRequest<T>(
       } as T;
     }
 
+    const bypassCache = params.get('nocache') === '1';
     const docKey = `${tipo}_${numero}`;
-    const cached = await rtdbFetch<PeruDocumentLookupResult | null>(`documentos/${docKey}`, 'GET').catch(() => null);
-    if (cached && cached.nombre_completo) {
-      return { ...cached, valid: true, validado: true, source: 'CACHE', fuente: 'CACHE' } as T;
+    if (!bypassCache) {
+      const cached = await rtdbFetch<PeruDocumentLookupResult | null>(`documentos/${docKey}`, 'GET').catch(() => null);
+      if (cached && cached.nombre_completo) {
+        return { ...cached, valid: true, validado: true, source: 'CACHE', fuente: 'CACHE' } as T;
+      }
     }
 
-    const upstreamUrl =
-      tipo === 'DNI'
-        ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
-        : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
-
     let fetched: PeruDocumentLookupResult | null = null;
-    for (const candidate of [
-      upstreamUrl,
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(upstreamUrl)}`,
-    ]) {
-      try {
-        const res = await fetch(candidate, { signal: AbortSignal.timeout(4000) });
-        if (!res.ok) continue;
-        const data = (await res.json()) as Record<string, any>;
-        if (tipo === 'DNI') {
-          const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
-            .filter(Boolean)
-            .join(' ')
-            .trim();
-          const name = String(data.nombre || joined || '').trim();
-          if (name) {
-            fetched = {
-              valid: true,
-              validado: true,
-              tipo: 'DNI',
-              numero,
-              nombre_completo: name,
-              source: 'RENIEC',
-              fuente: 'RENIEC',
-            };
-            break;
+
+    if (tipo === 'DNI') {
+      const resDni = await consultarDNI(numero);
+      if (resDni.success && resDni.nombres_completos) {
+        fetched = {
+          valid: true,
+          validado: true,
+          tipo: 'DNI',
+          numero,
+          nombre_completo: resDni.nombres_completos,
+          source: 'RENIEC',
+          fuente: resDni.fuente || 'apisperu',
+        };
+      }
+    } else {
+      const resRuc = await consultarRUC(numero);
+      if (resRuc.success && resRuc.razon_social) {
+        fetched = {
+          valid: true,
+          validado: true,
+          tipo: 'RUC',
+          numero,
+          nombre_completo: resRuc.razon_social,
+          razon_social: resRuc.razon_social,
+          estado: resRuc.estado,
+          condicion: resRuc.condicion,
+          direccion: resRuc.direccion,
+          source: 'SUNAT',
+          fuente: resRuc.fuente || 'apisperu',
+        };
+      }
+    }
+
+    if (!fetched) {
+      const upstreamUrl =
+        tipo === 'DNI'
+          ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
+          : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`;
+
+      for (const candidate of [
+        upstreamUrl,
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(upstreamUrl)}`,
+      ]) {
+        try {
+          const res = await fetch(candidate, { signal: AbortSignal.timeout(4000) });
+          if (!res.ok) continue;
+          const data = (await res.json()) as Record<string, any>;
+          if (tipo === 'DNI') {
+            const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
+              .filter(Boolean)
+              .join(' ')
+              .trim();
+            const name = String(data.nombre || joined || '').trim();
+            if (name) {
+              fetched = {
+                valid: true,
+                validado: true,
+                tipo: 'DNI',
+                numero,
+                nombre_completo: name,
+                source: 'RENIEC',
+                fuente: 'RENIEC',
+              };
+              break;
+            }
+          } else {
+            const razon = String(data.nombre || data.razonSocial || '').trim();
+            if (razon) {
+              fetched = {
+                valid: true,
+                validado: true,
+                tipo: 'RUC',
+                numero,
+                nombre_completo: razon,
+                razon_social: razon,
+                estado: data.estado ? String(data.estado) : undefined,
+                condicion: data.condicion ? String(data.condicion) : undefined,
+                direccion: data.direccion ? String(data.direccion) : undefined,
+                source: 'SUNAT',
+                fuente: 'SUNAT',
+              };
+              break;
+            }
           }
-        } else {
-          const razon = String(data.nombre || data.razonSocial || '').trim();
-          if (razon) {
-            fetched = {
-              valid: true,
-              validado: true,
-              tipo: 'RUC',
-              numero,
-              nombre_completo: razon,
-              razon_social: razon,
-              estado: data.estado ? String(data.estado) : undefined,
-              condicion: data.condicion ? String(data.condicion) : undefined,
-              direccion: data.direccion ? String(data.direccion) : undefined,
-              source: 'SUNAT',
-              fuente: 'SUNAT',
-            };
-            break;
-          }
+        } catch {
+          // try next source
         }
-      } catch {
-        // try next source
       }
     }
 
@@ -1538,6 +1583,7 @@ export async function handleFirebaseRtdbRequest<T>(
         porcentaje_plataforma: 3,
         porcentaje_referido: 0,
       };
+      const devCfg = await leerDevApiConfig(FIREBASE_RTDB_URL);
       return {
         negocio: {
           id: biz.id,
@@ -1571,6 +1617,8 @@ export async function handleFirebaseRtdbRequest<T>(
           saldo_libre: biz.saldo - biz.saldo_retenido,
         },
         regla_comision: regla,
+        facturacion_apisperu_activa:
+          biz.rubro !== 'TRANSPORTE' && Boolean(devCfg.tokenFacturacionApisperu),
         movimientos: toArray(snap.movimientos)
           .filter((m) => m.negocio_id === biz.id || m.negocio_nombre === biz.nombre)
           .sort((a, b) => b.id - a.id),
@@ -1975,13 +2023,102 @@ export async function handleFirebaseRtdbRequest<T>(
         const compTipo = match.comprobante_tipo || (match.cliente_documento_tipo === 'RUC' ? 'FACTURA' : 'BOLETA');
         const compSerie = match.comprobante_serie || (compTipo === 'FACTURA' ? 'F001' : 'B001');
         const compNum = match.comprobante_numero || String(match.id).slice(-8).padStart(8, '0');
+        const devCfg = await leerDevApiConfig(FIREBASE_RTDB_URL);
+        const billingToken = (devCfg.tokenFacturacionApisperu || '').trim();
+
+        let nextEstado = 'REPRESENTACION_IMPRESA';
+        let nextHash: string | null = null;
+        let sentApisperu = false;
+        let mensajeRes = billingToken
+          ? 'Token ApisPerú listo · comprobante preparado.'
+          : 'Configura tu Token de Facturación ApisPerú en Admin → Modo Desarrollador (/dev_api).';
+
+        if (billingToken) {
+          try {
+            const totalSoles = Number((match.monto_centavos / 100).toFixed(2));
+            const gravadaSoles = Number((totalSoles / 1.18).toFixed(2));
+            const igvSoles = Number((totalSoles - gravadaSoles).toFixed(2));
+            const apRes = await fetch('https://facturacion.apisperu.com/api/v1/invoice/send', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                Authorization: `Bearer ${billingToken}`,
+              },
+              body: JSON.stringify({
+                ublVersion: '2.1',
+                tipoOperacion: '0101',
+                tipoDoc: compTipo === 'FACTURA' ? '01' : '03',
+                serie: compSerie,
+                correlativo: compNum,
+                fechaEmision: new Date(match.comprobante_emitido_at || Date.now()).toISOString(),
+                formaPago: { moneda: 'PEN', tipo: 'Contado' },
+                tipoMoneda: 'PEN',
+                company: {
+                  ruc: biz.documento_numero || '20601234565',
+                  razonSocial: biz.razon_social || biz.nombre,
+                  nombreComercial: biz.nombre,
+                  address: { ubigueo: '080101', departamento: 'CUSCO', provincia: 'CUSCO', distrito: 'CUSCO', direccion: biz.zona || 'Cusco' },
+                },
+                client: {
+                  tipoDoc: match.cliente_documento_tipo === 'RUC' ? '6' : match.cliente_documento_tipo === 'EXTRANJERO' ? '7' : '1',
+                  numDoc: match.cliente_documento_numero || '00000000',
+                  rznSocial: match.cliente_nombre,
+                  address: { direccion: match.cliente_direccion_fiscal || 'Cusco, Perú' },
+                },
+                mtoOperGravadas: gravadaSoles,
+                mtoIGV: igvSoles,
+                totalImpuestos: igvSoles,
+                valorVenta: gravadaSoles,
+                subTotal: totalSoles,
+                mtoImpVenta: totalSoles,
+                details: [
+                  {
+                    codProducto: 'LCH-1',
+                    unidad: 'NIU',
+                    descripcion: match.item_nombre,
+                    cantidad: 1,
+                    mtoValorUnitario: gravadaSoles,
+                    mtoValorVenta: gravadaSoles,
+                    mtoBaseIgv: gravadaSoles,
+                    porcentajeIgv: 18,
+                    igv: igvSoles,
+                    tipAfeIgv: 10,
+                    totalImpuestos: igvSoles,
+                    mtoPrecioUnitario: totalSoles,
+                  },
+                ],
+                legends: [{ code: '1000', value: `SON ${totalSoles.toFixed(2)} SOLES` }],
+              }),
+              signal: AbortSignal.timeout(5500),
+            });
+            const apData = (await apRes.json().catch(() => ({}))) as Record<string, any>;
+            if (apRes.ok) {
+              sentApisperu = true;
+              nextEstado = apData?.sunatResponse?.success ? 'ACEPTADO_SUNAT' : 'ENVIADO_APISPERU';
+              nextHash =
+                (typeof apData?.hash === 'string' && apData.hash) ||
+                (typeof apData?.sunatResponse?.cdrZip === 'string' ? `CDR-${compSerie}-${compNum}` : null);
+              mensajeRes =
+                apData?.sunatResponse?.cdrResponse?.description ||
+                apData?.message ||
+                'Comprobante enviado a ApisPerú SUNAT.';
+            } else {
+              mensajeRes = apData?.message || `ApisPerú HTTP ${apRes.status}`;
+            }
+          } catch {
+            mensajeRes = 'ApisPerú Facturación requiere conexión directa (sin bloqueo CORS) o backend Node.js.';
+          }
+        }
+
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
-          comprobante_sunat_estado: 'REPRESENTACION_IMPRESA',
+          comprobante_sunat_estado: nextEstado,
+          ...(nextHash ? { comprobante_hash: nextHash } : {}),
         });
         return {
           ok: true,
-          enviado_apisperu: false,
-          mensaje: 'Comprobante preparado en modo nube Firebase (el envío directo a SUNAT requiere backend Node.js con APISPERU_FACTURACION_TOKEN).',
+          enviado_apisperu: sentApisperu,
+          mensaje: mensajeRes,
           comprobante: {
             tipo: compTipo,
             serie: compSerie,
@@ -1991,7 +2128,7 @@ export async function handleFirebaseRtdbRequest<T>(
             pedido_codigo: match.codigo,
             metodo_pago: match.metodo_pago,
             moneda: 'PEN',
-            sunat_estado: 'REPRESENTACION_IMPRESA',
+            sunat_estado: nextEstado,
             emisor: {
               ruc: biz.documento_numero || '20601234565',
               razon_social: biz.razon_social || biz.nombre,
@@ -2360,6 +2497,59 @@ export async function handleFirebaseRtdbRequest<T>(
         comision_acumulada_centavos: 0,
       });
       return { ok: true } as T;
+    }
+
+    if (cleanPath === '/api/admin/dev-api' && method === 'GET') {
+      const cfg = await leerDevApiConfig(FIREBASE_RTDB_URL);
+      const mask = (v: string) =>
+        !v ? '' : v.length <= 10 ? '••••••••' : `${v.slice(0, 6)}••••••${v.slice(-4)}`;
+      return {
+        proveedorConsultas: cfg.proveedorConsultas,
+        hasTokenConsultas: Boolean(cfg.tokenConsultasDniRuc),
+        tokenConsultasPreview: mask(cfg.tokenConsultasDniRuc),
+        hasTokenFacturacion: Boolean(cfg.tokenFacturacionApisperu),
+        tokenFacturacionPreview: mask(cfg.tokenFacturacionApisperu || ''),
+        firebaseDevApiUrl: `${FIREBASE_RTDB_URL}/dev_api.json`,
+        updatedAt: new Date().toISOString(),
+      } as T;
+    }
+
+    if (cleanPath === '/api/admin/dev-api' && method === 'PUT') {
+      const current = await leerDevApiConfig(FIREBASE_RTDB_URL);
+      const prov: ProveedorConsultas =
+        payload.proveedorConsultas === 'apisperu' || payload.proveedorConsultas === 'apisnetpe'
+          ? payload.proveedorConsultas
+          : 'auto';
+      const nextConsultas =
+        payload.clearConsultas === true
+          ? ''
+          : String(payload.tokenConsultasDniRuc || '').trim() || current.tokenConsultasDniRuc;
+      const nextFacturacion =
+        payload.clearFacturacion === true
+          ? ''
+          : String(payload.tokenFacturacionApisperu || '').trim() ||
+            current.tokenFacturacionApisperu ||
+            '';
+      const ok = await guardarTokenEnFirebase(
+        {
+          proveedorConsultas: prov,
+          tokenConsultasDniRuc: nextConsultas,
+          tokenFacturacionApisperu: nextFacturacion,
+        },
+        FIREBASE_RTDB_URL
+      );
+      const mask = (v: string) =>
+        !v ? '' : v.length <= 10 ? '••••••••' : `${v.slice(0, 6)}••••••${v.slice(-4)}`;
+      return {
+        ok,
+        syncedFirebase: ok,
+        proveedorConsultas: prov,
+        hasTokenConsultas: Boolean(nextConsultas),
+        tokenConsultasPreview: mask(nextConsultas),
+        hasTokenFacturacion: Boolean(nextFacturacion),
+        tokenFacturacionPreview: mask(nextFacturacion),
+        updatedAt: new Date().toISOString(),
+      } as T;
     }
   }
 
