@@ -349,12 +349,14 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['razon_social', 'TEXT'],
     ['tipo_negocio', "TEXT NOT NULL DEFAULT 'Comercio Multirubro'"],
     ['modalidades_venta', "TEXT NOT NULL DEFAULT 'UNIDAD,SERVICIO'"],
+    ['panel_ia_json', 'TEXT'],
     ['estado_regla', "TEXT NOT NULL DEFAULT 'ACTIVO'"],
     ['motivo_estado', 'TEXT'],
   ]);
 
   ensureCols('servicios_catalogo', [
     ['unidad_medida', "TEXT NOT NULL DEFAULT 'UNIDAD'"],
+    ['atributos_json', 'TEXT'],
   ]);
 
   ensureCols('pedidos_ordenes', [

@@ -1247,3 +1247,153 @@ test('12. Extranjero (Pasaporte/CE), mapa geolocalización A->B + GPS conductor 
     server.close();
   }
 });
+
+test('13. Agente IA Multi-Rubro: endpoint de diseño IA, registro de Ferretería con unidades múltiples, catálogo inicial y atributos técnicos', async () => {
+  const { server, req } = await startTestServer();
+  const prevGeminiKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  try {
+    // 1) Validación del endpoint IA
+    const badAiReq = await req('POST', '/api/public/ai/generar-panel-rubro', {
+      rubro_usuario: 'a',
+    });
+    assert.equal(badAiReq.status, 400);
+
+    const noKeyAiReq = await req('POST', '/api/public/ai/generar-panel-rubro', {
+      rubro_usuario: 'Ferretería Industrial',
+    });
+    assert.equal(noKeyAiReq.status, 503);
+
+    // 2) Registro de Ferretería con panel_ia completo, GPS real y catálogo inicial auto-sembrado
+    const ferreteriaPanelIa = {
+      rubro_base: 'RESTAURANTE',
+      rubro_usuario: 'Ferretería Industrial',
+      rubro_titulo: 'Ferretería & Construcción',
+      subtitulo_panel: 'Panel especializado en venta fraccionada y técnica',
+      badge_panel: 'Ferretería IA · Ingeniería & Acero',
+      tema_color: { primaryHex: '#D97706', accentHex: '#2563EB' },
+      terminologia: {
+        clienteLabel: 'Maestro / Obra',
+        pedidoLabel: 'Cotización / Despacho',
+        catalogoLabel: 'Inventario Ferretero',
+        nuevoItemBtn: 'Agregar Material / Herramienta',
+      },
+      unidades_medida: [
+        'Unidad',
+        'Kilo (kg)',
+        'Gramo (g)',
+        'Litro (L)',
+        'Metro (m)',
+        'Pulgada (in)',
+        'Pie (ft)',
+        'Grosor (mm)',
+        'Metro cúbico (m³)',
+        'Cubo',
+        'Amperio (A)',
+        'Grano',
+      ],
+      campos_especificos: [
+        { key: 'grosor', label: 'Grosor / Calibre', tipo: 'text', placeholder: 'Ej. 2 mm / #12', unidad: 'mm' },
+        { key: 'longitud', label: 'Longitud', tipo: 'text', placeholder: 'Ej. 3 in / 10 m', unidad: 'm / in / ft' },
+        { key: 'amperaje', label: 'Amperaje', tipo: 'number', placeholder: 'Ej. 32', unidad: 'A' },
+      ],
+      modulos_panel: [
+        {
+          id: 'calc-medidas',
+          titulo: 'Conversor Longitud y Calibre',
+          descripcion: 'Convierte metros, pulgadas y pies al instante.',
+          tipo_herramienta: 'CALCULADORA_MEDIDAS',
+        },
+      ],
+      catalogo_inicial: [
+        {
+          nombre: 'Clavos de acero 3 pulgadas',
+          descripcion: 'Caja fraccionada por kilo',
+          precio_centavos: 850,
+          unidad_medida: 'Kilo (kg)',
+          stock: 120,
+          atributos: { grosor: '3.4 mm', longitud: '3 pulgadas' },
+        },
+        {
+          nombre: 'Cable eléctrico THW 12 AWG',
+          descripcion: 'Venta por metro lineal o rollo',
+          precio_centavos: 320,
+          unidad_medida: 'Metro (m)',
+          stock: 300,
+          atributos: { amperaje: '25 A', longitud: '1 m' },
+        },
+      ],
+      generado_por: 'ia_estatico',
+      updated_at: new Date().toISOString(),
+    };
+
+    const regFerre = await req('POST', '/api/public/negocios/registro', {
+      rubro: 'RESTAURANTE',
+      nombre: 'Ferretería El Constructor Cusco',
+      telefono: '+51984123999',
+      zona: 'Av. La Cultura 1420, Wanchaq',
+      lat: -13.5221,
+      lng: -71.9642,
+      pin: '4321',
+      tipo_persona: 'JURIDICA',
+      documento_tipo: 'RUC',
+      documento_numero: '20601234565',
+      razon_social: 'FERRETERIA EL CONSTRUCTOR CUSCO S.A.C.',
+      tipo_negocio: 'Ferretería & Construcción',
+      modalidades_venta: ferreteriaPanelIa.unidades_medida,
+      panel_ia: ferreteriaPanelIa,
+      catalogo_inicial: ferreteriaPanelIa.catalogo_inicial,
+    });
+    assert.equal(regFerre.status, 201);
+    assert.equal(regFerre.data.negocio.lat, -13.5221);
+    assert.equal(regFerre.data.negocio.lng, -71.9642);
+    assert.equal(regFerre.data.negocio.panel_ia.rubro_titulo, 'Ferretería & Construcción');
+
+    const ferreId = regFerre.data.negocio.id;
+    const ferreToken = regFerre.data.token;
+
+    // 3) Resumen debe exponer panel_ia y los ítems auto-sembrados con sus atributos y unidades
+    const resFerre = await req('GET', `/api/negocio/${ferreId}/resumen`, undefined, ferreToken);
+    assert.equal(resFerre.status, 200);
+    assert.equal(resFerre.data.negocio.panel_ia.badge_panel, 'Ferretería IA · Ingeniería & Acero');
+    assert.ok(resFerre.data.servicios.length >= 2);
+    const clavos = resFerre.data.servicios.find((s: any) => s.nombre.includes('Clavos'));
+    assert.ok(clavos);
+    assert.equal(clavos.unidad_medida, 'Kilo (kg)');
+    assert.equal(clavos.atributos.grosor, '3.4 mm');
+
+    // 4) Agregar producto técnico nuevo con unidad "Metro cúbico (m³)" y atributos
+    const addArena = await req(
+      'POST',
+      `/api/negocio/${ferreId}/servicios`,
+      {
+        nombre: 'Arena Fina Lavada',
+        descripcion: 'Agregado de río puesto en obra',
+        precio_centavos: 9500,
+        unidad_medida: 'Metro cúbico (m³)',
+        stock: 15,
+        atributos: { volumen: '1 m³ (1 cubo)', grano: 'Fino malla 40' },
+      },
+      ferreToken
+    );
+    assert.equal(addArena.status, 201);
+
+    // 5) Directorio público debe exponer el negocio con su lat/lng y panel_ia
+    const dir = await req('GET', '/api/public/directorio');
+    assert.equal(dir.status, 200);
+    const dirFerre = dir.data.negocios.find((n: any) => n.id === ferreId);
+    assert.ok(dirFerre);
+    assert.equal(dirFerre.lat, -13.5221);
+    assert.equal(dirFerre.panel_ia.rubro_titulo, 'Ferretería & Construcción');
+    const dirArena = dir.data.servicios.find(
+      (s: any) => s.negocio_id === ferreId && s.nombre === 'Arena Fina Lavada'
+    );
+    assert.ok(dirArena);
+    assert.equal(dirArena.unidad_medida, 'Metro cúbico (m³)');
+    assert.equal(dirArena.atributos.grano, 'Fino malla 40');
+  } finally {
+    if (prevGeminiKey !== undefined) process.env.GEMINI_API_KEY = prevGeminiKey;
+    server.close();
+  }
+});
+

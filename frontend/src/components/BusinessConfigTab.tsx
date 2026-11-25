@@ -24,9 +24,12 @@ import {
   formatSoles,
   RUBRO_LABELS,
   SALE_MODALITIES,
+  type AiBusinessPanelSchema,
   type MetodoPago,
   type Rubro,
 } from '../types.ts';
+import { AiBusinessBuilder } from './AiBusinessBuilder.tsx';
+import { CuscoGeoMap } from './CuscoGeoMap.tsx';
 
 export interface BusinessConfigResumen {
   negocio: {
@@ -54,6 +57,7 @@ export interface BusinessConfigResumen {
     razon_social?: string;
     tipo_negocio?: string;
     modalidades_venta?: string[];
+    panel_ia?: AiBusinessPanelSchema | null;
   };
   servicios: Array<{
     id: number;
@@ -61,6 +65,7 @@ export interface BusinessConfigResumen {
     descripcion?: string;
     precio_centavos: number;
     unidad_medida?: string;
+    atributos?: Record<string, string> | null;
     stock: number;
     disponible: number;
   }>;
@@ -138,6 +143,7 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
       ? n.modalidades_venta
       : ['Unidad']
   );
+  const [panelIa, setPanelIa] = useState<AiBusinessPanelSchema | null>(n.panel_ia || null);
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docVerified, setDocVerified] = useState<PeruDocumentLookupResult | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -189,6 +195,7 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
         ? n.modalidades_venta
         : ['Unidad']
     );
+    setPanelIa(n.panel_ia || null);
   }, [n.id, n.nombre, n.zona, n.en_linea, n.horario_apertura, n.horario_cierre]);
 
   function togglePago(p: MetodoPago) {
@@ -279,6 +286,7 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
           razon_social: razonSocial,
           tipo_negocio: tipoNegocio,
           modalidades_venta: modalidadesVenta,
+          panel_ia: panelIa || undefined,
         },
         token,
       });
@@ -450,8 +458,26 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
     }
   }
 
+  const mapLat = Number(lat) || -13.5167;
+  const mapLng = Number(lng) || -71.9788;
+  const mergedModalities = Array.from(
+    new Set([...(panelIa?.unidades_medida || []), ...modalidadesVenta, ...SALE_MODALITIES])
+  );
+
   return (
     <div className="space-y-6">
+      <AiBusinessBuilder
+        nombreComercial={nombre}
+        zona={zona}
+        value={panelIa}
+        onChange={(schema) => {
+          setPanelIa(schema);
+          setTipoNegocio(schema.rubro_titulo);
+          if (schema.unidades_medida.length > 0) {
+            setModalidadesVenta(schema.unidades_medida);
+          }
+        }}
+      />
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Formulario Principal de Configuración del Panel del Negocio */}
         <form
@@ -598,8 +624,10 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
                   Categoría / Tipo de Negocio
                 </label>
                 <select
-                  value={tipoNegocio}
-                  onChange={(e) => setTipoNegocio(e.target.value)}
+                  value={BUSINESS_CATEGORIES.includes(tipoNegocio as any) ? tipoNegocio : '__CUSTOM__'}
+                  onChange={(e) => {
+                    if (e.target.value !== '__CUSTOM__') setTipoNegocio(e.target.value);
+                  }}
                   className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
                 >
                   {BUSINESS_CATEGORIES.map((cat) => (
@@ -607,16 +635,19 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
                       {cat}
                     </option>
                   ))}
+                  {!BUSINESS_CATEGORIES.includes(tipoNegocio as any) && (
+                    <option value="__CUSTOM__">{tipoNegocio} (Generado por IA)</option>
+                  )}
                 </select>
               </div>
             </div>
 
             <div className="space-y-1.5">
               <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
-                Modalidades de Venta (Kilos, Arrobas, Unidades, Medidas, etc.)
+                Modalidades de Venta (Unidades, Kilos, Metros, Pulgadas, Pies, Litros, Amperios, m³, etc.)
               </label>
               <div className="flex flex-wrap gap-1.5">
-                {SALE_MODALITIES.map((mod) => {
+                {mergedModalities.map((mod) => {
                   const active = modalidadesVenta.includes(mod);
                   return (
                     <button
@@ -649,40 +680,67 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
             />
           </div>
 
-          {/* Coordenadas GPS */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-            <div>
-              <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                Latitud GPS
-              </label>
-              <input
-                type="number"
-                step="0.00001"
-                value={lat}
-                onChange={(e) => setLat(e.target.value)}
-                className="w-full min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-mono-tabular"
-              />
+          {/* Coordenadas GPS + Mapa Real Google Maps */}
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+              <div>
+                <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Latitud GPS
+                </label>
+                <input
+                  type="number"
+                  step="0.00001"
+                  value={lat}
+                  onChange={(e) => setLat(e.target.value)}
+                  className="w-full min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-mono-tabular"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Longitud GPS
+                </label>
+                <input
+                  type="number"
+                  step="0.00001"
+                  value={lng}
+                  onChange={(e) => setLng(e.target.value)}
+                  className="w-full min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-mono-tabular"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={detectGpsForBiz}
+                className="min-h-[42px] px-3 rounded-xl border border-[#D4AF37]/50 text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158] flex items-center justify-center gap-1.5"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                <span>Usar GPS actual</span>
+              </button>
             </div>
-            <div>
-              <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                Longitud GPS
-              </label>
-              <input
-                type="number"
-                step="0.00001"
-                value={lng}
-                onChange={(e) => setLng(e.target.value)}
-                className="w-full min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-mono-tabular"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={detectGpsForBiz}
-              className="min-h-[42px] px-3 rounded-xl border border-[#D4AF37]/50 text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158] flex items-center justify-center gap-1.5"
-            >
-              <MapPin className="w-3.5 h-3.5" />
-              <span>Usar GPS actual</span>
-            </button>
+            <CuscoGeoMap
+              mode="MARKET"
+              userLat={mapLat}
+              userLng={mapLng}
+              originLabel={nombre || 'Mi Local'}
+              pins={[
+                {
+                  id: `cfg-biz-${negocioId}`,
+                  lat: mapLat,
+                  lng: mapLng,
+                  priceText: panelIa?.rubro_titulo || RUBRO_LABELS[n.rubro],
+                  sublabel: zona,
+                  detailTitle: nombre,
+                  tier: 'cheapest',
+                  kind: 'MARKET',
+                  isOpen: enLinea,
+                },
+              ]}
+              onRequestGps={detectGpsForBiz}
+              onMapClick={(nextLat, nextLng) => {
+                setLat(nextLat.toFixed(5));
+                setLng(nextLng.toFixed(5));
+              }}
+              heightClass="h-[220px] sm:h-[260px]"
+            />
           </div>
 
           {/* Horario y cobertura */}

@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import {
   detectIntentFromQuery,
+  haversineKm,
   parseMarketQuery,
   type RequestedMarketItem,
 } from '../lib/cuscoMarkets.ts';
@@ -44,6 +45,7 @@ import {
   type PedidoPublico,
   type Rubro,
   type SharedCustomerDoc,
+  type UnidadConductor,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 import {
@@ -142,6 +144,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
   const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
+  const [homeUnidades, setHomeUnidades] = useState<UnidadConductor[]>([]);
+  const [homeRubroFilter, setHomeRubroFilter] = useState<'ALL' | 'CUSTOM_IA' | Rubro>('ALL');
+  const [homeSelectedPinId, setHomeSelectedPinId] = useState<string | null>(null);
   const [selectedCatalogKey, setSelectedCatalogKey] = useState<string | null>(null);
   const [requestedMarketItems, setRequestedMarketItems] = useState<RequestedMarketItem[]>(() =>
     parseMarketQuery('leche, atún y arroz')
@@ -350,10 +355,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       .then((res) => setOpciones(Array.isArray(res?.opciones) ? res.opciones : []))
       .catch(() => {});
 
-    apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio')
+    apiFetch<{ negocios?: DirectorioNegocio[]; unidades?: UnidadConductor[] }>('/api/public/directorio')
       .then((res) => {
         if (Array.isArray(res?.negocios)) {
           setDirectorio(res.negocios);
+        }
+        if (Array.isArray(res?.unidades)) {
+          setHomeUnidades(res.unidades);
         }
       })
       .catch(() => {});
@@ -1001,6 +1009,76 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     [catalogMapEntries]
   );
 
+  const homeExplorerEntries = useMemo(() => {
+    const bizEntries = directorio
+      .filter((b) => {
+        if (homeRubroFilter === 'ALL') return true;
+        if (homeRubroFilter === 'CUSTOM_IA') return Boolean(b.panel_ia || b.tipo_negocio);
+        return b.rubro === homeRubroFilter;
+      })
+      .map((b) => {
+        const km = haversineKm(coords.lat, coords.lng, b.lat || -13.5167, b.lng || -71.9788);
+        const tituloRubro = b.panel_ia?.rubro_titulo || b.tipo_negocio || RUBRO_LABELS[b.rubro];
+        const minSoles = Math.max(6, Math.round((b as { tarifa_minima_centavos?: number }).tarifa_minima_centavos ? ((b as { tarifa_minima_centavos?: number }).tarifa_minima_centavos! / 100) : 15));
+        return {
+          pinId: `biz-${b.id}`,
+          kind: (b.rubro === 'TRANSPORTE' ? 'DRIVER' : 'BUSINESS') as 'DRIVER' | 'BUSINESS',
+          rubro: b.rubro,
+          titulo: b.nombre,
+          subtitulo: `${tituloRubro} · ${b.zona}`,
+          lat: b.lat || -13.5167,
+          lng: b.lng || -71.9788,
+          km: Number(km.toFixed(2)),
+          calificacion: b.calificacion || 4.9,
+          priceText: b.rubro === 'TRANSPORTE' ? 'Taxi VIP' : `Desde S/ ${minSoles}`,
+          isOpen: b.en_linea === 1,
+          isAiCustom: Boolean(b.panel_ia),
+          searchPrompt: b.panel_ia?.rubro_usuario || b.nombre,
+        };
+      });
+
+    const taxiUnitEntries =
+      homeRubroFilter === 'ALL' || homeRubroFilter === 'TRANSPORTE'
+        ? homeUnidades.map((u) => {
+            const km = haversineKm(coords.lat, coords.lng, u.lat || -13.5167, u.lng || -71.9788);
+            const estSoles = Math.max(12, Math.round((u.tarifa_base_centavos + u.tarifa_km_centavos * 2.5) / 100));
+            return {
+              pinId: `unit-${u.id}`,
+              kind: 'DRIVER' as const,
+              rubro: 'TRANSPORTE' as Rubro,
+              titulo: `${u.modelo} · ${u.conductor_nombre}`,
+              subtitulo: `Placa ${u.placa} · ${u.negocio_nombre || 'Taxi Ejecutivo'}`,
+              lat: u.lat || -13.5174,
+              lng: u.lng || -71.9765,
+              km: Number(km.toFixed(2)),
+              calificacion: u.calificacion || 4.9,
+              priceText: `S/ ${estSoles}.00`,
+              isOpen: u.estado === 'DISPONIBLE',
+              isAiCustom: false,
+              searchPrompt: 'Quiero un taxi al aeropuerto',
+            };
+          })
+        : [];
+
+    return [...taxiUnitEntries, ...bizEntries].sort((a, b) => a.km - b.km);
+  }, [directorio, homeUnidades, homeRubroFilter, coords.lat, coords.lng]);
+
+  const homeMapPins: GeoMapPin[] = useMemo(
+    () =>
+      homeExplorerEntries.map((entry, idx) => ({
+        id: entry.pinId,
+        lat: entry.lat,
+        lng: entry.lng,
+        priceText: entry.priceText,
+        sublabel: entry.titulo,
+        detailTitle: `${entry.titulo} · ${entry.subtitulo}`,
+        tier: !entry.isOpen ? 'closed' : idx === 0 ? 'cheapest' : 'mid',
+        kind: entry.kind,
+        isOpen: entry.isOpen,
+      })),
+    [homeExplorerEntries]
+  );
+
   const isCompactSphere = subTab === 'CONCIERGE' && conciergeMode !== 'SPHERE_IDLE';
 
   return (
@@ -1327,6 +1405,156 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       )}
 
       {/* ==================================================================== */}
+      {/* MODO 0 (INICIO): MAPA GOOGLE MAPS REAL + MULTI-NEGOCIOS EN CUSCO     */}
+      {/* ==================================================================== */}
+      {subTab === 'CONCIERGE' && conciergeMode === 'SPHERE_IDLE' && (
+        <section className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0B1224] p-4 sm:p-5 shadow-2xl space-y-4 chuspa-google-border">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#4285F4] dark:text-[#60A5FA]">
+                Google Maps Real en Vivo · Red Multinegocios
+              </p>
+              <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
+                Explora Taxis y Negocios Cercanos en Cusco ({homeExplorerEntries.length})
+              </h2>
+            </div>
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              {(
+                [
+                  { id: 'ALL', label: 'Todos' },
+                  { id: 'TRANSPORTE', label: 'Taxis' },
+                  { id: 'RESTAURANTE', label: 'Restaurantes / Tiendas' },
+                  { id: 'FARMACIA', label: 'Boticas' },
+                  { id: 'HOTEL', label: 'Hoteles' },
+                  { id: 'TURISMO', label: 'Tours' },
+                  { id: 'CASA_CAMBIO', label: 'Divisas' },
+                  { id: 'CUSTOM_IA', label: 'Multi-Rubro IA' },
+                ] as const
+              ).map((chip) => {
+                const active = homeRubroFilter === chip.id;
+                return (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => {
+                      setHomeRubroFilter(chip.id);
+                      setHomeSelectedPinId(null);
+                    }}
+                    className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors ${
+                      active
+                        ? 'bg-[#2563EB] text-white border-[#2563EB] shadow'
+                        : 'border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#111A30] text-[#555B66] dark:text-[#A3A9B5] hover:border-[#4285F4]/50'
+                    }`}
+                  >
+                    {chip.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+            {/* Mapa Google Maps grande centrado */}
+            <div className="lg:col-span-8">
+              <CuscoGeoMap
+                mode="MARKET"
+                userLat={coords.lat}
+                userLng={coords.lng}
+                pins={homeMapPins}
+                selectedPinId={homeSelectedPinId ?? homeMapPins[0]?.id ?? null}
+                onSelectPin={(id) => setHomeSelectedPinId(id)}
+                onRequestPinAction={(id) => {
+                  const found = homeExplorerEntries.find((e) => e.pinId === id);
+                  if (!found) return;
+                  if (found.rubro === 'CASA_CAMBIO') {
+                    setSubTab('DIVISAS');
+                  } else {
+                    setSelectedRubro(found.rubro);
+                    setQuery(found.searchPrompt);
+                    void handleSearch(found.searchPrompt, found.rubro, true);
+                  }
+                }}
+                onRequestGps={requestGps}
+                gpsLive={gpsStatus === 'live'}
+                heightClass="h-[46vh] sm:h-[460px] min-h-[340px]"
+              />
+            </div>
+
+            {/* Banner carrusel vertical movible de arriba abajo con los negocios encontrados */}
+            <div className="lg:col-span-4 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0E162B] p-3 flex flex-col max-h-[460px]">
+              <div className="flex items-center justify-between pb-2 mb-2 border-b border-black/10 dark:border-white/10">
+                <p className="text-xs font-bold text-[#14171F] dark:text-white">
+                  Relación de Negocios & Unidades
+                </p>
+                <span className="text-[11px] font-mono-tabular text-[#4285F4] font-semibold">
+                  {homeExplorerEntries.length} activos
+                </span>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                {homeExplorerEntries.length === 0 ? (
+                  <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] py-8 text-center">
+                    No hay negocios activos en este filtro todavía.
+                  </p>
+                ) : (
+                  homeExplorerEntries.map((item) => {
+                    const selected = (homeSelectedPinId ?? homeExplorerEntries[0]?.pinId) === item.pinId;
+                    return (
+                      <div
+                        key={item.pinId}
+                        onClick={() => setHomeSelectedPinId(item.pinId)}
+                        className={`rounded-xl border p-3 cursor-pointer transition-all space-y-1.5 ${
+                          selected
+                            ? 'border-[#4285F4] bg-[#4285F4]/12 shadow-md'
+                            : 'border-black/10 dark:border-white/10 bg-white dark:bg-[#131D36] hover:border-[#4285F4]/50'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-[#14171F] dark:text-white truncate">
+                              {item.titulo}
+                            </p>
+                            <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD] truncate">
+                              {item.subtitulo}
+                            </p>
+                          </div>
+                          <span className="text-[11px] font-mono-tabular font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
+                            {item.priceText}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 pt-1">
+                          <span className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                            {item.km} km · ★ {item.calificacion.toFixed(1)}
+                            {item.isAiCustom ? ' · Panel IA' : ''}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (item.rubro === 'CASA_CAMBIO') {
+                                setSubTab('DIVISAS');
+                              } else {
+                                setSelectedRubro(item.rubro);
+                                setQuery(item.searchPrompt);
+                                void handleSearch(item.searchPrompt, item.rubro, true);
+                              }
+                            }}
+                            className="min-h-[30px] px-2.5 rounded-lg bg-[#14213D] dark:bg-[#4285F4] text-white text-[11px] font-semibold"
+                          >
+                            Ver / Pedir
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ==================================================================== */}
       {/* MODO 1: TAXI POR GEOLOCALIZACIÓN (INDRIVE / FACILITO)                */}
       {/* ==================================================================== */}
       {subTab === 'CONCIERGE' && conciergeMode === 'TAXI_INDRIVE' && (
@@ -1399,44 +1627,119 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
           ) : (
             <div className="space-y-5">
-              {/* Mapa grande centrado · al tocar un precio se superpone el popup de petición */}
-              <CuscoGeoMap
-                mode="MARKET"
-                userLat={coords.lat}
-                userLng={coords.lng}
-                pins={catalogPins}
-                selectedPinId={selectedCatalogKey ?? catalogMapEntries[0]?.key ?? null}
-                onSelectPin={(id) => {
-                  setSelectedCatalogKey(id);
-                  const found = catalogMapEntries.find((e) => e.key === id);
-                  if (!found) return;
-                  if (found.op.tipo === 'DIVISA') {
-                    setSubTab('DIVISAS');
-                  } else {
-                    setSheetError(null);
-                    setSelectedOption(found.op);
-                    if (!isDocValid) {
-                      notifyDocumentAlertIfNeeded(found.op.titulo, false);
-                    }
-                  }
-                }}
-                onRequestPinAction={(id) => {
-                  const found = catalogMapEntries.find((e) => e.key === id);
-                  if (!found) return;
-                  if (found.op.tipo === 'DIVISA') {
-                    setSubTab('DIVISAS');
-                  } else {
-                    setSheetError(null);
-                    setSelectedOption(found.op);
-                    if (!isDocValid) {
-                      notifyDocumentAlertIfNeeded(found.op.titulo, false);
-                    }
-                  }
-                }}
-                onRequestGps={requestGps}
-                gpsLive={gpsStatus === 'live'}
-                heightClass="h-[58vh] sm:h-[66vh] min-h-[430px]"
-              />
+              {/* Mapa Google Maps grande centrado + Carrusel lateral derecho movible de arriba abajo */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+                <div className="lg:col-span-8">
+                  <CuscoGeoMap
+                    mode="MARKET"
+                    userLat={coords.lat}
+                    userLng={coords.lng}
+                    pins={catalogPins}
+                    selectedPinId={selectedCatalogKey ?? catalogMapEntries[0]?.key ?? null}
+                    onSelectPin={(id) => {
+                      setSelectedCatalogKey(id);
+                      const found = catalogMapEntries.find((e) => e.key === id);
+                      if (!found) return;
+                      if (found.op.tipo === 'DIVISA') {
+                        setSubTab('DIVISAS');
+                      } else {
+                        setSheetError(null);
+                        setSelectedOption(found.op);
+                        if (!isDocValid) {
+                          notifyDocumentAlertIfNeeded(found.op.titulo, false);
+                        }
+                      }
+                    }}
+                    onRequestPinAction={(id) => {
+                      const found = catalogMapEntries.find((e) => e.key === id);
+                      if (!found) return;
+                      if (found.op.tipo === 'DIVISA') {
+                        setSubTab('DIVISAS');
+                      } else {
+                        setSheetError(null);
+                        setSelectedOption(found.op);
+                        if (!isDocValid) {
+                          notifyDocumentAlertIfNeeded(found.op.titulo, false);
+                        }
+                      }
+                    }}
+                    onRequestGps={requestGps}
+                    gpsLive={gpsStatus === 'live'}
+                    heightClass="h-[52vh] sm:h-[520px] min-h-[400px]"
+                  />
+                </div>
+
+                <div className="lg:col-span-4 rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1428] p-3.5 flex flex-col max-h-[520px] shadow-xl">
+                  <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-black/10 dark:border-white/10">
+                    <div>
+                      <p className="text-xs font-bold text-[#14171F] dark:text-white">
+                        Negocios Encontrados
+                      </p>
+                      <p className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                        Desliza de arriba a abajo para elegir
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-mono-tabular font-bold text-[#4285F4]">
+                      {catalogMapEntries.length}
+                    </span>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+                    {catalogMapEntries.map((entry) => {
+                      const selected =
+                        (selectedCatalogKey ?? catalogMapEntries[0]?.key) === entry.key;
+                      return (
+                        <div
+                          key={entry.key}
+                          onClick={() => setSelectedCatalogKey(entry.key)}
+                          className={`rounded-2xl border p-3 cursor-pointer transition-all space-y-1.5 ${
+                            selected
+                              ? 'border-[#4285F4] bg-[#4285F4]/10 shadow-md'
+                              : 'border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121B33]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-[#14171F] dark:text-white truncate">
+                                {entry.op.negocio_nombre}
+                              </p>
+                              <p className="text-[11px] text-[#4B5563] dark:text-[#CBD5E1] line-clamp-2">
+                                {entry.op.titulo}
+                              </p>
+                            </div>
+                            <span className="text-xs font-mono-tabular font-extrabold text-emerald-600 dark:text-emerald-400 shrink-0">
+                              {entry.priceText}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-2 pt-1">
+                            <span className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                              {entry.op.zona || 'Cusco'} · ★ {entry.op.calificacion.toFixed(1)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (entry.op.tipo === 'DIVISA') {
+                                  setSubTab('DIVISAS');
+                                } else {
+                                  setSheetError(null);
+                                  setSelectedOption(entry.op);
+                                  if (!isDocValid) {
+                                    notifyDocumentAlertIfNeeded(entry.op.titulo, false);
+                                  }
+                                }
+                              }}
+                              className="min-h-[30px] px-3 rounded-lg bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold"
+                            >
+                              Solicitar
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
 
               {/* Tabla Comparativa de Precios · Escoge el negocio o producto */}
               <div className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0C142B] p-4 sm:p-5 shadow-lg overflow-hidden">

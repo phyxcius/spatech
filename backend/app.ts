@@ -3,9 +3,19 @@ import crypto from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
   calculateTaxiFareServer,
+  generateAiBusinessPanelConfig,
   haversineKm,
   runConciergeSearch,
 } from './assistant.ts';
+
+function safeParseJson<T>(raw: unknown): T | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
 import {
   enviarComprobanteApisperu,
   isApisperuBillingConfigured,
@@ -804,28 +814,36 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   });
 
   app.get('/api/public/directorio', publicLimiter, (_req, res) => {
-    const negocios = db
+    const rawNegocios = db
       .prepare(`
         SELECT id, codigo, rubro, nombre, descripcion, zona, lat, lng, en_linea, calificacion,
                horario_apertura, horario_cierre, abierto_24h, metodos_pago_aceptados,
                tarifa_minima_centavos, radio_cobertura_km,
                tipo_persona, documento_tipo, documento_numero, razon_social,
-               tipo_negocio, modalidades_venta, estado_regla, motivo_estado
+               tipo_negocio, modalidades_venta, panel_ia_json, estado_regla, motivo_estado
         FROM negocios
         WHERE activo = 1
         ORDER BY rubro ASC, calificacion DESC
       `)
-      .all();
-    const servicios = db
+      .all() as Array<Record<string, unknown>>;
+    const negocios = rawNegocios.map((n) => ({
+      ...n,
+      panel_ia: safeParseJson(n.panel_ia_json),
+    }));
+    const rawServicios = db
       .prepare(`
         SELECT s.id, s.negocio_id, s.categoria, s.nombre, s.descripcion, s.precio_centavos, s.duracion_min, s.stock,
-               s.unidad_medida, n.nombre AS negocio_nombre, n.zona, n.calificacion
+               s.unidad_medida, s.atributos_json, n.nombre AS negocio_nombre, n.zona, n.calificacion
         FROM servicios_catalogo s
         JOIN negocios n ON n.id = s.negocio_id
         WHERE n.activo = 1 AND n.en_linea = 1 AND s.disponible = 1 AND s.stock > 0 AND s.categoria = n.rubro
         ORDER BY s.categoria ASC, s.precio_centavos ASC
       `)
-      .all();
+      .all() as Array<Record<string, unknown>>;
+    const servicios = rawServicios.map((s) => ({
+      ...s,
+      atributos: safeParseJson(s.atributos_json),
+    }));
     const unidades = db
       .prepare(`
         SELECT u.id, u.negocio_id, u.conductor_nombre, u.placa, u.modelo, u.color,
@@ -837,6 +855,24 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       `)
       .all();
     res.json({ negocios, servicios, unidades });
+  });
+
+  app.post('/api/public/ai/generar-panel-rubro', publicLimiter, async (req, res, next) => {
+    try {
+      const { rubro_usuario, nombre, descripcion, zona } = req.body || {};
+      if (typeof rubro_usuario !== 'string' || rubro_usuario.trim().length < 2) {
+        throw new HttpError(400, 'Describe el rubro o giro del negocio (mínimo 2 caracteres).');
+      }
+      const panel_ia = await generateAiBusinessPanelConfig({
+        rubro_usuario,
+        nombre: typeof nombre === 'string' ? nombre : undefined,
+        descripcion: typeof descripcion === 'string' ? descripcion : undefined,
+        zona: typeof zona === 'string' ? zona : undefined,
+      });
+      res.json({ panel_ia });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post('/api/public/asistente', publicLimiter, async (req, res, next) => {
@@ -1962,7 +1998,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
-  // Auto-registro de nuevo negocio multirubro en La Chuspa
+  // Auto-registro de nuevo negocio multirubro en La Chuspa (incluye diseño IA multi-rubro)
   app.post('/api/public/negocios/registro', authLimiter, (req, res, next) => {
     try {
       const {
@@ -1970,6 +2006,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nombre,
         telefono,
         zona,
+        lat,
+        lng,
         descripcion,
         pin,
         tipo_persona,
@@ -1978,6 +2016,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         razon_social,
         tipo_negocio,
         modalidades_venta,
+        panel_ia,
+        panel_ia_json,
+        catalogo_inicial,
       } = req.body || {};
       if (!RUBROS.includes(rubro)) throw new HttpError(400, 'Rubro inválido');
       if (typeof nombre !== 'string' || nombre.trim().length < 2) {
@@ -2012,8 +2053,23 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const nextModalidades = Array.isArray(modalidades_venta)
         ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
         : typeof modalidades_venta === 'string' && modalidades_venta.trim()
-          ? modalidades_venta.trim().slice(0, 160)
+          ? modalidades_venta.trim().slice(0, 320)
           : 'Unidad,Servicio';
+
+      const nextLat =
+        typeof lat === 'number' && Number.isFinite(lat) && lat >= -90 && lat <= 90 ? lat : -13.5167;
+      const nextLng =
+        typeof lng === 'number' && Number.isFinite(lng) && lng >= -180 && lng <= 180
+          ? lng
+          : -71.9788;
+
+      const rawPanelObj =
+        panel_ia && typeof panel_ia === 'object'
+          ? panel_ia
+          : typeof panel_ia_json === 'string'
+            ? safeParseJson(panel_ia_json)
+            : null;
+      const nextPanelJson = rawPanelObj ? JSON.stringify(rawPanelObj) : null;
 
       const codigo = generateCode(`NEG-${rubro.slice(0, 2)}`);
       const { hash, salt } = hashPin(cleanPin);
@@ -2022,9 +2078,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         .prepare(`
           INSERT INTO negocios (
             codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido,
-            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, estado_regla
+            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, panel_ia_json, estado_regla
           )
-          VALUES (?, ?, ?, ?, ?, -13.5167, -71.9788, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, 'ACTIVO')
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO')
         `)
         .run(
           codigo,
@@ -2033,14 +2089,17 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           telefono.trim(),
           typeof descripcion === 'string' && descripcion.trim()
             ? descripcion.trim()
-            : `Negocio verificado en ${rubro.toLowerCase()} en Cusco`,
+            : `Negocio verificado en ${nextTipoNegocio} en Cusco`,
+          nextLat,
+          nextLng,
           typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco',
           nextPersona,
           nextDocTipo,
           nextDocNum,
           typeof razon_social === 'string' && razon_social.trim() ? razon_social.trim().slice(0, 140) : null,
           nextTipoNegocio,
-          nextModalidades
+          nextModalidades,
+          nextPanelJson
         );
       const id = Number(insertRes.lastInsertRowid);
       db.prepare('INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)').run(
@@ -2048,6 +2107,45 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         hash,
         salt
       );
+
+      // Si el agente IA generó catálogo inicial, poblar servicios_catalogo automáticamente
+      const starterItems: Array<Record<string, any>> = Array.isArray(catalogo_inicial)
+        ? catalogo_inicial
+        : Array.isArray((rawPanelObj as Record<string, any> | null)?.catalogo_inicial)
+          ? ((rawPanelObj as Record<string, any>).catalogo_inicial as Array<Record<string, any>>)
+          : [];
+
+      if (starterItems.length > 0 && rubro !== 'TRANSPORTE' && rubro !== 'CASA_CAMBIO') {
+        const insertServ = db.prepare(`
+          INSERT INTO servicios_catalogo (
+            negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida, atributos_json, disponible
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        `);
+        for (const item of starterItems.slice(0, 12)) {
+          const itemName = typeof item?.nombre === 'string' ? item.nombre.trim().slice(0, 120) : '';
+          const itemPrice = Math.round(Number(item?.precio_centavos) || 0);
+          if (itemName.length >= 2 && itemPrice > 0) {
+            const attrJson =
+              item?.atributos && typeof item.atributos === 'object'
+                ? JSON.stringify(item.atributos)
+                : null;
+            insertServ.run(
+              id,
+              rubro,
+              itemName,
+              typeof item?.descripcion === 'string' ? item.descripcion.trim().slice(0, 260) : '',
+              itemPrice,
+              Math.max(5, Math.round(Number(item?.duracion_min) || 30)),
+              Math.max(1, Math.round(Number(item?.stock) || 20)),
+              typeof item?.unidad_medida === 'string' && item.unidad_medida.trim()
+                ? item.unidad_medida.trim().slice(0, 64)
+                : 'Unidad',
+              attrJson
+            );
+          }
+        }
+      }
 
       const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(id) as unknown as NegocioRow;
       const token = createSessionToken({
@@ -2066,6 +2164,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           abierto_24h: negocio.abierto_24h === 1,
           auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
           alerta_voz_activa: negocio.alerta_voz_activa === 1,
+          panel_ia: safeParseJson(negocio.panel_ia_json),
           saldo_libre: negocio.saldo - negocio.saldo_retenido,
         },
       });
@@ -2193,9 +2292,13 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const recargas = db
         .prepare('SELECT * FROM negocios_recargas WHERE negocio_id = ? ORDER BY id DESC LIMIT 20')
         .all(negocioId);
-      const servicios = db
+      const rawServicios = db
         .prepare('SELECT * FROM servicios_catalogo WHERE negocio_id = ? AND categoria = ? ORDER BY id DESC')
-        .all(negocioId, negocio.rubro);
+        .all(negocioId, negocio.rubro) as Array<Record<string, unknown>>;
+      const servicios = rawServicios.map((s) => ({
+        ...s,
+        atributos: safeParseJson(s.atributos_json),
+      }));
       const unidades =
         negocio.rubro === 'TRANSPORTE'
           ? db.prepare('SELECT * FROM unidades_conductores WHERE negocio_id = ?').all(negocioId)
@@ -2215,6 +2318,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           abierto_24h: negocio.abierto_24h === 1,
           auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
           alerta_voz_activa: negocio.alerta_voz_activa === 1,
+          panel_ia: safeParseJson(negocio.panel_ia_json),
           saldo_libre: negocio.saldo - negocio.saldo_retenido,
         },
         regla_comision: regla,
@@ -2274,6 +2378,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         razon_social,
         tipo_negocio,
         modalidades_venta,
+        panel_ia,
+        panel_ia_json,
       } = req.body || {};
 
       const nextNombre =
@@ -2360,8 +2466,15 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const nextModalidades = Array.isArray(modalidades_venta)
         ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
         : typeof modalidades_venta === 'string' && modalidades_venta.trim()
-          ? modalidades_venta.trim().slice(0, 160)
+          ? modalidades_venta.trim().slice(0, 320)
           : current.modalidades_venta || 'Unidad,Servicio';
+
+      let nextPanelJson = current.panel_ia_json ?? null;
+      if (panel_ia && typeof panel_ia === 'object') {
+        nextPanelJson = JSON.stringify(panel_ia);
+      } else if (typeof panel_ia_json === 'string' && panel_ia_json.trim()) {
+        nextPanelJson = panel_ia_json;
+      }
 
       db.prepare(`
         UPDATE negocios
@@ -2369,7 +2482,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             horario_apertura = ?, horario_cierre = ?, abierto_24h = ?, metodos_pago_aceptados = ?,
             auto_aceptar_pedidos = ?, alerta_voz_activa = ?, tarifa_minima_centavos = ?, radio_cobertura_km = ?,
             tipo_persona = ?, documento_tipo = ?, documento_numero = ?, razon_social = ?,
-            tipo_negocio = ?, modalidades_venta = ?
+            tipo_negocio = ?, modalidades_venta = ?, panel_ia_json = ?
         WHERE id = ?
       `).run(
         nextNombre,
@@ -2393,6 +2506,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nextRazonSocial,
         nextTipoNegocio,
         nextModalidades,
+        nextPanelJson,
         negocioId
       );
 
@@ -2405,6 +2519,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           abierto_24h: updated.abierto_24h === 1,
           auto_aceptar_pedidos: updated.auto_aceptar_pedidos === 1,
           alerta_voz_activa: updated.alerta_voz_activa === 1,
+          panel_ia: safeParseJson(updated.panel_ia_json),
           saldo_libre: updated.saldo - updated.saldo_retenido,
         },
       });
@@ -2879,7 +2994,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     try {
       const negocioId = Number(req.params.negocioId);
       const negocio = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as NegocioRow;
-      const { nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida } = req.body || {};
+      const { nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida, atributos } = req.body || {};
       if (typeof nombre !== 'string' || nombre.trim().length < 2) {
         throw new HttpError(400, 'Nombre del servicio obligatorio');
       }
@@ -2888,12 +3003,18 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       }
       const nextUnidad =
         typeof unidad_medida === 'string' && unidad_medida.trim()
-          ? unidad_medida.trim().slice(0, 32)
+          ? unidad_medida.trim().slice(0, 64)
           : 'Unidad';
+      const attrJson =
+        atributos && typeof atributos === 'object' && !Array.isArray(atributos)
+          ? JSON.stringify(atributos)
+          : null;
       const insertRes = db
         .prepare(`
-          INSERT INTO servicios_catalogo (negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida, disponible)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+          INSERT INTO servicios_catalogo (
+            negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, unidad_medida, atributos_json, disponible
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         `)
         .run(
           negocioId,
@@ -2903,12 +3024,17 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           precio_centavos,
           Number.isInteger(duracion_min) ? duracion_min : 30,
           Number.isInteger(stock) ? stock : 20,
-          nextUnidad
+          nextUnidad,
+          attrJson
         );
+      const createdRow = db
+        .prepare('SELECT * FROM servicios_catalogo WHERE id = ?')
+        .get(Number(insertRes.lastInsertRowid)) as Record<string, unknown>;
       res.status(201).json({
-        servicio: db
-          .prepare('SELECT * FROM servicios_catalogo WHERE id = ?')
-          .get(Number(insertRes.lastInsertRowid)),
+        servicio: {
+          ...createdRow,
+          atributos: safeParseJson(createdRow.atributos_json),
+        },
       });
     } catch (err) {
       next(err);
@@ -2928,13 +3054,17 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           .get(servicioId, negocioId, negocio.rubro);
         if (!item) throw new HttpError(404, 'Servicio no encontrado en este negocio');
 
-        const { nombre, descripcion, duracion_min, stock, disponible, precio_centavos, unidad_medida } = req.body || {};
+        const { nombre, descripcion, duracion_min, stock, disponible, precio_centavos, unidad_medida, atributos } = req.body || {};
         if (stock !== undefined && (!Number.isInteger(stock) || stock < 0)) {
           throw new HttpError(400, 'Stock inválido');
         }
         if (precio_centavos !== undefined && (!Number.isInteger(precio_centavos) || precio_centavos <= 0)) {
           throw new HttpError(400, 'Precio inválido');
         }
+        const attrJson =
+          atributos && typeof atributos === 'object' && !Array.isArray(atributos)
+            ? JSON.stringify(atributos)
+            : null;
         db.prepare(`
           UPDATE servicios_catalogo
           SET nombre = COALESCE(?, nombre),
@@ -2943,7 +3073,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
               stock = COALESCE(?, stock),
               disponible = COALESCE(?, disponible),
               precio_centavos = COALESCE(?, precio_centavos),
-              unidad_medida = COALESCE(?, unidad_medida)
+              unidad_medida = COALESCE(?, unidad_medida),
+              atributos_json = COALESCE(?, atributos_json)
           WHERE id = ? AND negocio_id = ? AND categoria = ?
         `).run(
           typeof nombre === 'string' && nombre.trim().length >= 2 ? nombre.trim() : null,
@@ -2952,13 +3083,20 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           stock ?? null,
           disponible === undefined ? null : disponible ? 1 : 0,
           precio_centavos ?? null,
-          typeof unidad_medida === 'string' && unidad_medida.trim() ? unidad_medida.trim().slice(0, 32) : null,
+          typeof unidad_medida === 'string' && unidad_medida.trim() ? unidad_medida.trim().slice(0, 64) : null,
+          attrJson,
           servicioId,
           negocioId,
           negocio.rubro
         );
+        const updatedRow = db
+          .prepare('SELECT * FROM servicios_catalogo WHERE id = ?')
+          .get(servicioId) as Record<string, unknown>;
         res.json({
-          servicio: db.prepare('SELECT * FROM servicios_catalogo WHERE id = ?').get(servicioId),
+          servicio: {
+            ...updatedRow,
+            atributos: safeParseJson(updatedRow.atributos_json),
+          },
         });
       } catch (err) {
         next(err);

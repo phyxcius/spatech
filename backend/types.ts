@@ -39,6 +39,63 @@ export type TipoLedger = (typeof TIPOS_LEDGER)[number];
 export const ESTADOS_REGLA = ['ACTIVO', 'INCUMPLIMIENTO', 'ESTAFA'] as const;
 export type EstadoRegla = (typeof ESTADOS_REGLA)[number];
 
+export interface AiCampoEspecifico {
+  key: string;
+  label: string;
+  tipo: 'text' | 'number' | 'select';
+  placeholder: string;
+  unidad?: string;
+  opciones?: string[];
+}
+
+export interface AiModuloOperativo {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  tipo_herramienta:
+    | 'CALCULADORA_MEDIDAS'
+    | 'COTIZADOR_VOLUMEN'
+    | 'CHECKIN_CUPO'
+    | 'POSTULACIONES'
+    | 'COMANDA_COCINA'
+    | 'RECETARIO_STOCK'
+    | 'INFO';
+}
+
+export interface AiCatalogoItemSugerido {
+  nombre: string;
+  descripcion: string;
+  precio_centavos: number;
+  unidad_medida: string;
+  stock: number;
+  duracion_min?: number;
+  atributos?: Record<string, string>;
+}
+
+export interface AiBusinessPanelSchema {
+  rubro_base: Rubro;
+  rubro_usuario: string;
+  rubro_titulo: string;
+  subtitulo_panel: string;
+  badge_panel: string;
+  tema_color: {
+    primaryHex: string;
+    accentHex: string;
+  };
+  terminologia: {
+    clienteLabel: string;
+    pedidoLabel: string;
+    catalogoLabel: string;
+    nuevoItemBtn: string;
+  };
+  unidades_medida: string[];
+  campos_especificos: AiCampoEspecifico[];
+  modulos_panel: AiModuloOperativo[];
+  catalogo_inicial: AiCatalogoItemSugerido[];
+  generado_por: 'gemini' | 'ia_estatico';
+  updated_at: string;
+}
+
 export interface NegocioRow {
   id: number;
   codigo: string;
@@ -68,6 +125,7 @@ export interface NegocioRow {
   razon_social?: string | null;
   tipo_negocio?: string;
   modalidades_venta?: string;
+  panel_ia_json?: string | null;
   estado_regla?: EstadoRegla;
   motivo_estado?: string | null;
   created_at: string;

@@ -19,6 +19,7 @@ import {
   Send,
   Settings,
   Star,
+  Trash2,
   UserPlus,
   Wallet,
   X,
@@ -37,6 +38,7 @@ import {
   formatSoles,
   RUBRO_LABELS,
   SALE_MODALITIES,
+  type AiBusinessPanelSchema,
   type ComprobanteElectronico,
   type DirectorioNegocio,
   type MetodoPago,
@@ -44,6 +46,7 @@ import {
   type PedidoNegocio,
   type Rubro,
 } from '../types.ts';
+import { AiBusinessBuilder, AiDynamicToolsBar } from './AiBusinessBuilder.tsx';
 import { BusinessConfigTab } from './BusinessConfigTab.tsx';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 import {
@@ -89,6 +92,7 @@ interface ResumenData {
     razon_social?: string;
     tipo_negocio?: string;
     modalidades_venta?: string[];
+    panel_ia?: AiBusinessPanelSchema | null;
     saldo: number;
     saldo_retenido: number;
     saldo_libre: number;
@@ -119,8 +123,10 @@ interface ResumenData {
   servicios: Array<{
     id: number;
     nombre: string;
+    descripcion?: string;
     precio_centavos: number;
     unidad_medida?: string;
+    atributos?: Record<string, string> | null;
     stock: number;
     disponible: number;
   }>;
@@ -261,6 +267,7 @@ export const BusinessPanel: React.FC = () => {
   const [regLng, setRegLng] = useState<number>(-71.9788);
   const [regGpsStatus, setRegGpsStatus] = useState<'idle' | 'loading' | 'live' | 'denied'>('idle');
   const [regPin, setRegPin] = useState('');
+  const [regPanelIa, setRegPanelIa] = useState<AiBusinessPanelSchema | null>(null);
 
   const [tab, setTab] = useState<BizTab>('NUEVOS');
   const [resumen, setResumen] = useState<ResumenData | null>(null);
@@ -302,6 +309,8 @@ export const BusinessPanel: React.FC = () => {
   const [newServPrecioSoles, setNewServPrecioSoles] = useState('');
   const [newServDesc, setNewServDesc] = useState('');
   const [newServUnidadMedida, setNewServUnidadMedida] = useState('Unidad');
+  const [newServCustomUnidad, setNewServCustomUnidad] = useState('');
+  const [newServAtributos, setNewServAtributos] = useState<Record<string, string>>({});
 
   // Modo Conductor (TRANSPORTE) & SUNAT (Otros rubros)
   const [driverSubTab, setDriverSubTab] = useState<'SOLICITUDES' | 'DESEMPENO'>('SOLICITUDES');
@@ -586,6 +595,8 @@ export const BusinessPanel: React.FC = () => {
           razon_social: regRazonSocial || regNombre,
           tipo_negocio: regTipoNegocio,
           modalidades_venta: regModalidades,
+          panel_ia: regPanelIa || undefined,
+          catalogo_inicial: regPanelIa?.catalogo_inicial || undefined,
         },
       });
       setSession({
@@ -595,10 +606,14 @@ export const BusinessPanel: React.FC = () => {
         codigo: res.negocio.codigo,
         rubro: res.negocio.rubro,
       });
-      setTab('CONFIGURACION');
+      setTab('GESTION');
       setActionMsg({
         type: 'ok',
-        text: `¡Negocio registrado! Tu código de acceso es ${res.negocio.codigo}. Configura ahora tus horarios, tarifas y catálogo.`,
+        text: `¡Negocio registrado! Tu código de acceso es ${res.negocio.codigo}. ${
+          regPanelIa
+            ? `Tu panel IA de "${regPanelIa.rubro_titulo}" y catálogo inicial ya están listos.`
+            : 'Configura ahora tus horarios, tarifas y catálogo.'
+        }`,
       });
       void refreshDirectorio();
     } catch (err) {
@@ -943,6 +958,14 @@ export const BusinessPanel: React.FC = () => {
     e.preventDefault();
     if (!session) return;
     setActionMsg(null);
+    const unidadFinal =
+      newServUnidadMedida === '__CUSTOM__'
+        ? newServCustomUnidad.trim() || 'Unidad'
+        : newServUnidadMedida;
+    const cleanAtributos: Record<string, string> = {};
+    for (const [k, v] of Object.entries(newServAtributos)) {
+      if (v && v.trim()) cleanAtributos[k] = v.trim();
+    }
     try {
       await apiFetch(`/api/negocio/${session.negocioId}/servicios`, {
         method: 'POST',
@@ -950,7 +973,8 @@ export const BusinessPanel: React.FC = () => {
           nombre: newServNombre,
           descripcion: newServDesc,
           precio_centavos: Math.round((Number(newServPrecioSoles) || 0) * 100),
-          unidad_medida: newServUnidadMedida,
+          unidad_medida: unidadFinal,
+          atributos: Object.keys(cleanAtributos).length > 0 ? cleanAtributos : undefined,
           stock: 20,
           duracion_min: 45,
         },
@@ -959,12 +983,34 @@ export const BusinessPanel: React.FC = () => {
       setNewServNombre('');
       setNewServPrecioSoles('');
       setNewServDesc('');
-      setActionMsg({ type: 'ok', text: `Servicio publicado (${newServUnidadMedida}) en tu catálogo.` });
+      setNewServCustomUnidad('');
+      setNewServAtributos({});
+      setActionMsg({
+        type: 'ok',
+        text: `Ítem publicado por "${unidadFinal}" en tu catálogo.`,
+      });
       await loadWorkspace(true);
     } catch (err) {
       setActionMsg({
         type: 'err',
         text: err instanceof Error ? err.message : 'Error agregando servicio',
+      });
+    }
+  }
+
+  async function handleDeleteServiceFromMgmt(servicioId: number) {
+    if (!session) return;
+    try {
+      await apiFetch(`/api/negocio/${session.negocioId}/servicios/${servicioId}`, {
+        method: 'DELETE',
+        token: session.token,
+      });
+      setActionMsg({ type: 'ok', text: 'Ítem eliminado del catálogo.' });
+      await loadWorkspace(true);
+    } catch (err) {
+      setActionMsg({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Error eliminando servicio',
       });
     }
   }
@@ -989,7 +1035,7 @@ export const BusinessPanel: React.FC = () => {
 
   if (!session) {
     return (
-      <div className="max-w-lg mx-auto py-8 pb-24">
+      <div className={`${authMode === 'REGISTER' ? 'max-w-3xl' : 'max-w-lg'} mx-auto py-8 pb-24 transition-all`}>
         <div className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1426] p-6 sm:p-8 space-y-6 shadow-2xl chuspa-google-border">
           <div className="space-y-1.5">
             <p className="text-xs uppercase tracking-[0.2em] text-[#9A7B2C] dark:text-[#D4AF37]">
@@ -1104,11 +1150,27 @@ export const BusinessPanel: React.FC = () => {
               </button>
             </form>
           ) : (
-            <form onSubmit={handleRegisterBusiness} className="space-y-3.5">
+            <form onSubmit={handleRegisterBusiness} className="space-y-4">
+              {/* Agente IA Multi-Rubro: crea automáticamente el panel de control y unidades para cualquier negocio */}
+              <AiBusinessBuilder
+                nombreComercial={regNombre}
+                zona={regZona}
+                value={regPanelIa}
+                onChange={(schema) => {
+                  setRegPanelIa(schema);
+                  setRegRubro(schema.rubro_base);
+                  setRegTipoNegocio(schema.rubro_titulo);
+                  if (schema.unidades_medida.length > 0) {
+                    setRegModalidades(schema.unidades_medida);
+                    setNewServUnidadMedida(schema.unidades_medida[0]);
+                  }
+                }}
+              />
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                    Rubro principal
+                    Rubro operativo base
                   </label>
                   <select
                     value={regRubro}
@@ -1126,11 +1188,13 @@ export const BusinessPanel: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                    Categoría de Negocio
+                    Categoría / Especialidad del Negocio
                   </label>
                   <select
-                    value={regTipoNegocio}
-                    onChange={(e) => setRegTipoNegocio(e.target.value)}
+                    value={BUSINESS_CATEGORIES.includes(regTipoNegocio as any) ? regTipoNegocio : '__CUSTOM__'}
+                    onChange={(e) => {
+                      if (e.target.value !== '__CUSTOM__') setRegTipoNegocio(e.target.value);
+                    }}
                     className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
                   >
                     {BUSINESS_CATEGORIES.map((cat) => (
@@ -1138,6 +1202,9 @@ export const BusinessPanel: React.FC = () => {
                         {cat}
                       </option>
                     ))}
+                    {!BUSINESS_CATEGORIES.includes(regTipoNegocio as any) && (
+                      <option value="__CUSTOM__">{regTipoNegocio} (Generado por IA)</option>
+                    )}
                   </select>
                 </div>
               </div>
@@ -1260,32 +1327,63 @@ export const BusinessPanel: React.FC = () => {
                 placeholder="Dirección o zona en Cusco"
                 className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
-              <div className="rounded-2xl border border-[#2563EB]/25 bg-[#2563EB]/8 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
-                <div>
-                  <p className="font-bold text-[#1E40AF] dark:text-[#06B6D4]">
-                    {regGpsStatus === 'live'
-                      ? `GPS del negocio activo (${regLat.toFixed(4)}, ${regLng.toFixed(4)})`
-                      : 'Ubicación GPS del negocio'}
-                  </p>
-                  <p className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
-                    Usa la ubicación actual de tu celular para aparecer en el mapa.
-                  </p>
+              <div className="rounded-2xl border border-[#2563EB]/25 bg-[#2563EB]/6 p-3.5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div>
+                    <p className="font-bold text-[#1E40AF] dark:text-[#06B6D4]">
+                      {regGpsStatus === 'live'
+                        ? `GPS del negocio activo (${regLat.toFixed(4)}, ${regLng.toFixed(4)})`
+                        : 'Ubicación Real en Google Maps del Negocio'}
+                    </p>
+                    <p className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                      Toca el mapa para fijar tu local o presiona Activar GPS para ubicarte automáticamente.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRequestRegGps}
+                    disabled={regGpsStatus === 'loading'}
+                    className="min-h-[36px] px-3 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold flex items-center gap-1.5 shrink-0"
+                  >
+                    <Crosshair className="w-3.5 h-3.5" />
+                    <span>{regGpsStatus === 'loading' ? 'Ubicando...' : regGpsStatus === 'live' ? 'GPS Listo' : 'Activar GPS'}</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleRequestRegGps}
-                  disabled={regGpsStatus === 'loading'}
-                  className="min-h-[36px] px-3 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold flex items-center gap-1.5 shrink-0"
-                >
-                  <Crosshair className="w-3.5 h-3.5" />
-                  <span>{regGpsStatus === 'loading' ? 'Ubicando...' : regGpsStatus === 'live' ? 'GPS Listo' : 'Activar GPS'}</span>
-                </button>
+                <CuscoGeoMap
+                  mode="MARKET"
+                  userLat={regLat}
+                  userLng={regLng}
+                  originLabel={regNombre.trim() || 'Tu Negocio'}
+                  pins={[
+                    {
+                      id: 'reg-store-pin',
+                      lat: regLat,
+                      lng: regLng,
+                      priceText: regPanelIa?.rubro_titulo || RUBRO_LABELS[regRubro],
+                      sublabel: regZona,
+                      detailTitle: regNombre.trim() || 'Ubicación de tu negocio',
+                      tier: 'cheapest',
+                      kind: 'MARKET',
+                      isOpen: true,
+                    },
+                  ]}
+                  gpsLive={regGpsStatus === 'live'}
+                  onRequestGps={handleRequestRegGps}
+                  onMapClick={(latVal, lngVal) => {
+                    setRegLat(latVal);
+                    setRegLng(lngVal);
+                    setRegGpsStatus('live');
+                  }}
+                  heightClass="h-[220px] sm:h-[260px]"
+                />
               </div>
               <button
                 type="submit"
                 className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-sm font-bold chuspa-google-btn"
               >
-                Crear y Configurar Mi Panel
+                {regPanelIa
+                  ? `Crear Panel IA (${regPanelIa.rubro_titulo}) y Entrar`
+                  : 'Crear y Configurar Mi Panel'}
               </button>
             </form>
           )}
@@ -1339,17 +1437,29 @@ export const BusinessPanel: React.FC = () => {
   );
   const referidosPorMi = pedidos.filter((p) => p.referido_negocio_id === session.negocioId);
   const roleTheme = RUBRO_PANEL_THEME[session.rubro] || RUBRO_PANEL_THEME.RESTAURANTE;
+  const panelIa = resumen?.negocio?.panel_ia || null;
 
   return (
     <div className="space-y-6 pb-24 md:pb-12">
-      {/* Cabecera financiera del negocio con color temático único por rubro */}
-      <section className={`rounded-3xl border p-6 space-y-5 shadow-2xl chuspa-google-border ${roleTheme.cardBg}`}>
+      {/* Cabecera financiera del negocio con color temático único por rubro / IA */}
+      <section
+        style={panelIa ? { borderColor: `${panelIa.tema_color.primaryHex}66` } : undefined}
+        className={`rounded-3xl border p-6 space-y-5 shadow-2xl chuspa-google-border ${roleTheme.cardBg}`}
+      >
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
-            <p className={`text-xs uppercase tracking-[0.16em] font-bold ${roleTheme.accentText}`}>
-              {roleTheme.badge} · {session.codigo}
+            <p
+              style={panelIa ? { color: panelIa.tema_color.primaryHex } : undefined}
+              className={`text-xs uppercase tracking-[0.16em] font-bold ${roleTheme.accentText}`}
+            >
+              {panelIa?.badge_panel || roleTheme.badge} · {session.codigo}
             </p>
             <h1 className="font-display text-3xl font-semibold mt-0.5">{session.nombre}</h1>
+            {panelIa && (
+              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-0.5">
+                {panelIa.rubro_titulo} — {panelIa.subtitulo_panel}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {resumen && (
@@ -1835,6 +1945,7 @@ export const BusinessPanel: React.FC = () => {
 
         return (
           <div className="space-y-4">
+            {panelIa && <AiDynamicToolsBar panelIa={panelIa} />}
             <div className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2 px-1">
                 <p className="text-xs font-semibold text-[#14213D] dark:text-[#E5C158]">
@@ -2402,62 +2513,203 @@ export const BusinessPanel: React.FC = () => {
       )}
 
       {/* TAB GESTION */}
-      {tab === 'GESTION' && resumen && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-5 space-y-6">
-            {session.rubro !== 'TRANSPORTE' && session.rubro !== 'CASA_CAMBIO' && (
-              <form
-                onSubmit={handleAddService}
-                className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-3"
-              >
-                <h2 className="font-display text-2xl font-semibold">Agregar a mi Catálogo</h2>
-                <input
-                  type="text"
-                  required
-                  value={newServNombre}
-                  onChange={(e) => setNewServNombre(e.target.value)}
-                  placeholder="Nombre del producto o servicio"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <div className="grid grid-cols-2 gap-2.5">
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="1"
-                    required
-                    value={newServPrecioSoles}
-                    onChange={(e) => setNewServPrecioSoles(e.target.value)}
-                    placeholder="Precio S/ (ej. 85)"
-                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
-                  />
-                  <select
-                    value={newServUnidadMedida}
-                    onChange={(e) => setNewServUnidadMedida(e.target.value)}
-                    className="w-full min-h-[44px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-semibold"
+      {tab === 'GESTION' && resumen && (() => {
+        const availableUnits = Array.from(
+          new Set([
+            ...(panelIa?.unidades_medida || []),
+            ...(resumen.negocio.modalidades_venta || []),
+            ...SALE_MODALITIES,
+          ])
+        );
+
+        return (
+          <div className="space-y-6">
+            {panelIa && <AiDynamicToolsBar panelIa={panelIa} />}
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-5 space-y-6">
+                {session.rubro !== 'TRANSPORTE' && session.rubro !== 'CASA_CAMBIO' && (
+                  <form
+                    onSubmit={handleAddService}
+                    className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-3.5"
                   >
-                    {SALE_MODALITIES.map((mod) => (
-                      <option key={mod} value={mod}>
-                        Por {mod}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <input
-                  type="text"
-                  value={newServDesc}
-                  onChange={(e) => setNewServDesc(e.target.value)}
-                  placeholder="Descripción breve"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <button
-                  type="submit"
-                  className="w-full min-h-[44px] rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold flex items-center justify-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Publicar en {RUBRO_LABELS[session.rubro]}</span>
-                </button>
-              </form>
-            )}
+                    <div>
+                      <h2 className="font-display text-2xl font-semibold">
+                        {panelIa?.terminologia.catalogoLabel || 'Agregar a mi Catálogo'}
+                      </h2>
+                      {panelIa && (
+                        <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                          Formulario adaptado por IA para {panelIa.rubro_titulo}
+                        </p>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      value={newServNombre}
+                      onChange={(e) => setNewServNombre(e.target.value)}
+                      placeholder={
+                        panelIa
+                          ? `Nombre (${panelIa.terminologia.nuevoItemBtn})`
+                          : 'Nombre del producto o servicio'
+                      }
+                      className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                    />
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.5"
+                        required
+                        value={newServPrecioSoles}
+                        onChange={(e) => setNewServPrecioSoles(e.target.value)}
+                        placeholder="Precio S/ (ej. 25.00)"
+                        className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
+                      />
+                      <select
+                        value={newServUnidadMedida}
+                        onChange={(e) => setNewServUnidadMedida(e.target.value)}
+                        className="w-full min-h-[44px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-semibold"
+                      >
+                        {availableUnits.map((mod) => (
+                          <option key={mod} value={mod}>
+                            Por {mod}
+                          </option>
+                        ))}
+                        <option value="__CUSTOM__">Otra unidad personalizada...</option>
+                      </select>
+                    </div>
+
+                    {newServUnidadMedida === '__CUSTOM__' && (
+                      <input
+                        type="text"
+                        required
+                        value={newServCustomUnidad}
+                        onChange={(e) => setNewServCustomUnidad(e.target.value)}
+                        placeholder="Escribe la unidad (ej. Pulgada 3/4, Metro lineal, Amperio, Grano)"
+                        className="w-full min-h-[40px] px-3.5 rounded-xl border border-[#2563EB]/35 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
+                      />
+                    )}
+
+                    {/* Campos técnicos específicos generados por IA según el rubro */}
+                    {panelIa && panelIa.campos_especificos.length > 0 && (
+                      <div className="rounded-xl border border-[#2563EB]/25 bg-[#2563EB]/5 p-3 space-y-2.5">
+                        <p className="text-[11px] font-bold text-[#1E40AF] dark:text-[#93C5FD]">
+                          Especificaciones técnicas ({panelIa.rubro_titulo})
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {panelIa.campos_especificos.map((campo) => (
+                            <div key={campo.key}>
+                              <label className="block text-[10px] font-semibold text-[#555B66] dark:text-[#CBD5E1] mb-0.5">
+                                {campo.label}
+                                {campo.unidad ? ` (${campo.unidad})` : ''}
+                              </label>
+                              {campo.tipo === 'select' && Array.isArray(campo.opciones) && campo.opciones.length > 0 ? (
+                                <select
+                                  value={newServAtributos[campo.key] || ''}
+                                  onChange={(e) =>
+                                    setNewServAtributos((prev) => ({
+                                      ...prev,
+                                      [campo.key]: e.target.value,
+                                    }))
+                                  }
+                                  className="w-full min-h-[36px] px-2.5 rounded-lg border border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs"
+                                >
+                                  <option value="">Seleccionar...</option>
+                                  {campo.opciones.map((op) => (
+                                    <option key={op} value={op}>
+                                      {op}
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
+                                <input
+                                  type={campo.tipo === 'number' ? 'number' : 'text'}
+                                  step="any"
+                                  value={newServAtributos[campo.key] || ''}
+                                  onChange={(e) =>
+                                    setNewServAtributos((prev) => ({
+                                      ...prev,
+                                      [campo.key]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder={campo.placeholder}
+                                  className="w-full min-h-[36px] px-2.5 rounded-lg border border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs"
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <input
+                      type="text"
+                      value={newServDesc}
+                      onChange={(e) => setNewServDesc(e.target.value)}
+                      placeholder="Descripción breve o marca"
+                      className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                    />
+                    <button
+                      type="submit"
+                      className={`w-full min-h-[44px] rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 ${roleTheme.primaryBtn}`}
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>
+                        {panelIa?.terminologia.nuevoItemBtn || `Publicar en ${RUBRO_LABELS[session.rubro]}`}
+                      </span>
+                    </button>
+                  </form>
+                )}
+
+                {session.rubro !== 'TRANSPORTE' && session.rubro !== 'CASA_CAMBIO' && (
+                  <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 space-y-3">
+                    <h3 className="font-display text-xl font-semibold">
+                      Mi Catálogo Activo ({resumen.servicios.length})
+                    </h3>
+                    {resumen.servicios.length === 0 ? (
+                      <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                        Agrega tu primer producto o servicio arriba.
+                      </p>
+                    ) : (
+                      <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                        {resumen.servicios.map((s) => (
+                          <div
+                            key={s.id}
+                            className="rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] p-3 flex items-start justify-between gap-2 text-xs"
+                          >
+                            <div className="min-w-0 space-y-1">
+                              <p className="font-semibold truncate">{s.nombre}</p>
+                              <p className="font-mono-tabular text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
+                                {formatSoles(s.precio_centavos)} / {s.unidad_medida || 'Unidad'} · Stock {s.stock}
+                              </p>
+                              {s.atributos && Object.keys(s.atributos).length > 0 && (
+                                <div className="flex flex-wrap gap-1 pt-0.5">
+                                  {Object.entries(s.atributos).map(([k, v]) => (
+                                    <span
+                                      key={k}
+                                      className="px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 text-[10px] text-[#555B66] dark:text-[#CBD5E1]"
+                                    >
+                                      {k}: {v}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteServiceFromMgmt(s.id)}
+                              title="Eliminar del catálogo"
+                              className="p-1.5 rounded-lg text-[#C81E5B] hover:bg-[#C81E5B]/10 shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
 
             {session.rubro === 'CASA_CAMBIO' && resumen.tasas.length > 0 && (
               <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-4">
@@ -2545,8 +2797,10 @@ export const BusinessPanel: React.FC = () => {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODAL RECARGA SALDO */}
       {recargaOpen && (

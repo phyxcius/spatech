@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import type { DatabaseSync } from 'node:sqlite';
-import { RUBROS, type Rubro } from './types.ts';
+import { HttpError, RUBROS, type AiBusinessPanelSchema, type Rubro } from './types.ts';
 
 export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -344,3 +344,275 @@ export async function runConciergeSearch(
     })),
   };
 }
+
+export async function generateAiBusinessPanelConfig(params: {
+  rubro_usuario: string;
+  nombre?: string;
+  descripcion?: string;
+  zona?: string;
+}): Promise<AiBusinessPanelSchema> {
+  const rubroUsuario = params.rubro_usuario.trim().slice(0, 120);
+  if (rubroUsuario.length < 2) {
+    throw new HttpError(400, 'Describe el rubro o tipo de negocio (mínimo 2 caracteres).');
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    throw new HttpError(
+      503,
+      'El servicio Gemini AI no está configurado en el servidor (GEMINI_API_KEY requerida).'
+    );
+  }
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+  });
+
+  const promptContext = [
+    `Rubro / industria solicitada por el dueño: "${rubroUsuario}"`,
+    params.nombre ? `Nombre comercial: "${params.nombre.trim()}"` : '',
+    params.descripcion ? `Detalle adicional: "${params.descripcion.trim()}"` : '',
+    params.zona ? `Ciudad / Zona: "${params.zona.trim()}"` : 'Ciudad: Cusco, Perú',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  let rawText = '';
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-4-hydrogen',
+      contents: promptContext,
+      config: {
+        systemInstruction: [
+          'Eres el Arquitecto Multi-Rubro de La Chuspa.',
+          'Diseña la configuración completa y realista de un Panel de Control Empresarial en español para CUALQUIER rubro o negocio del mundo (ferretería, hotel, bolsa de empleos, restaurante, piñatería, veterinaria, taller mecánico, librería, spa, farmacia, minimarket, etc.).',
+          'Reglas obligatorias:',
+          '1) "rubro_base" debe ser EXACTAMENTE uno de: TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO (usa TRANSPORTE solo si es movilidad/taxis; HOTEL para hospedajes; FARMACIA para boticas/clínicas; TURISMO para viajes/eventos; CASA_CAMBIO para finanzas; RESTAURANTE para comercios generales, tiendas, ferreterías, empleos, piñaterías, etc.).',
+          '2) "unidades_medida": incluye entre 8 y 16 unidades REALES y específicas del rubro. Por ejemplo, si es Ferretería DEBES incluir unidades como: Unidad, Kilo (kg), Gramo (g), Litro (L), Metro (m), Pulgada (in), Pie (ft), Grosor (mm), Metro cúbico (m³), Cubo, Amperio (A), Grano, Caja, Rollo, Saco. Si es Hotel: Noche, Hora, Persona, Suite, Día, Paquete. Si es Empleos: Vacante, Hora, Jornada, Mes, Proyecto. Si es Piñatería: Unidad, Docena, Paquete, Metro, Combo, Ciento.',
+          '3) "campos_especificos": entre 4 y 6 campos técnicos del producto/servicio que aparecerán en el formulario de catálogo del dueño (key en snake_case, label en español, tipo "text"|"number"|"select", placeholder, unidad opcional, opciones si tipo==="select").',
+          '4) "modulos_panel": entre 2 y 4 módulos operativos. "tipo_herramienta" debe ser uno de: CALCULADORA_MEDIDAS, COTIZADOR_VOLUMEN, CHECKIN_CUPO, POSTULACIONES, COMANDA_COCINA, RECETARIO_STOCK, INFO.',
+          '5) "catalogo_inicial": entre 4 y 6 productos/servicios reales del rubro con precio_centavos (entero en céntimos de Sol, ej. 1550 = S/ 15.50), unidad_medida elegida de tu lista, stock (entero >= 1), y atributos como lista de pares { clave, valor }.',
+          '6) "tema_color": colores hex elegantes con buen contraste para primaryHex y accentHex.',
+        ].join('\n'),
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            rubro_base: { type: Type.STRING },
+            rubro_titulo: { type: Type.STRING },
+            subtitulo_panel: { type: Type.STRING },
+            badge_panel: { type: Type.STRING },
+            tema_color: {
+              type: Type.OBJECT,
+              properties: {
+                primaryHex: { type: Type.STRING },
+                accentHex: { type: Type.STRING },
+              },
+              required: ['primaryHex', 'accentHex'],
+            },
+            terminologia: {
+              type: Type.OBJECT,
+              properties: {
+                clienteLabel: { type: Type.STRING },
+                pedidoLabel: { type: Type.STRING },
+                catalogoLabel: { type: Type.STRING },
+                nuevoItemBtn: { type: Type.STRING },
+              },
+              required: ['clienteLabel', 'pedidoLabel', 'catalogoLabel', 'nuevoItemBtn'],
+            },
+            unidades_medida: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+            },
+            campos_especificos: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  key: { type: Type.STRING },
+                  label: { type: Type.STRING },
+                  tipo: { type: Type.STRING },
+                  placeholder: { type: Type.STRING },
+                  unidad: { type: Type.STRING },
+                  opciones: { type: Type.ARRAY, items: { type: Type.STRING } },
+                },
+                required: ['key', 'label', 'tipo', 'placeholder'],
+              },
+            },
+            modulos_panel: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  titulo: { type: Type.STRING },
+                  descripcion: { type: Type.STRING },
+                  tipo_herramienta: { type: Type.STRING },
+                },
+                required: ['id', 'titulo', 'descripcion', 'tipo_herramienta'],
+              },
+            },
+            catalogo_inicial: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  nombre: { type: Type.STRING },
+                  descripcion: { type: Type.STRING },
+                  precio_centavos: { type: Type.INTEGER },
+                  unidad_medida: { type: Type.STRING },
+                  stock: { type: Type.INTEGER },
+                  duracion_min: { type: Type.INTEGER },
+                  atributos: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        clave: { type: Type.STRING },
+                        valor: { type: Type.STRING },
+                      },
+                      required: ['clave', 'valor'],
+                    },
+                  },
+                },
+                required: ['nombre', 'descripcion', 'precio_centavos', 'unidad_medida', 'stock'],
+              },
+            },
+          },
+          required: [
+            'rubro_base',
+            'rubro_titulo',
+            'subtitulo_panel',
+            'badge_panel',
+            'tema_color',
+            'terminologia',
+            'unidades_medida',
+            'campos_especificos',
+            'modulos_panel',
+            'catalogo_inicial',
+          ],
+        },
+      },
+    });
+    rawText = (response.text || '').trim();
+  } catch (err) {
+    throw new HttpError(
+      502,
+      `No se pudo generar el panel con Gemini AI: ${err instanceof Error ? err.message : 'error de red'}`
+    );
+  }
+
+  let parsed: Record<string, any> = {};
+  try {
+    parsed = JSON.parse(rawText || '{}') as Record<string, any>;
+  } catch {
+    throw new HttpError(502, 'La respuesta de Gemini AI no tuvo formato JSON válido.');
+  }
+
+  const validBase: Rubro = RUBROS.includes(parsed.rubro_base as Rubro)
+    ? (parsed.rubro_base as Rubro)
+    : inferCategoryFromText(rubroUsuario);
+
+  const allowedTools = new Set([
+    'CALCULADORA_MEDIDAS',
+    'COTIZADOR_VOLUMEN',
+    'CHECKIN_CUPO',
+    'POSTULACIONES',
+    'COMANDA_COCINA',
+    'RECETARIO_STOCK',
+    'INFO',
+  ]);
+
+  const unidades = Array.isArray(parsed.unidades_medida)
+    ? parsed.unidades_medida
+        .map((u) => String(u || '').trim())
+        .filter(Boolean)
+        .slice(0, 20)
+    : ['Unidad', 'Servicio'];
+
+  const campos = Array.isArray(parsed.campos_especificos)
+    ? parsed.campos_especificos.slice(0, 8).map((c: any, idx: number) => ({
+        key:
+          String(c?.key || `campo_${idx + 1}`)
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, '_')
+            .slice(0, 40) || `campo_${idx + 1}`,
+        label: String(c?.label || `Especificación ${idx + 1}`).slice(0, 60),
+        tipo: (c?.tipo === 'number' || c?.tipo === 'select' ? c.tipo : 'text') as
+          | 'text'
+          | 'number'
+          | 'select',
+        placeholder: String(c?.placeholder || '').slice(0, 80),
+        ...(c?.unidad ? { unidad: String(c.unidad).slice(0, 24) } : {}),
+        ...(Array.isArray(c?.opciones) && c.opciones.length > 0
+          ? { opciones: c.opciones.map((o: unknown) => String(o)).slice(0, 12) }
+          : {}),
+      }))
+    : [];
+
+  const modulos = Array.isArray(parsed.modulos_panel)
+    ? parsed.modulos_panel.slice(0, 6).map((m: any, idx: number) => ({
+        id: String(m?.id || `mod_${idx + 1}`).slice(0, 40),
+        titulo: String(m?.titulo || 'Módulo Operativo').slice(0, 70),
+        descripcion: String(m?.descripcion || '').slice(0, 180),
+        tipo_herramienta: (allowedTools.has(String(m?.tipo_herramienta))
+          ? String(m.tipo_herramienta)
+          : 'INFO') as AiBusinessPanelSchema['modulos_panel'][number]['tipo_herramienta'],
+      }))
+    : [];
+
+  const catalogo = Array.isArray(parsed.catalogo_inicial)
+    ? parsed.catalogo_inicial.slice(0, 10).map((item: any) => {
+        const attrObj: Record<string, string> = {};
+        if (Array.isArray(item?.atributos)) {
+          for (const pair of item.atributos) {
+            const k = String(pair?.clave || '').trim();
+            const v = String(pair?.valor || '').trim();
+            if (k && v) attrObj[k.slice(0, 40)] = v.slice(0, 80);
+          }
+        }
+        return {
+          nombre: String(item?.nombre || 'Producto').slice(0, 100),
+          descripcion: String(item?.descripcion || '').slice(0, 220),
+          precio_centavos: Math.max(100, Math.round(Number(item?.precio_centavos) || 1500)),
+          unidad_medida: String(item?.unidad_medida || unidades[0] || 'Unidad').slice(0, 48),
+          stock: Math.max(1, Math.round(Number(item?.stock) || 20)),
+          duracion_min: Math.max(5, Math.round(Number(item?.duracion_min) || 30)),
+          ...(Object.keys(attrObj).length > 0 ? { atributos: attrObj } : {}),
+        };
+      })
+    : [];
+
+  const hexRegex = /^#[0-9A-Fa-f]{6}$/;
+  const primaryHex = hexRegex.test(String(parsed.tema_color?.primaryHex || ''))
+    ? String(parsed.tema_color.primaryHex)
+    : '#2563EB';
+  const accentHex = hexRegex.test(String(parsed.tema_color?.accentHex || ''))
+    ? String(parsed.tema_color.accentHex)
+    : '#D4AF37';
+
+  return {
+    rubro_base: validBase,
+    rubro_usuario: rubroUsuario,
+    rubro_titulo: String(parsed.rubro_titulo || rubroUsuario).slice(0, 90),
+    subtitulo_panel: String(
+      parsed.subtitulo_panel || `Gestión especializada para ${rubroUsuario}`
+    ).slice(0, 180),
+    badge_panel: String(parsed.badge_panel || `Panel IA · ${rubroUsuario}`).slice(0, 70),
+    tema_color: { primaryHex, accentHex },
+    terminologia: {
+      clienteLabel: String(parsed.terminologia?.clienteLabel || 'Cliente').slice(0, 40),
+      pedidoLabel: String(parsed.terminologia?.pedidoLabel || 'Pedido').slice(0, 40),
+      catalogoLabel: String(parsed.terminologia?.catalogoLabel || 'Catálogo').slice(0, 40),
+      nuevoItemBtn: String(parsed.terminologia?.nuevoItemBtn || 'Agregar Ítem').slice(0, 50),
+    },
+    unidades_medida: unidades.length > 0 ? unidades : ['Unidad', 'Servicio'],
+    campos_especificos: campos,
+    modulos_panel: modulos,
+    catalogo_inicial: catalogo,
+    generado_por: 'gemini',
+    updated_at: new Date().toISOString(),
+  };
+}
+

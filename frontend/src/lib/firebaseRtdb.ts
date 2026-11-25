@@ -1,4 +1,5 @@
 import type {
+  AiBusinessPanelSchema,
   ConciergeOpcion,
   EntidadEmergencia,
   EstadoRegla,
@@ -6,6 +7,7 @@ import type {
   PedidoPublico,
   Rubro,
 } from '../types.ts';
+import { buildClientFallbackPanelForRubro } from './aiPanelBuilder.ts';
 import {
   formatPeruLookupError,
   type PeruDocumentLookupResult,
@@ -113,6 +115,7 @@ interface RtdbNegocio {
   razon_social?: string | null;
   tipo_negocio?: string;
   modalidades_venta?: string;
+  panel_ia?: AiBusinessPanelSchema | null;
   estado_regla?: EstadoRegla;
   motivo_estado?: string | null;
   pin_salt: string;
@@ -149,6 +152,7 @@ interface RtdbServicio {
   duracion_min: number;
   stock: number;
   unidad_medida?: string;
+  atributos?: Record<string, string> | null;
   disponible: number;
 }
 
@@ -1058,6 +1062,19 @@ export async function handleFirebaseRtdbRequest<T>(
     } as T;
   }
 
+  if (cleanPath === '/api/public/ai/generar-panel-rubro' && method === 'POST') {
+    const rubroUsuario = String(payload.rubro_usuario || '').trim();
+    if (rubroUsuario.length < 2) {
+      throw new Error('Describe el rubro o giro del negocio (mínimo 2 caracteres).');
+    }
+    const panel_ia = buildClientFallbackPanelForRubro({
+      rubro_usuario: rubroUsuario,
+      nombre: typeof payload.nombre === 'string' ? payload.nombre : undefined,
+      descripcion: typeof payload.descripcion === 'string' ? payload.descripcion : undefined,
+    });
+    return { panel_ia } as T;
+  }
+
   if (cleanPath === '/api/public/directorio') {
     return {
       negocios: toArray(snap.negocios).map(({ pin_hash: _ph, pin_salt: _ps, ...pub }) => pub),
@@ -1617,16 +1634,24 @@ export async function handleFirebaseRtdbRequest<T>(
     const id = Date.now();
     const codigo = `NEG-${rubro.slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`;
     const hashed = await hashPinBrowser(cleanPin, `seed-${codigo}`);
+    const nextLat = typeof payload.lat === 'number' && Number.isFinite(payload.lat) ? payload.lat : -13.5167;
+    const nextLng = typeof payload.lng === 'number' && Number.isFinite(payload.lng) ? payload.lng : -71.9788;
+    const nextZona = String(payload.zona || 'Centro Histórico, Cusco');
+    const nextPanelIa =
+      payload.panel_ia && typeof payload.panel_ia === 'object'
+        ? (payload.panel_ia as AiBusinessPanelSchema)
+        : null;
+
     const newBiz: RtdbNegocio = {
       id,
       codigo,
       rubro,
       nombre,
       telefono,
-      descripcion: String(payload.descripcion || `Negocio verificado en ${rubro} en Cusco`),
-      lat: -13.5167,
-      lng: -71.9788,
-      zona: String(payload.zona || 'Centro Histórico, Cusco'),
+      descripcion: String(payload.descripcion || `Negocio verificado en ${payload.tipo_negocio || rubro} en Cusco`),
+      lat: nextLat,
+      lng: nextLng,
+      zona: nextZona,
       en_linea: 1,
       activo: 1,
       saldo: 0,
@@ -1648,12 +1673,43 @@ export async function handleFirebaseRtdbRequest<T>(
       modalidades_venta: Array.isArray(payload.modalidades_venta)
         ? payload.modalidades_venta.join(',')
         : String(payload.modalidades_venta || 'Unidad,Servicio'),
+      panel_ia: nextPanelIa,
       estado_regla: 'ACTIVO',
       motivo_estado: null,
       pin_salt: hashed.salt,
       pin_hash: hashed.hash,
     };
     await rtdbFetch(`negocios/${codigo}`, 'PUT', newBiz);
+
+    const starterItems = Array.isArray(payload.catalogo_inicial)
+      ? payload.catalogo_inicial
+      : Array.isArray(nextPanelIa?.catalogo_inicial)
+        ? nextPanelIa.catalogo_inicial
+        : [];
+    if (starterItems.length > 0 && rubro !== 'TRANSPORTE' && rubro !== 'CASA_CAMBIO') {
+      for (let idx = 0; idx < Math.min(starterItems.length, 10); idx++) {
+        const item = starterItems[idx];
+        const srvId = id + idx + 1;
+        const srv: RtdbServicio = {
+          id: srvId,
+          negocio_id: id,
+          negocio_nombre: nombre,
+          zona: nextZona,
+          calificacion: 4.9,
+          categoria: rubro,
+          nombre: String(item.nombre || 'Producto'),
+          descripcion: String(item.descripcion || ''),
+          precio_centavos: Math.max(100, Number(item.precio_centavos) || 1500),
+          duracion_min: Math.max(5, Number(item.duracion_min) || 30),
+          stock: Math.max(1, Number(item.stock) || 20),
+          unidad_medida: String(item.unidad_medida || 'Unidad'),
+          ...(item.atributos ? { atributos: item.atributos } : {}),
+          disponible: 1,
+        };
+        await rtdbFetch(`servicios/${srvId}`, 'PUT', srv);
+      }
+    }
+
     return {
       token: `rtdb-biz:${codigo}`,
       negocio: {
@@ -1737,6 +1793,7 @@ export async function handleFirebaseRtdbRequest<T>(
           razon_social: biz.razon_social || '',
           tipo_negocio: biz.tipo_negocio || 'Comercio Multirubro',
           modalidades_venta: biz.modalidades_venta || 'Unidad,Servicio',
+          panel_ia: biz.panel_ia || null,
           estado_regla: biz.estado_regla || 'ACTIVO',
           motivo_estado: biz.motivo_estado || null,
           saldo: biz.saldo,
@@ -1787,6 +1844,7 @@ export async function handleFirebaseRtdbRequest<T>(
         modalidades_venta: Array.isArray(payload.modalidades_venta)
           ? payload.modalidades_venta.join(',')
           : payload.modalidades_venta || biz.modalidades_venta || 'Unidad,Servicio',
+        ...(payload.panel_ia && typeof payload.panel_ia === 'object' ? { panel_ia: payload.panel_ia } : {}),
       };
       await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', updates);
       return { ok: true, negocio: { ...biz, ...updates } } as T;
@@ -1812,6 +1870,7 @@ export async function handleFirebaseRtdbRequest<T>(
         ...(payload.precio_centavos ? { precio_centavos: payload.precio_centavos } : {}),
         ...(payload.stock !== undefined ? { stock: payload.stock } : {}),
         ...(payload.unidad_medida ? { unidad_medida: payload.unidad_medida } : {}),
+        ...(payload.atributos ? { atributos: payload.atributos } : {}),
         ...(payload.disponible !== undefined ? { disponible: payload.disponible ? 1 : 0 } : {}),
       });
       return { ok: true } as T;
@@ -1934,6 +1993,7 @@ export async function handleFirebaseRtdbRequest<T>(
         duracion_min: Number(payload.duracion_min) || 30,
         stock: Number(payload.stock) || 10,
         unidad_medida: String(payload.unidad_medida || 'Unidad'),
+        ...(payload.atributos && typeof payload.atributos === 'object' ? { atributos: payload.atributos } : {}),
         disponible: 1,
       };
       await rtdbFetch(`servicios/${id}`, 'PUT', srv);

@@ -19,29 +19,104 @@ export type EstadoRegla = 'ACTIVO' | 'INCUMPLIMIENTO' | 'ESTAFA';
 export type EntidadEmergencia = 'SAMU' | 'SERENAZGO' | 'PNP_105' | 'BOMBEROS';
 
 export const SALE_MODALITIES = [
-  'Kilo',
-  'Arroba',
   'Unidad',
+  'Kilo (kg)',
+  'Gramo (g)',
+  'Arroba',
+  'Litro (L)',
+  'Galón',
+  'Metro (m)',
+  'Pulgada (in)',
+  'Pie (ft)',
+  'Grosor (mm)',
+  'Metro cúbico (m³)',
+  'Cubo',
+  'Amperio (A)',
+  'Grano',
   'Docena',
-  'Litro',
   'Caja',
-  'Metro',
+  'Rollo',
+  'Saco',
   'Porción',
+  'Noche',
+  'Hora',
+  'Vacante',
+  'Paquete',
   'Servicio',
 ] as const;
 
 export const BUSINESS_CATEGORIES = [
+  'Ferretería & Materiales',
   'Minimarket / Bodega',
   'Restaurante / Gastronomía',
   'Botica / Farmacia',
   'Taxi / Movilidad',
-  'Turismo & Guías',
   'Hotel / Alojamiento',
+  'Turismo & Guías',
+  'Piñatería & Eventos',
+  'Agencia de Empleos / RRHH',
   'Casa de Cambio',
-  'Ferretería / Materiales',
   'Mercado / Agrícola',
+  'Veterinaria / Mascotas',
   'Tienda Multirubro',
 ] as const;
+
+export interface AiCampoEspecifico {
+  key: string;
+  label: string;
+  tipo: 'text' | 'number' | 'select';
+  placeholder: string;
+  unidad?: string;
+  opciones?: string[];
+}
+
+export interface AiModuloOperativo {
+  id: string;
+  titulo: string;
+  descripcion: string;
+  tipo_herramienta:
+    | 'CALCULADORA_MEDIDAS'
+    | 'COTIZADOR_VOLUMEN'
+    | 'CHECKIN_CUPO'
+    | 'POSTULACIONES'
+    | 'COMANDA_COCINA'
+    | 'RECETARIO_STOCK'
+    | 'INFO';
+}
+
+export interface AiCatalogoItemSugerido {
+  nombre: string;
+  descripcion: string;
+  precio_centavos: number;
+  unidad_medida: string;
+  stock: number;
+  duracion_min?: number;
+  atributos?: Record<string, string>;
+}
+
+export interface AiBusinessPanelSchema {
+  rubro_base: Rubro;
+  rubro_usuario: string;
+  rubro_titulo: string;
+  subtitulo_panel: string;
+  badge_panel: string;
+  tema_color: {
+    primaryHex: string;
+    accentHex: string;
+  };
+  terminologia: {
+    clienteLabel: string;
+    pedidoLabel: string;
+    catalogoLabel: string;
+    nuevoItemBtn: string;
+  };
+  unidades_medida: string[];
+  campos_especificos: AiCampoEspecifico[];
+  modulos_panel: AiModuloOperativo[];
+  catalogo_inicial: AiCatalogoItemSugerido[];
+  generado_por: 'gemini' | 'ia_estatico';
+  updated_at: string;
+}
 
 export interface DirectorioNegocio {
   id: number;
@@ -60,6 +135,7 @@ export interface DirectorioNegocio {
   razon_social?: string | null;
   tipo_negocio?: string;
   modalidades_venta?: string;
+  panel_ia?: AiBusinessPanelSchema | null;
   estado_regla?: EstadoRegla;
   motivo_estado?: string | null;
 }
@@ -74,6 +150,7 @@ export interface ServicioCatalogo {
   duracion_min: number;
   stock: number;
   unidad_medida?: string;
+  atributos?: Record<string, string> | null;
   disponible?: number;
   negocio_nombre?: string;
   zona?: string;
