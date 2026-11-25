@@ -258,6 +258,12 @@ export interface SharedCustomerDoc {
   numero: string;
   nombre: string;
   direccionFiscal?: string;
+  whatsapp?: string;
+  paisCodigo?: string;
+  paisNombre?: string;
+  lat?: number;
+  lng?: number;
+  gpsVerificado?: boolean;
   verificado: boolean;
   fuente?: string;
 }

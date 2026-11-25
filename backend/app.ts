@@ -1629,6 +1629,39 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     return EMERGENCY_STATION_COORDS[fallbackEntity] || EMERGENCY_STATION_COORDS.SAMU;
   }
 
+  const EMERGENCY_DEFAULT_WHATSAPP: Record<EntidadEmergencia, string> = {
+    SAMU: '+51984106106',
+    SERENAZGO: '+51984100100',
+    PNP_105: '+51984105105',
+    BOMBEROS: '+51984116116',
+  };
+
+  app.post('/api/public/emergencias/auth', authLimiter, (req, res, next) => {
+    try {
+      const rawEntidad = String(req.body?.entidad || 'TODOS').trim().toUpperCase();
+      const rawPin = String(req.body?.pin || '').trim();
+      const validEntities = ['TODOS', ...ENTIDADES_EMERGENCIA];
+      if (!validEntities.includes(rawEntidad)) {
+        throw new HttpError(400, 'Central de emergencia inválida');
+      }
+      if (!/^\d{4}$/.test(rawPin)) {
+        throw new HttpError(400, 'Ingresa un PIN de 4 dígitos');
+      }
+      const expectedPin = (process.env.EMERGENCY_PIN || '1234').trim();
+      if (!timingSafeEqualString(rawPin, expectedPin)) {
+        throw new HttpError(401, 'PIN de central de emergencias incorrecto');
+      }
+      const token = createSessionToken({ role: 'ADMIN' }, 8 * 60 * 60);
+      res.json({
+        ok: true,
+        entidad: rawEntidad,
+        token,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Emergencias SOS
   app.post('/api/public/emergencias', publicLimiter, (req, res, next) => {
     try {
@@ -1644,6 +1677,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         lng,
         mensaje,
         entidad_objetivo,
+        entidad_whatsapp,
         sincronizada_todas,
       } = req.body || {};
 
@@ -1698,6 +1732,11 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         ? (rawEntidad as EntidadEmergencia)
         : 'SAMU';
 
+      const resolvedEntityWhatsapp =
+        typeof entidad_whatsapp === 'string' && entidad_whatsapp.trim().length >= 6
+          ? entidad_whatsapp.trim().slice(0, 24)
+          : EMERGENCY_DEFAULT_WHATSAPP[targetEntity];
+
       const emLat = typeof lat === 'number' && Number.isFinite(lat) ? lat : -13.5167;
       const emLng = typeof lng === 'number' && Number.isFinite(lng) ? lng : -71.9788;
       const syncAll = sincronizada_todas === false || sincronizada_todas === 0 ? 0 : 1;
@@ -1730,12 +1769,20 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           syncAll
         );
 
+      const mapsLink = `https://www.google.com/maps?q=${emLat.toFixed(6)},${emLng.toFixed(6)}`;
+      logWhatsAppNotification(
+        db,
+        resolvedEntityWhatsapp,
+        'alerta_sos_central',
+        codigo,
+        `🚨 SOS ${codigo} (${targetEntity}). Solicitante: ${resolvedSolicitante} (${cliente_telefono.trim()}). Herido: ${resolvedHerido}. Maps: ${mapsLink}`
+      );
       logWhatsAppNotification(
         db,
         cliente_telefono.trim(),
         'alerta_sos',
         codigo,
-        `Alerta ${codigo} hacia ${targetEntity}. Solicitante: ${resolvedSolicitante}. Herido: ${resolvedHerido}. GPS: ${emLat.toFixed(5)}, ${emLng.toFixed(5)}. Sincronizada con centrales de emergencia.`
+        `Alerta ${codigo} enviada a ${targetEntity} (${resolvedEntityWhatsapp}). Herido: ${resolvedHerido}. Ubicación: ${mapsLink}`
       );
 
       void syncSnapshotToFirebaseRtdb(db);
@@ -1753,6 +1800,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         id: Number(resInsert.lastInsertRowid),
         codigo,
         entidad_objetivo: targetEntity,
+        entidad_whatsapp: resolvedEntityWhatsapp,
         estado: 'ACTIVA',
         emergencia: created,
       });

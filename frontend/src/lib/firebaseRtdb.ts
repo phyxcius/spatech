@@ -788,7 +788,8 @@ function buildOptions(
   cat: Rubro,
   lat: number,
   lng: number,
-  destino?: string
+  destino?: string,
+  query?: string
 ): ConciergeOpcion[] {
   if (cat === 'TRANSPORTE') {
     const destLower = (destino || '').toLowerCase();
@@ -829,23 +830,46 @@ function buildOptions(
     return taxiOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minTaxi }));
   }
 
-  const servicios = toArray(snap.servicios).filter((s) => s.categoria === cat && s.disponible === 1);
-  const catOpts = servicios.map((s) => ({
-    tipo: 'CATALOGO' as const,
-    servicio_id: s.id,
-    negocio_id: s.negocio_id,
-    negocio_nombre: s.negocio_nombre,
-    categoria: s.categoria,
-    titulo: s.nombre,
-    descripcion: `${s.negocio_nombre} (${s.zona}) · ${s.descripcion}`,
-    zona: s.zona,
-    precio_centavos: s.precio_centavos,
-    calificacion: s.calificacion,
-    eta_min: s.duracion_min,
-    stock: s.stock,
-    mejor_precio: false,
-    disponible: true,
-  }));
+  const allServices = toArray(snap.servicios).filter((s) => s.disponible === 1);
+  const byCat = allServices.filter((s) => s.categoria === cat);
+  const keywords = (query || '')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length >= 3);
+  let selected = byCat;
+  if (keywords.length > 0 && byCat.length > 0) {
+    const narrowed = byCat.filter((s) =>
+      keywords.some((kw) => `${s.nombre} ${s.descripcion} ${s.negocio_nombre}`.toLowerCase().includes(kw))
+    );
+    if (narrowed.length > 0) selected = narrowed;
+  }
+  if (selected.length === 0) {
+    const cross =
+      keywords.length > 0
+        ? allServices.filter((s) =>
+            keywords.some((kw) => `${s.nombre} ${s.descripcion} ${s.negocio_nombre}`.toLowerCase().includes(kw))
+          )
+        : [];
+    selected = cross.length > 0 ? cross : allServices.slice(0, 8);
+  }
+  const catOpts = selected
+    .map((s) => ({
+      tipo: 'CATALOGO' as const,
+      servicio_id: s.id,
+      negocio_id: s.negocio_id,
+      negocio_nombre: s.negocio_nombre,
+      categoria: s.categoria,
+      titulo: s.nombre,
+      descripcion: `${s.negocio_nombre} (${s.zona}) · ${s.descripcion}`,
+      zona: s.zona,
+      precio_centavos: s.precio_centavos,
+      calificacion: s.calificacion,
+      eta_min: s.duracion_min,
+      stock: s.stock,
+      mejor_precio: false,
+      disponible: true,
+    }))
+    .sort((a, b) => a.precio_centavos - b.precio_centavos);
   const minCat = catOpts.length > 0 ? Math.min(...catOpts.map((o) => o.precio_centavos)) : 0;
   return catOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minCat }));
 }
@@ -1015,10 +1039,10 @@ export async function handleFirebaseRtdbRequest<T>(
       : q.toLowerCase().includes('aeropuerto')
         ? 'Aeropuerto Velasco Astete'
         : undefined;
-    const opciones = buildOptions(snap, cat, lat, lng, destino);
+    const opciones = buildOptions(snap, cat, lat, lng, destino, q);
     const top = opciones[0];
 
-    let respuestaVoz = `Encontré ${opciones.length} opciones verificadas en Cusco.`;
+    let respuestaVoz = `Encontré ${opciones.length} opciones verificadas en Cusco para comparar precios.`;
     if (cat === 'TRANSPORTE' && top) {
       respuestaVoz = `Unidad VIP disponible: ${top.titulo}, a ${top.eta_min ?? 4} minutos, tarifa estimada ${(top.precio_centavos / 100).toFixed(2)} soles.`;
     } else if (top) {
@@ -1026,7 +1050,7 @@ export async function handleFirebaseRtdbRequest<T>(
     }
 
     return {
-      categoria: cat,
+      categoria: top?.categoria || cat,
       respuesta_voz: respuestaVoz,
       destino_sugerido: destino,
       ai_error: null,
@@ -1129,6 +1153,22 @@ export async function handleFirebaseRtdbRequest<T>(
     return { emergencias } as T;
   }
 
+  if (cleanPath === '/api/public/emergencias/auth' && method === 'POST') {
+    const entidad = String(payload.entidad || 'TODOS').trim().toUpperCase();
+    const pin = String(payload.pin || '').trim();
+    if (!/^\d{4}$/.test(pin)) {
+      throw new Error('Ingresa un PIN de 4 dígitos');
+    }
+    if (pin !== '1234') {
+      throw new Error('PIN de central de emergencias incorrecto');
+    }
+    return {
+      ok: true,
+      entidad,
+      token: `rtdb-sos-${entidad}-${Date.now()}`,
+    } as T;
+  }
+
   if (cleanPath === '/api/public/emergencias' && method === 'POST') {
     const codigo = `SOS-${Math.floor(1000 + Math.random() * 9000)}`;
     const targetEnt = (['SAMU', 'SERENAZGO', 'PNP_105', 'BOMBEROS'].includes(
@@ -1136,6 +1176,16 @@ export async function handleFirebaseRtdbRequest<T>(
     )
       ? String(payload.entidad_objetivo).toUpperCase()
       : 'SAMU') as EntidadEmergencia;
+    const defaultWa: Record<EntidadEmergencia, string> = {
+      SAMU: '+51984106106',
+      SERENAZGO: '+51984100100',
+      PNP_105: '+51984105105',
+      BOMBEROS: '+51984116116',
+    };
+    const entidadWhatsapp =
+      typeof payload.entidad_whatsapp === 'string' && payload.entidad_whatsapp.trim().length >= 6
+        ? payload.entidad_whatsapp.trim()
+        : defaultWa[targetEnt];
     const solicitanteNombre = String(payload.solicitante_nombre || payload.cliente_nombre || 'Huésped La Chuspa').trim();
     const heridoNombre = String(payload.herido_nombre || payload.cliente_nombre || solicitanteNombre).trim();
     const emLat = typeof payload.lat === 'number' ? payload.lat : -13.5167;
@@ -1154,6 +1204,7 @@ export async function handleFirebaseRtdbRequest<T>(
       lng: emLng,
       mensaje: String(payload.mensaje || 'Asistencia prioritaria'),
       entidad_objetivo: targetEnt,
+      entidad_whatsapp: entidadWhatsapp,
       estado: 'ACTIVA',
       atendida_por: null,
       unidad_lat: null,
@@ -1164,7 +1215,13 @@ export async function handleFirebaseRtdbRequest<T>(
       created_at: new Date().toISOString(),
     };
     await rtdbFetch(`emergencias/${codigo}`, 'PUT', record);
-    return { codigo, entidad_objetivo: targetEnt, estado: 'ACTIVA', emergencia: record } as T;
+    return {
+      codigo,
+      entidad_objetivo: targetEnt,
+      entidad_whatsapp: entidadWhatsapp,
+      estado: 'ACTIVA',
+      emergencia: record,
+    } as T;
   }
 
   const dispatchMatch = cleanPath.match(/^\/api\/public\/emergencias\/([^/]+)\/despachar$/);

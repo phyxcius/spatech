@@ -257,6 +257,9 @@ export const BusinessPanel: React.FC = () => {
   const [regNombre, setRegNombre] = useState('');
   const [regTelefono, setRegTelefono] = useState('');
   const [regZona, setRegZona] = useState('Centro Histórico, Cusco');
+  const [regLat, setRegLat] = useState<number>(-13.5167);
+  const [regLng, setRegLng] = useState<number>(-71.9788);
+  const [regGpsStatus, setRegGpsStatus] = useState<'idle' | 'loading' | 'live' | 'denied'>('idle');
   const [regPin, setRegPin] = useState('');
 
   const [tab, setTab] = useState<BizTab>('NUEVOS');
@@ -494,6 +497,66 @@ export const BusinessPanel: React.FC = () => {
     }
   }
 
+  function handleRequestRegGps() {
+    if (!navigator.geolocation) {
+      setRegGpsStatus('denied');
+      return;
+    }
+    setRegGpsStatus('loading');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setRegLat(pos.coords.latitude);
+        setRegLng(pos.coords.longitude);
+        setRegGpsStatus('live');
+      },
+      () => setRegGpsStatus('denied'),
+      { enableHighAccuracy: true, timeout: 7000 }
+    );
+  }
+
+  async function handleUpdateWorkspaceGps() {
+    if (!session) return;
+    if (!navigator.geolocation) {
+      setActionMsg({ type: 'err', text: 'Tu navegador no permite geolocalización GPS.' });
+      return;
+    }
+    setDriverGpsSending(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          await apiFetch(`/api/negocio/${session.negocioId}/configuracion`, {
+            method: 'PUT',
+            body: {
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+            },
+            token: session.token,
+          });
+          setActionMsg({
+            type: 'ok',
+            text: `Ubicación GPS del negocio actualizada (${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}).`,
+          });
+          await loadWorkspace(true);
+        } catch (err) {
+          setActionMsg({
+            type: 'err',
+            text: err instanceof Error ? err.message : 'No se pudo guardar el GPS del negocio',
+          });
+        } finally {
+          setDriverGpsSending(false);
+        }
+      },
+      () => {
+        setDriverGpsSending(false);
+        setActionMsg({
+          type: 'err',
+          text: 'Permite el acceso a tu ubicación GPS para ubicar tu negocio en el mapa.',
+        });
+      },
+      { enableHighAccuracy: true, timeout: 7000 }
+    );
+  }
+
   async function handleRegisterBusiness(e: React.FormEvent) {
     e.preventDefault();
     setLoginError(null);
@@ -514,6 +577,8 @@ export const BusinessPanel: React.FC = () => {
           nombre: regNombre,
           telefono: regTelefono,
           zona: regZona,
+          lat: regLat,
+          lng: regLng,
           pin: regPin,
           tipo_persona: regTipoPersona,
           documento_tipo: docTipo,
@@ -925,7 +990,7 @@ export const BusinessPanel: React.FC = () => {
   if (!session) {
     return (
       <div className="max-w-lg mx-auto py-8 pb-24">
-        <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 sm:p-8 space-y-6">
+        <div className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1426] p-6 sm:p-8 space-y-6 shadow-2xl chuspa-google-border">
           <div className="space-y-1.5">
             <p className="text-xs uppercase tracking-[0.2em] text-[#9A7B2C] dark:text-[#D4AF37]">
               Portal Multinegocio La Chuspa
@@ -1195,9 +1260,30 @@ export const BusinessPanel: React.FC = () => {
                 placeholder="Dirección o zona en Cusco"
                 className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
               />
+              <div className="rounded-2xl border border-[#2563EB]/25 bg-[#2563EB]/8 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs">
+                <div>
+                  <p className="font-bold text-[#1E40AF] dark:text-[#06B6D4]">
+                    {regGpsStatus === 'live'
+                      ? `GPS del negocio activo (${regLat.toFixed(4)}, ${regLng.toFixed(4)})`
+                      : 'Ubicación GPS del negocio'}
+                  </p>
+                  <p className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                    Usa la ubicación actual de tu celular para aparecer en el mapa.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleRequestRegGps}
+                  disabled={regGpsStatus === 'loading'}
+                  className="min-h-[36px] px-3 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold flex items-center gap-1.5 shrink-0"
+                >
+                  <Crosshair className="w-3.5 h-3.5" />
+                  <span>{regGpsStatus === 'loading' ? 'Ubicando...' : regGpsStatus === 'live' ? 'GPS Listo' : 'Activar GPS'}</span>
+                </button>
+              </div>
               <button
                 type="submit"
-                className="w-full min-h-[48px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold"
+                className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-sm font-bold chuspa-google-btn"
               >
                 Crear y Configurar Mi Panel
               </button>
@@ -1287,6 +1373,15 @@ export const BusinessPanel: React.FC = () => {
             >
               <Bell className={`w-3.5 h-3.5 ${soundEnabled ? 'text-[#D4AF37]' : 'text-[#8A8F99]'}`} />
               <span>{soundEnabled ? 'Voz & Timbre' : 'Silenciado'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleUpdateWorkspaceGps()}
+              disabled={driverGpsSending}
+              className="min-h-[44px] px-3.5 rounded-xl border border-[#2563EB]/30 bg-[#2563EB]/10 text-[#1E40AF] dark:text-[#06B6D4] text-xs font-semibold flex items-center gap-1.5"
+            >
+              <Crosshair className="w-3.5 h-3.5" />
+              <span>{driverGpsSending ? 'Ubicando...' : 'GPS Celular'}</span>
             </button>
             <button
               type="button"

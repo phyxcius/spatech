@@ -66,6 +66,7 @@ interface ClientPortalProps {
   onOrderCreated: (pedido: PedidoPublico, pin: string) => void;
   openAssistantSignal: number;
   openSosSignal?: number;
+  initialCoords?: { lat: number; lng: number; gpsVerificado?: boolean } | null;
   externalPromptSignal?: { seq: number; query: string; categoria?: Rubro } | null;
 }
 
@@ -111,6 +112,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   onOrderCreated,
   openAssistantSignal,
   openSosSignal = 0,
+  initialCoords = null,
   externalPromptSignal = null,
 }) => {
   const [subTab, setSubTab] = useState<ClientTab>('CONCIERGE');
@@ -121,10 +123,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [selectedRubro, setSelectedRubro] = useState<Rubro | null>(null);
   const [destino, setDestino] = useState('');
   const [coords, setCoords] = useState<{ lat: number; lng: number }>({
-    lat: -13.5167,
-    lng: -71.9788,
+    lat: initialCoords?.lat ?? -13.5167,
+    lng: initialCoords?.lng ?? -71.9788,
   });
-  const [gpsStatus, setGpsStatus] = useState<'default' | 'live' | 'denied'>('default');
+  const [gpsStatus, setGpsStatus] = useState<'default' | 'live' | 'denied'>(
+    initialCoords?.gpsVerificado ? 'live' : 'default'
+  );
   const [loading, setLoading] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [avatarSpeaking, setAvatarSpeaking] = useState(false);
@@ -147,7 +151,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   // Hoja de confirmación para servicios generales
   const [selectedOption, setSelectedOption] = useState<ConciergeOpcion | null>(null);
   const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
-  const [clienteTelefono, setClienteTelefono] = useState('');
+  const [clienteTelefono, setClienteTelefono] = useState(customerDoc?.whatsapp || '');
+  const [showEditCustomerData, setShowEditCustomerData] = useState(false);
   const [docTipo, setDocTipo] = useState<'DNI' | 'RUC' | 'EXTRANJERO'>(customerDoc?.tipo || 'DNI');
   const [docNumero, setDocNumero] = useState(customerDoc?.numero || '');
   const [clienteDireccionFiscal, setClienteDireccionFiscal] = useState(
@@ -217,17 +222,47 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       numero: docVerificado.numero,
       nombre: docVerificado.nombre_completo || clienteNombre,
       direccionFiscal: clienteDireccionFiscal || docVerificado.direccion || '',
+      whatsapp: clienteTelefono.trim() || customerDoc?.whatsapp,
+      paisCodigo: customerDoc?.paisCodigo,
+      paisNombre: customerDoc?.paisNombre,
+      lat: coords.lat,
+      lng: coords.lng,
+      gpsVerificado: gpsStatus === 'live',
       verificado: true,
       fuente: docVerificado.fuente || docVerificado.source,
     };
-  }, [isDocValid, docVerificado, clienteNombre, clienteDireccionFiscal]);
+  }, [
+    isDocValid,
+    docVerificado,
+    clienteNombre,
+    clienteDireccionFiscal,
+    clienteTelefono,
+    customerDoc?.whatsapp,
+    customerDoc?.paisCodigo,
+    customerDoc?.paisNombre,
+    coords.lat,
+    coords.lng,
+    gpsStatus,
+  ]);
+
+  useEffect(() => {
+    if (initialCoords?.gpsVerificado && typeof initialCoords.lat === 'number' && typeof initialCoords.lng === 'number') {
+      setCoords({ lat: initialCoords.lat, lng: initialCoords.lng });
+      setGpsStatus('live');
+    }
+  }, [initialCoords?.gpsVerificado, initialCoords?.lat, initialCoords?.lng]);
 
   useEffect(() => {
     if (customerDoc?.verificado) {
       setDocTipo(customerDoc.tipo);
       setDocNumero(customerDoc.numero);
       if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      if (customerDoc.whatsapp) setClienteTelefono(customerDoc.whatsapp);
       if (customerDoc.direccionFiscal) setClienteDireccionFiscal(customerDoc.direccionFiscal);
+      if (customerDoc.gpsVerificado && typeof customerDoc.lat === 'number' && typeof customerDoc.lng === 'number') {
+        setCoords({ lat: customerDoc.lat, lng: customerDoc.lng });
+        setGpsStatus('live');
+      }
       setDocLookupError(null);
       setDocVerificado({
         valid: true,
@@ -245,12 +280,20 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         fuente: customerDoc.fuente || customerDoc.tipo,
       });
     }
-  }, [customerDoc?.verificado, customerDoc?.tipo, customerDoc?.numero, customerDoc?.nombre]);
+  }, [
+    customerDoc?.verificado,
+    customerDoc?.tipo,
+    customerDoc?.numero,
+    customerDoc?.nombre,
+    customerDoc?.whatsapp,
+    customerDoc?.gpsVerificado,
+  ]);
 
   function handleSharedDocSynced(synced: SharedCustomerDoc) {
     setDocTipo(synced.tipo);
     setDocNumero(synced.numero);
     if (synced.nombre) setClienteNombre(synced.nombre);
+    if (synced.whatsapp) setClienteTelefono(synced.whatsapp);
     if (synced.direccionFiscal) setClienteDireccionFiscal(synced.direccionFiscal);
     setDocLookupError(null);
     setDocVerificado({
@@ -963,40 +1006,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   return (
     <div className="space-y-6 pb-24 md:pb-12">
       {/* ==================================================================== */}
-      {/* BOCA DIGITAL DEL FUTURO "LA CHUSPA" (CONCIERGE ZAFIRO LUXURY)        */}
+      {/* AGENTE COMPACTO "LA CHUSPA" (COBALTO PRISMA · BOTÓN PEQUEÑO)         */}
       {/* ==================================================================== */}
-      <section
-        className={`rounded-3xl border border-[#4285F4]/25 bg-gradient-to-br from-white via-[#F5F8FF] to-[#EEF4FF] dark:from-[#0A1328] dark:via-[#0B0E14] dark:to-[#0E1930] transition-all shadow-2xl chuspa-google-border ${
-          isCompactSphere ? 'p-4 sm:p-5' : 'p-6 sm:p-10'
-        }`}
-      >
-        <div
-          className={`flex ${
-            isCompactSphere
-              ? 'flex-col lg:flex-row lg:items-center justify-between gap-4'
-              : 'flex-col items-center text-center gap-6'
-          }`}
-        >
-          {/* Boca Digital Futurista con ondas de sonido tipo parlante */}
-          <div
-            className={`flex items-center gap-5 ${
-              isCompactSphere ? 'flex-row' : 'flex-col'
-            }`}
-          >
+      <section className="rounded-3xl border border-[#2563EB]/30 bg-gradient-to-br from-white via-[#F4F7FC] to-[#EBF2FF] dark:from-[#0A1328] dark:via-[#070D1F] dark:to-[#0C1938] transition-all shadow-xl chuspa-google-border p-4 sm:p-5">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          {/* Agente pequeño y compacto (sin ícono gigante invasivo) */}
+          <div className="flex items-center gap-3.5">
             <RealisticAvatarPortrait
-              sizeClass={isCompactSphere ? 'w-20 h-20 shrink-0' : 'w-36 h-36 sm:w-44 sm:h-44'}
+              sizeClass="w-14 h-14 shrink-0"
               listening={voiceActive}
               speaking={avatarSpeaking}
               mouthLevel={avatarMouthLevel}
               onClick={handleSpherePress}
-              ariaLabel="Presionar boca digital La Chuspa para activar parlante y voz"
-              title="Presiona la boca digital para activar ondas de parlante y pedir por voz"
+              ariaLabel="Presionar agente La Chuspa para pedir por voz o escribir"
+              title="Toca el agente pequeño para pedir por voz o escribir tu solicitud"
             />
 
-            <div className={isCompactSphere ? 'text-left' : 'space-y-1.5 max-w-xl'}>
-              <div className="flex flex-wrap items-center gap-2 justify-center sm:justify-start">
-                <p className="text-[11px] uppercase tracking-[0.2em] font-bold bg-gradient-to-r from-[#4285F4] via-[#FBBC04] to-[#34A853] bg-clip-text text-transparent">
-                  Panel Cliente Zafiro · Boca Digital La Chuspa
+            <div className="text-left space-y-0.5 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[11px] uppercase tracking-[0.18em] font-bold bg-gradient-to-r from-[#2563EB] via-[#06B6D4] to-[#E11D74] bg-clip-text text-transparent">
+                  Agente La Chuspa · Toca para pedir
                 </p>
                 {lastResponseMs !== null && (
                   <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD] font-semibold">
@@ -1011,33 +1040,29 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       setSphereExpanded(false);
                       setLastTranscript(null);
                       setReplyText(
-                        'Toca al asistente y dime qué necesitas: taxi, restaurante, botica, tour o market.'
+                        'Toca el agente pequeño y dime qué necesitas: taxi, restaurante, botica, tour o market.'
                       );
                     }}
-                    className="text-[11px] font-semibold text-[#6A717E] dark:text-[#98A0AD] underline hover:text-[#D4AF37]"
+                    className="text-[11px] font-semibold text-[#2563EB] dark:text-[#06B6D4] underline"
                   >
                     Volver al inicio
                   </button>
                 )}
               </div>
               {lastTranscript && (
-                <p className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400">
+                <p className="text-[11px] font-mono-tabular text-[#06B6D4] dark:text-cyan-300">
                   Escuché: «{lastTranscript}»
                 </p>
               )}
-              <div className="flex items-center gap-2 justify-center">
-                <p
-                  className={`${
-                    isCompactSphere ? 'text-xs sm:text-sm' : 'text-sm sm:text-base'
-                  } text-[#14171F] dark:text-[#F4F1EA] font-medium`}
-                >
+              <div className="flex items-center gap-2">
+                <p className="text-xs sm:text-sm text-[#14171F] dark:text-[#F4F1EA] font-medium">
                   {replyText}
                 </p>
                 <button
                   type="button"
                   onClick={() => speakSpanish(replyText)}
                   aria-label="Escuchar voz"
-                  className="w-8 h-8 rounded-full border border-cyan-400/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 flex items-center justify-center shrink-0"
+                  className="w-8 h-8 rounded-full border border-[#06B6D4]/40 bg-[#06B6D4]/10 text-[#1E40AF] dark:text-[#06B6D4] flex items-center justify-center shrink-0"
                 >
                   <Volume2 className="w-3.5 h-3.5" />
                 </button>
@@ -1045,52 +1070,49 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
           </div>
 
-          {/* Buscador activado al presionar la esfera (o siempre visible en modo compacto) */}
-          {(sphereExpanded || isCompactSphere) && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setSelectedRubro(null);
-                handleSearch();
-              }}
-              className={`flex flex-col sm:flex-row gap-2.5 ${
-                isCompactSphere ? 'w-full lg:max-w-xl' : 'w-full max-w-2xl'
-              }`}
-            >
-              <div className="relative flex-1 flex items-center">
-                <Search className="w-4 h-4 text-[#8A8F99] absolute left-4 pointer-events-none" />
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder='Di o escribe: "Taxi al aeropuerto", "Ceviche", "Soroche", "Leche y atún"'
-                  className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#121620] text-sm text-[#14171F] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D4AF37]"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleVoiceCapture()}
-                  aria-label="Dictar por voz"
-                  className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
-                    voiceActive ? 'bg-[#C81E5B] text-white' : 'text-[#6A717E] hover:text-[#D4AF37]'
-                  }`}
-                >
-                  {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-                </button>
-              </div>
+          {/* Buscador siempre listo junto al agente compacto */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setSelectedRubro(null);
+              handleSearch();
+            }}
+            className="flex flex-col sm:flex-row gap-2.5 w-full lg:max-w-xl"
+          >
+            <div className="relative flex-1 flex items-center">
+              <Search className="w-4 h-4 text-[#2563EB] absolute left-4 pointer-events-none" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder='Pide cualquier servicio: "Taxi", "Pollo a la brasa", "Oxígeno", "Leche"'
+                className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1630] text-sm text-[#14171F] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#06B6D4]"
+              />
               <button
-                type="submit"
-                disabled={loading}
-                className="min-h-[46px] px-6 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-sm font-bold whitespace-nowrap shrink-0 chuspa-google-btn"
+                type="button"
+                onClick={() => handleVoiceCapture()}
+                aria-label="Dictar por voz"
+                className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
+                  voiceActive ? 'bg-[#E11D74] text-white' : 'text-[#2563EB] hover:text-[#06B6D4]'
+                }`}
               >
-                {loading ? 'Buscando...' : 'Pedir ahora'}
+                {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
               </button>
-            </form>
-          )}
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="min-h-[46px] px-6 rounded-2xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-sm font-bold whitespace-nowrap shrink-0 chuspa-google-btn"
+            >
+              {loading ? 'Comparando...' : 'Comparar Precios'}
+            </button>
+          </form>
+        </div>
 
-          {/* Botones directos principales bajo la esfera (Taxi InDrive / Markets Abiertos + Otros Negocios) */}
-          {!isCompactSphere && (
-            <div className="w-full max-w-2xl space-y-4">
+        {/* Botones directos principales bajo la barra del agente */}
+        {!isCompactSphere && (
+          <div className="w-full mt-4 space-y-3.5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <button
                   type="button"
@@ -1227,7 +1249,6 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
               </div>
             </div>
           )}
-        </div>
 
         {/* Barra de acceso rápido a los módulos complementarios */}
         <div className="mt-4 pt-4 border-t border-black/8 dark:border-white/8 flex items-center gap-2 overflow-x-auto pb-1">
@@ -1417,6 +1438,96 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 heightClass="h-[58vh] sm:h-[66vh] min-h-[430px]"
               />
 
+              {/* Tabla Comparativa de Precios · Escoge el negocio o producto */}
+              <div className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0C142B] p-4 sm:p-5 shadow-lg overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-black/10 dark:border-white/10">
+                  <div>
+                    <h3 className="text-sm font-bold text-[#14171F] dark:text-white">
+                      Tabla Comparativa de Precios · Agente La Chuspa
+                    </h3>
+                    <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                      Ordenado de menor a mayor tarifa para que escojas al mejor proveedor
+                    </p>
+                  </div>
+                  <span className="text-[11px] font-mono-tabular font-semibold text-[#2563EB] dark:text-[#06B6D4]">
+                    {catalogMapEntries.length} opciones comparadas
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-black/10 dark:border-white/10 text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
+                        <th className="py-2.5 pr-3 font-semibold">Negocio</th>
+                        <th className="py-2.5 pr-3 font-semibold">Servicio / Producto</th>
+                        <th className="py-2.5 pr-3 font-semibold">Distancia · ETA</th>
+                        <th className="py-2.5 pr-3 font-semibold text-right">Precio</th>
+                        <th className="py-2.5 pl-3 font-semibold text-right">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-black/8 dark:divide-white/8">
+                      {catalogMapEntries.map((entry) => {
+                        const op = entry.op;
+                        return (
+                          <tr
+                            key={`tbl-${entry.key}`}
+                            onClick={() => setSelectedCatalogKey(entry.key)}
+                            className={`cursor-pointer transition-colors ${
+                              entry.key === selectedCatalogKey
+                                ? 'bg-[#2563EB]/8 dark:bg-[#2563EB]/15'
+                                : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'
+                            }`}
+                          >
+                            <td className="py-3 pr-3 font-semibold text-[#14171F] dark:text-white">
+                              <div>{op.negocio_nombre}</div>
+                              <div className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
+                                ★ {op.calificacion.toFixed(2)}
+                              </div>
+                            </td>
+                            <td className="py-3 pr-3 text-[#4A505C] dark:text-[#C5CBD6]">
+                              <div className="font-medium text-[#14171F] dark:text-white">
+                                {op.titulo}
+                              </div>
+                              {op.mejor_precio && (
+                                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                  Mejor precio encontrado
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-3 pr-3 font-mono-tabular text-[#6A717E] dark:text-[#98A0AD] whitespace-nowrap">
+                              {op.distancia_km !== undefined ? `${op.distancia_km.toFixed(1)} km · ` : ''}
+                              {op.eta_min} min
+                            </td>
+                            <td className="py-3 pr-3 text-right font-mono-tabular font-black text-sm whitespace-nowrap text-[#14171F] dark:text-white">
+                              {entry.priceText}
+                            </td>
+                            <td className="py-3 pl-3 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (op.tipo === 'DIVISA') {
+                                    setSubTab('DIVISAS');
+                                  } else {
+                                    setSheetError(null);
+                                    setSelectedOption(op);
+                                    if (!isDocValid) {
+                                      notifyDocumentAlertIfNeeded(op.titulo, false);
+                                    }
+                                  }
+                                }}
+                                className="min-h-[34px] px-3.5 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold"
+                              >
+                                {op.tipo === 'DIVISA' ? 'Cotizar' : 'Escoger'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
               {/* Tarjetas completas debajo para detalle extendido */}
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
                 {catalogMapEntries.map((entry) => {
@@ -1539,30 +1650,55 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <input
-              type="number"
-              min="10"
-              value={divisaMonto}
-              onChange={(e) => setDivisaMonto(e.target.value)}
-              placeholder="Monto en USD / EUR"
-              className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
-            />
-            <input
-              type="text"
-              value={clienteNombre}
-              onChange={(e) => setClienteNombre(e.target.value)}
-              placeholder="Tu nombre completo"
-              className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-            />
-            <input
-              type="tel"
-              value={clienteTelefono}
-              onChange={(e) => setClienteTelefono(e.target.value)}
-              placeholder="WhatsApp (+51...)"
-              className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-            />
-          </div>
+          {isDocValid && docVerificado && clienteTelefono.trim().length >= 6 && !showEditCustomerData ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+              <input
+                type="number"
+                min="10"
+                value={divisaMonto}
+                onChange={(e) => setDivisaMonto(e.target.value)}
+                placeholder="Monto en USD / EUR"
+                className="min-h-[44px] px-4 rounded-xl border border-[#2563EB]/30 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
+              />
+              <div className="min-h-[44px] px-4 py-2 rounded-xl border border-emerald-500/35 bg-emerald-500/8 flex items-center justify-between gap-2 text-xs">
+                <span className="truncate text-emerald-700 dark:text-emerald-300 font-semibold">
+                  ✓ {clienteNombre} · {docVerificado.tipo} {docVerificado.numero} · {clienteTelefono}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowEditCustomerData(true)}
+                  className="text-[11px] font-bold text-[#2563EB] dark:text-[#06B6D4] underline shrink-0"
+                >
+                  Cambiar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <input
+                type="number"
+                min="10"
+                value={divisaMonto}
+                onChange={(e) => setDivisaMonto(e.target.value)}
+                placeholder="Monto en USD / EUR"
+                className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm font-mono-tabular"
+              />
+              <input
+                type="text"
+                value={clienteNombre}
+                onChange={(e) => setClienteNombre(e.target.value)}
+                placeholder="Tu nombre completo"
+                className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+              />
+              <input
+                type="tel"
+                value={clienteTelefono}
+                onChange={(e) => setClienteTelefono(e.target.value)}
+                placeholder="WhatsApp (+51...)"
+                className="min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+              />
+            </div>
+          )}
 
           {divisaLockCode && (
             <div className="rounded-2xl border border-[#D4AF37]/50 bg-[#D4AF37]/10 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1956,10 +2092,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 >
                   <span>
                     {isDocValid && docVerificado
-                      ? `✓ Titular verificado: ${docVerificado.tipo} ${docVerificado.numero}`
+                      ? `✓ Titular registrado: ${clienteNombre} · ${docVerificado.tipo} ${docVerificado.numero}${
+                          clienteTelefono ? ` · ${clienteTelefono}` : ''
+                        }`
                       : 'Obligatorio: valida tu DNI, RUC o Pasaporte para reservar butaca.'}
                   </span>
-                  {!isDocValid && (
+                  {!isDocValid ? (
                     <button
                       type="button"
                       onClick={() => onRequestIdentityGate?.()}
@@ -1967,24 +2105,36 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     >
                       Validar
                     </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowEditCustomerData((v) => !v)}
+                      className="text-[11px] font-bold text-[#06B6D4] underline shrink-0"
+                    >
+                      {showEditCustomerData ? 'Listo' : 'Cambiar'}
+                    </button>
                   )}
                 </div>
-                <input
-                  type="text"
-                  required
-                  value={clienteNombre}
-                  onChange={(e) => setClienteNombre(e.target.value)}
-                  placeholder="Nombre completo del pasajero"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-white/15 bg-[#07090E] text-sm text-white"
-                />
-                <input
-                  type="tel"
-                  required
-                  value={clienteTelefono}
-                  onChange={(e) => setClienteTelefono(e.target.value)}
-                  placeholder="WhatsApp (+51...)"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-white/15 bg-[#07090E] text-sm text-white"
-                />
+                {(!isDocValid || clienteTelefono.trim().length < 6 || showEditCustomerData) && (
+                  <>
+                    <input
+                      type="text"
+                      required
+                      value={clienteNombre}
+                      onChange={(e) => setClienteNombre(e.target.value)}
+                      placeholder="Nombre completo del pasajero"
+                      className="w-full min-h-[44px] px-4 rounded-xl border border-white/15 bg-[#07090E] text-sm text-white"
+                    />
+                    <input
+                      type="tel"
+                      required
+                      value={clienteTelefono}
+                      onChange={(e) => setClienteTelefono(e.target.value)}
+                      placeholder="WhatsApp (+51...)"
+                      className="w-full min-h-[44px] px-4 rounded-xl border border-white/15 bg-[#07090E] text-sm text-white"
+                    />
+                  </>
+                )}
                 <button
                   type="submit"
                   disabled={!selectedSeatNum || !isDocValid}
@@ -2087,150 +2237,186 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </div>
               )}
 
-              {/* Validación DNI / RUC / Extranjero — OBLIGATORIA */}
-              <div
-                className={`rounded-2xl border p-3.5 space-y-2.5 ${
-                  isDocValid
-                    ? 'border-emerald-500/40 bg-emerald-500/8'
-                    : 'border-amber-500/45 bg-amber-500/10'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#D4AF37]">
-                    {selectedOption.tipo === 'TAXI'
-                      ? 'Identidad del Pasajero * (Sin facturación electrónica)'
-                      : 'DNI (8), RUC (11) o Extranjero *'}
-                  </span>
-                  {isDocValid && docVerificado ? (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo}{' '}
-                      {selectedOption.tipo === 'TAXI'
-                        ? 'Verificado'
-                        : `· ${
-                            docVerificado.tipo === 'RUC' ? 'Factura Electrónica' : 'Boleta Electrónica'
-                          }`}
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
-                      Obligatorio para reservar
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <select
-                    value={docTipo}
-                    onChange={(e) => {
-                      setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
-                      setDocVerificado(null);
-                      setDocLookupError(null);
-                    }}
-                    className="min-h-[40px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
-                  >
-                    <option value="DNI">DNI (8)</option>
-                    <option value="RUC">RUC (11)</option>
-                    <option value="EXTRANJERO">Extranjero</option>
-                  </select>
-                  <input
-                    type="text"
-                    required
-                    inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
-                    maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
-                    value={docNumero}
-                    onChange={(e) => {
-                      if (docTipo === 'EXTRANJERO') {
-                        setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
-                      } else {
-                        const digits = e.target.value.replace(/\D/g, '');
-                        setDocNumero(digits);
-                        if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
-                      }
-                      setDocVerificado(null);
-                      setDocLookupError(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleVerifyCustomerDoc();
-                      }
-                    }}
-                    placeholder={
-                      docTipo === 'DNI'
-                        ? 'Ej: 44556677'
-                        : docTipo === 'RUC'
-                        ? 'Ej: 20601234565'
-                        : 'Pasaporte / CE'
-                    }
-                    className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
-                  />
+              {/* Datos del Titular: si ya ingresó con documento + WhatsApp al entrar, NO se vuelven a pedir */}
+              {isDocValid && docVerificado && clienteTelefono.trim().length >= 6 && !showEditCustomerData ? (
+                <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-3.5 flex items-start justify-between gap-3">
+                  <div className="space-y-0.5 text-xs">
+                    <p className="font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                      <BadgeCheck className="w-4 h-4 shrink-0" />
+                      <span>
+                        Titular registrado al ingreso ·{' '}
+                        {selectedOption.tipo === 'TAXI'
+                          ? 'Identidad de Pasajero'
+                          : docVerificado.tipo === 'RUC'
+                          ? 'Factura Electrónica'
+                          : 'Boleta Electrónica'}
+                      </span>
+                    </p>
+                    <p className="font-semibold text-[#14171F] dark:text-white">
+                      {clienteNombre || docVerificado.nombre_completo}
+                    </p>
+                    <p className="font-mono-tabular text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
+                      {docVerificado.tipo}: {docVerificado.numero} · WhatsApp: {clienteTelefono}
+                    </p>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => void handleVerifyCustomerDoc()}
-                    disabled={docLookupLoading}
-                    className="min-h-[40px] px-3 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
+                    onClick={() => setShowEditCustomerData(true)}
+                    className="text-[11px] font-bold text-[#2563EB] dark:text-[#06B6D4] underline shrink-0"
                   >
-                    {docLookupLoading ? 'Validando...' : 'Validar'}
+                    Cambiar datos
                   </button>
                 </div>
-                {!isDocValid && (
-                  <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
-                    Obligatorio: valida tu DNI, RUC o documento de extranjero para habilitar la reserva.
-                  </p>
-                )}
-                {isDocValid && docVerificado && (
-                  <p className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
-                    ✓ {clienteNombre || docVerificado.nombre_completo} · Fuente: {docVerificado.fuente || docVerificado.source}
-                  </p>
-                )}
-                {selectedOption.tipo !== 'TAXI' && docTipo === 'RUC' && (
-                  <input
-                    type="text"
-                    value={clienteDireccionFiscal}
-                    onChange={(e) => setClienteDireccionFiscal(e.target.value)}
-                    placeholder="Dirección fiscal SUNAT (se completa automáticamente)"
-                    className="w-full min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
-                  />
-                )}
-                {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                    {docTipo === 'RUC' ? 'Razón Social' : 'Nombre completo'}
-                  </label>
-                  <div className="relative flex items-center">
-                    <input
-                      type="text"
-                      required
-                      value={clienteNombre}
-                      onChange={(e) => setClienteNombre(e.target.value)}
-                      placeholder="Camila Mendoza"
-                      className="w-full min-h-[44px] pl-4 pr-10 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleVoiceCapture((txt) => setClienteNombre(txt))}
-                      aria-label="Dictar nombre por voz"
-                      className="absolute right-2 w-7 h-7 rounded-lg flex items-center justify-center text-[#6A717E] hover:text-[#D4AF37]"
-                    >
-                      <Mic className="w-3.5 h-3.5" />
-                    </button>
+              ) : (
+                <>
+                  <div
+                    className={`rounded-2xl border p-3.5 space-y-2.5 ${
+                      isDocValid
+                        ? 'border-emerald-500/40 bg-emerald-500/8'
+                        : 'border-amber-500/45 bg-amber-500/10'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] uppercase tracking-wider font-bold text-[#1E40AF] dark:text-[#06B6D4]">
+                        {selectedOption.tipo === 'TAXI'
+                          ? 'Identidad del Pasajero * (Sin facturación electrónica)'
+                          : 'DNI (8), RUC (11) o Extranjero *'}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {isDocValid && docVerificado ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                            <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo}{' '}
+                            {selectedOption.tipo === 'TAXI'
+                              ? 'Verificado'
+                              : `· ${
+                                  docVerificado.tipo === 'RUC'
+                                    ? 'Factura Electrónica'
+                                    : 'Boleta Electrónica'
+                                }`}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                            Obligatorio
+                          </span>
+                        )}
+                        {showEditCustomerData && (
+                          <button
+                            type="button"
+                            onClick={() => setShowEditCustomerData(false)}
+                            className="text-[10px] font-bold text-[#2563EB] dark:text-[#06B6D4] underline"
+                          >
+                            Ocultar
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <select
+                        value={docTipo}
+                        onChange={(e) => {
+                          setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
+                          setDocVerificado(null);
+                          setDocLookupError(null);
+                        }}
+                        className="min-h-[40px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-semibold"
+                      >
+                        <option value="DNI">DNI (8)</option>
+                        <option value="RUC">RUC (11)</option>
+                        <option value="EXTRANJERO">Extranjero</option>
+                      </select>
+                      <input
+                        type="text"
+                        required
+                        inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
+                        maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
+                        value={docNumero}
+                        onChange={(e) => {
+                          if (docTipo === 'EXTRANJERO') {
+                            setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+                          } else {
+                            const digits = e.target.value.replace(/\D/g, '');
+                            setDocNumero(digits);
+                            if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                          }
+                          setDocVerificado(null);
+                          setDocLookupError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleVerifyCustomerDoc();
+                          }
+                        }}
+                        placeholder={
+                          docTipo === 'DNI'
+                            ? 'Ej: 44556677'
+                            : docTipo === 'RUC'
+                            ? 'Ej: 20601234565'
+                            : 'Pasaporte / CE'
+                        }
+                        className="flex-1 min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleVerifyCustomerDoc()}
+                        disabled={docLookupLoading}
+                        className="min-h-[40px] px-3 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-xs font-bold whitespace-nowrap"
+                      >
+                        {docLookupLoading ? 'Validando...' : 'Validar'}
+                      </button>
+                    </div>
+                    {selectedOption.tipo !== 'TAXI' && docTipo === 'RUC' && (
+                      <input
+                        type="text"
+                        value={clienteDireccionFiscal}
+                        onChange={(e) => setClienteDireccionFiscal(e.target.value)}
+                        placeholder="Dirección fiscal SUNAT (se completa automáticamente)"
+                        className="w-full min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
+                      />
+                    )}
+                    {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
                   </div>
-                </div>
-                <div>
-                  <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                    WhatsApp (recibirás tu PIN)
-                  </label>
-                  <input
-                    type="tel"
-                    required
-                    value={clienteTelefono}
-                    onChange={(e) => setClienteTelefono(e.target.value)}
-                    placeholder="+51984123456"
-                    className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                  />
-                </div>
-              </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                        {docTipo === 'RUC' ? 'Razón Social' : 'Nombre completo'}
+                      </label>
+                      <div className="relative flex items-center">
+                        <input
+                          type="text"
+                          required
+                          value={clienteNombre}
+                          onChange={(e) => setClienteNombre(e.target.value)}
+                          placeholder="Camila Mendoza"
+                          className="w-full min-h-[44px] pl-4 pr-10 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleVoiceCapture((txt) => setClienteNombre(txt))}
+                          aria-label="Dictar nombre por voz"
+                          className="absolute right-2 w-7 h-7 rounded-lg flex items-center justify-center text-[#6A717E] hover:text-[#2563EB]"
+                        >
+                          <Mic className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                        WhatsApp (recibirás tu PIN)
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        value={clienteTelefono}
+                        onChange={(e) => setClienteTelefono(e.target.value)}
+                        placeholder="+51984123456"
+                        className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div>
                 <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1.5">
@@ -2299,8 +2485,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           coords={coords}
           onRefreshGps={requestGps}
           defaultNombre={clienteNombre}
-          defaultTelefono={clienteTelefono}
-          defaultDoc={customerDoc}
+          defaultTelefono={customerDoc?.whatsapp || clienteTelefono}
+          defaultDoc={sharedCustomerDoc || customerDoc}
         />
       )}
     </div>

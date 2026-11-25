@@ -6,6 +6,11 @@
     --font-display: 'Cormorant Garamond', Georgia, serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --chuspa-cobalt: #2563eb;
+    --chuspa-royal: #1e40af;
+    --chuspa-cyan: #06b6d4;
+    --chuspa-magenta: #e11d74;
+    --chuspa-amber: #f59e0b;
   }
 
   body {
@@ -121,7 +126,7 @@
   }
 }
 
-/* Destellos cambiantes con los colores oficiales de Google + Oro Luxury en bordes */
+/* Destellos cambiantes con paleta Cobalto, Cian, Magenta y Ámbar Dorado */
 .chuspa-google-border {
   position: relative;
   isolation: isolate;
@@ -135,12 +140,12 @@
   padding: 1.5px;
   background: linear-gradient(
     115deg,
-    #4285F4,
-    #EA4335,
-    #FBBC04,
-    #34A853,
-    #D4AF37,
-    #4285F4
+    #2563eb,
+    #06b6d4,
+    #e11d74,
+    #f59e0b,
+    #3d7eff,
+    #2563eb
   );
   background-size: 300% 300%;
   animation: chuspa-google-shimmer 4.5s ease infinite;
@@ -155,9 +160,9 @@
   position: relative;
   isolation: isolate;
   box-shadow:
-    0 0 0 1px rgba(66, 133, 244, 0.35),
-    0 6px 20px -4px rgba(66, 133, 244, 0.25),
-    0 2px 12px -2px rgba(251, 188, 4, 0.22);
+    0 0 0 1px rgba(37, 99, 235, 0.38),
+    0 6px 20px -4px rgba(37, 99, 235, 0.32),
+    0 2px 12px -2px rgba(225, 29, 116, 0.22);
 }
 
 .chuspa-google-btn::after {
@@ -168,11 +173,11 @@
   padding: 1.75px;
   background: linear-gradient(
     120deg,
-    #4285F4,
-    #34A853,
-    #FBBC04,
-    #EA4335,
-    #4285F4
+    #2563eb,
+    #06b6d4,
+    #e11d74,
+    #f59e0b,
+    #3d7eff
   );
   background-size: 280% 280%;
   animation: chuspa-google-shimmer 3.6s linear infinite;

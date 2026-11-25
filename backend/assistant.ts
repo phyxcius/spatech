@@ -277,7 +277,7 @@ export async function runConciergeSearch(
     lng: number;
   }>;
 
-  // Filtro tolerante por palabras clave dentro de la MISMA categoría (si no hay match exacto, devuelve toda la categoría)
+  // Filtro tolerante por palabras clave dentro de la MISMA categoría
   let matched = rows;
   if (searchKeywords.length > 0) {
     const filtered = rows.filter((item) => {
@@ -289,14 +289,39 @@ export async function runConciergeSearch(
     }
   }
 
+  // Fallback universal: si no hubo resultados en la categoría detectada, buscar en todo el catálogo activo
+  if (matched.length === 0) {
+    const allRows = db
+      .prepare(`
+        SELECT s.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng
+        FROM servicios_catalogo s
+        JOIN negocios n ON n.id = s.negocio_id
+        WHERE n.activo = 1 AND n.en_linea = 1 AND s.disponible = 1 AND s.stock > 0
+        ORDER BY s.precio_centavos ASC
+      `)
+      .all() as typeof rows;
+
+    if (searchKeywords.length > 0) {
+      const crossMatched = allRows.filter((item) => {
+        const hay = normalizeText(
+          `${item.nombre} ${item.descripcion} ${item.negocio_nombre} ${item.categoria}`
+        );
+        return searchKeywords.some((kw) => hay.includes(kw));
+      });
+      matched = crossMatched.length > 0 ? crossMatched : allRows.slice(0, 8);
+    } else {
+      matched = allRows.slice(0, 8);
+    }
+  }
+
   const minPrice = matched.length > 0 ? Math.min(...matched.map((r) => r.precio_centavos)) : 0;
 
   return {
-    categoria: detectedCategory,
+    categoria: matched[0]?.categoria || detectedCategory,
     respuesta_voz:
       conciergeReply ||
       (matched.length > 0
-        ? `Seleccionamos ${matched.length} opciones verificadas en ${detectedCategory.toLowerCase()}, desde S/ ${(minPrice / 100).toFixed(2)}.`
+        ? `Seleccionamos ${matched.length} opciones verificadas para comparar precios desde S/ ${(minPrice / 100).toFixed(2)}.`
         : `No encontramos disponibilidad inmediata en ${detectedCategory.toLowerCase()}.`),
     ai_used: aiUsed,
     ai_error: aiError,

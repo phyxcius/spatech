@@ -181,7 +181,8 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docLookupError, setDocLookupError] = useState<string | null>(null);
   const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
-  const [clienteTelefono, setClienteTelefono] = useState('');
+  const [clienteTelefono, setClienteTelefono] = useState(customerDoc?.whatsapp || '');
+  const [showEditCustomerData, setShowEditCustomerData] = useState(false);
   const [promotorCodigo, setPromotorCodigo] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -193,6 +194,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
       setDocTipo(customerDoc.tipo);
       setDocNumero(customerDoc.numero);
       if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      if (customerDoc.whatsapp) setClienteTelefono(customerDoc.whatsapp);
       setDocVerificado({
         valid: true,
         validado: true,
@@ -209,7 +211,13 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
         fuente: customerDoc.fuente || customerDoc.tipo,
       });
     }
-  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.tipo, customerDoc?.nombre]);
+  }, [
+    customerDoc?.verificado,
+    customerDoc?.numero,
+    customerDoc?.tipo,
+    customerDoc?.nombre,
+    customerDoc?.whatsapp,
+  ]);
 
   useEffect(() => {
     if (!gpsLive) {
@@ -705,15 +713,73 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           </div>
         </div>
 
-        {/* Columna derecha: Lista detallada de ofertas de conductores en vivo */}
+        {/* Columna derecha: Tabla Comparativa + Tarjetas de Conductores en Vivo */}
         <div className="lg:col-span-7 space-y-3">
           <div className="flex items-center justify-between px-1">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
-              Ofertas de Conductores Verificados ({driverBids.length})
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1E40AF] dark:text-[#06B6D4]">
+              Comparativa de Tarifas de Taxis ({driverBids.length})
             </h3>
             <span className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
               En Línea ●
             </span>
+          </div>
+
+          <div className="rounded-2xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1426] p-3 overflow-x-auto">
+            <table className="w-full text-left text-[11px] border-collapse">
+              <thead>
+                <tr className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
+                  <th className="py-1.5 pr-2 font-semibold">Conductor / Auto</th>
+                  <th className="py-1.5 pr-2 font-semibold">ETA · Dist.</th>
+                  <th className="py-1.5 pr-2 font-semibold text-right">Tarifa</th>
+                  <th className="py-1.5 pl-2 font-semibold text-right">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-black/8 dark:divide-white/8">
+                {driverBids.map((drv, idx) => (
+                  <tr
+                    key={`taxi-tbl-${drv.id}`}
+                    onClick={() => setSelectedDriverId(drv.id)}
+                    className={`cursor-pointer ${
+                      drv.id === selectedDriverId
+                        ? 'bg-[#2563EB]/10'
+                        : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'
+                    }`}
+                  >
+                    <td className="py-2 pr-2">
+                      <div className="font-semibold text-[#14171F] dark:text-white">
+                        {drv.conductor_nombre}{' '}
+                        {idx === 0 && (
+                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                            · Mejor precio
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                        {drv.modelo} · <span className="font-mono-tabular">{drv.placa}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 pr-2 font-mono-tabular text-[#555B66] dark:text-[#B4BAC4] whitespace-nowrap">
+                      {drv.etaMin} min · {drv.distanciaKm.toFixed(1)} km
+                    </td>
+                    <td className="py-2 pr-2 text-right font-mono-tabular font-black text-sm text-[#14171F] dark:text-white whitespace-nowrap">
+                      {formatSoles(drv.priceCentavos)}
+                    </td>
+                    <td className="py-2 pl-2 text-right whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white font-bold"
+                      >
+                        Escoger
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
 
           {driverBids.map((drv) => {
@@ -869,117 +935,158 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                 </div>
               )}
 
-              {/* Identidad obligatoria del pasajero (solo identificación, sin facturación electrónica) */}
-              <div
-                className={`rounded-2xl border p-3.5 space-y-2 ${
-                  isDocValid
-                    ? 'border-emerald-500/40 bg-emerald-500/8'
-                    : 'border-amber-500/45 bg-amber-500/10'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
-                    <Receipt className="w-3.5 h-3.5" />
-                    Identidad del Pasajero * (Sin facturación electrónica)
-                  </span>
-                  {isDocValid && docVerificado ? (
-                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                      <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado
-                    </span>
-                  ) : (
-                    <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
-                      Obligatorio para reservar
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  <select
-                    value={docTipo}
-                    onChange={(e) => {
-                      setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
-                      setDocVerificado(null);
-                      setDocLookupError(null);
-                    }}
-                    className="min-h-[42px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-bold"
-                  >
-                    <option value="DNI">DNI (RENIEC)</option>
-                    <option value="RUC">RUC (SUNAT)</option>
-                    <option value="EXTRANJERO">Extranjero</option>
-                  </select>
+              {/* Identidad del pasajero: si ya validó DNI/RUC + WhatsApp al entrar, no vuelve a pedirlos */}
+              {isDocValid && docVerificado && clienteTelefono.trim().length >= 6 && !showEditCustomerData ? (
+                <div className="space-y-2.5">
+                  <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-3.5 flex items-start justify-between gap-3">
+                    <div className="text-xs space-y-0.5">
+                      <p className="font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                        <BadgeCheck className="w-4 h-4 shrink-0" />
+                        <span>Pasajero verificado al ingreso (Sin facturación electrónica)</span>
+                      </p>
+                      <p className="font-semibold text-[#14171F] dark:text-white">
+                        {clienteNombre || docVerificado.nombre_completo}
+                      </p>
+                      <p className="font-mono-tabular text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
+                        {docVerificado.tipo}: {docVerificado.numero} · WhatsApp: {clienteTelefono}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowEditCustomerData(true)}
+                      className="text-[11px] font-bold text-[#2563EB] dark:text-[#06B6D4] underline shrink-0"
+                    >
+                      Cambiar datos
+                    </button>
+                  </div>
                   <input
-                    required
                     type="text"
-                    inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
-                    maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
-                    value={docNumero}
-                    onChange={(e) => {
-                      if (docTipo === 'EXTRANJERO') {
-                        setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
-                      } else {
-                        const digits = e.target.value.replace(/\D/g, '');
-                        setDocNumero(digits);
-                        if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
-                      }
-                      setDocVerificado(null);
-                      setDocLookupError(null);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleVerifyTaxiDoc();
-                      }
-                    }}
-                    placeholder={
-                      docTipo === 'DNI'
-                        ? 'DNI 8 dígitos'
-                        : docTipo === 'RUC'
-                        ? 'RUC 11 dígitos'
-                        : 'Pasaporte / CE'
-                    }
-                    className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                    value={promotorCodigo}
+                    onChange={(e) => setPromotorCodigo(e.target.value)}
+                    placeholder="Código referido (opcional)"
+                    className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs uppercase font-mono-tabular"
                   />
-                  <button
-                    type="button"
-                    onClick={handleVerifyTaxiDoc}
-                    disabled={docLookupLoading}
-                    className="min-h-[42px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold whitespace-nowrap"
-                  >
-                    {docLookupLoading ? 'Validando...' : 'Validar'}
-                  </button>
                 </div>
-                {!isDocValid && (
-                  <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
-                    Obligatorio: valida tu DNI, RUC o Pasaporte para identificar al pasajero (los viajes en taxi no emiten factura electrónica).
-                  </p>
-                )}
-                {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
-              </div>
+              ) : (
+                <>
+                  <div
+                    className={`rounded-2xl border p-3.5 space-y-2 ${
+                      isDocValid
+                        ? 'border-emerald-500/40 bg-emerald-500/8'
+                        : 'border-amber-500/45 bg-amber-500/10'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] uppercase tracking-wider font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+                        <Receipt className="w-3.5 h-3.5" />
+                        Identidad del Pasajero * (Sin facturación electrónica)
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {isDocValid && docVerificado ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                            <BadgeCheck className="w-3.5 h-3.5" /> {docVerificado.tipo} Verificado
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                            Obligatorio
+                          </span>
+                        )}
+                        {showEditCustomerData && (
+                          <button
+                            type="button"
+                            onClick={() => setShowEditCustomerData(false)}
+                            className="text-[10px] font-bold text-[#2563EB] underline"
+                          >
+                            Ocultar
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <select
+                        value={docTipo}
+                        onChange={(e) => {
+                          setDocTipo(e.target.value as 'DNI' | 'RUC' | 'EXTRANJERO');
+                          setDocVerificado(null);
+                          setDocLookupError(null);
+                        }}
+                        className="min-h-[42px] px-2.5 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-bold"
+                      >
+                        <option value="DNI">DNI (RENIEC)</option>
+                        <option value="RUC">RUC (SUNAT)</option>
+                        <option value="EXTRANJERO">Extranjero</option>
+                      </select>
+                      <input
+                        required
+                        type="text"
+                        inputMode={docTipo === 'EXTRANJERO' ? 'text' : 'numeric'}
+                        maxLength={docTipo === 'DNI' ? 8 : docTipo === 'RUC' ? 11 : 20}
+                        value={docNumero}
+                        onChange={(e) => {
+                          if (docTipo === 'EXTRANJERO') {
+                            setDocNumero(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ''));
+                          } else {
+                            const digits = e.target.value.replace(/\D/g, '');
+                            setDocNumero(digits);
+                            if (digits.length > 8 && docTipo !== 'RUC') setDocTipo('RUC');
+                          }
+                          setDocVerificado(null);
+                          setDocLookupError(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleVerifyTaxiDoc();
+                          }
+                        }}
+                        placeholder={
+                          docTipo === 'DNI'
+                            ? 'DNI 8 dígitos'
+                            : docTipo === 'RUC'
+                            ? 'RUC 11 dígitos'
+                            : 'Pasaporte / CE'
+                        }
+                        className="flex-1 min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleVerifyTaxiDoc}
+                        disabled={docLookupLoading}
+                        className="min-h-[42px] px-3.5 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-xs font-bold whitespace-nowrap"
+                      >
+                        {docLookupLoading ? 'Validando...' : 'Validar'}
+                      </button>
+                    </div>
+                    {docLookupError && <p className="text-[11px] text-[#C81E5B]">{docLookupError}</p>}
+                  </div>
 
-              <div className="space-y-2.5">
-                <input
-                  required
-                  type="text"
-                  value={clienteNombre}
-                  onChange={(e) => setClienteNombre(e.target.value)}
-                  placeholder="Nombre completo del pasajero"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <input
-                  required
-                  type="tel"
-                  value={clienteTelefono}
-                  onChange={(e) => setClienteTelefono(e.target.value)}
-                  placeholder="WhatsApp (+51 9...)"
-                  className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
-                />
-                <input
-                  type="text"
-                  value={promotorCodigo}
-                  onChange={(e) => setPromotorCodigo(e.target.value)}
-                  placeholder="Código referido (opcional)"
-                  className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs uppercase font-mono-tabular"
-                />
-              </div>
+                  <div className="space-y-2.5">
+                    <input
+                      required
+                      type="text"
+                      value={clienteNombre}
+                      onChange={(e) => setClienteNombre(e.target.value)}
+                      placeholder="Nombre completo del pasajero"
+                      className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                    />
+                    <input
+                      required
+                      type="tel"
+                      value={clienteTelefono}
+                      onChange={(e) => setClienteTelefono(e.target.value)}
+                      placeholder="WhatsApp (+51 9...)"
+                      className="w-full min-h-[44px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-sm"
+                    />
+                    <input
+                      type="text"
+                      value={promotorCodigo}
+                      onChange={(e) => setPromotorCodigo(e.target.value)}
+                      placeholder="Código referido (opcional)"
+                      className="w-full min-h-[42px] px-4 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs uppercase font-mono-tabular"
+                    />
+                  </div>
+                </>
+              )}
 
               <div className="flex gap-2.5 pt-2">
                 <button

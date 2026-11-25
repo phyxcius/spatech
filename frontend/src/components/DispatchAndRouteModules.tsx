@@ -9,6 +9,9 @@ import {
   Copy,
   Delete,
   Flame,
+  KeyRound,
+  Lock,
+  LogOut,
   MapPin,
   Navigation,
   PhoneCall,
@@ -55,6 +58,7 @@ export interface EmergencyItem {
   lng?: number;
   mensaje: string;
   entidad_objetivo?: EntidadEmergencia;
+  entidad_whatsapp?: string | null;
   estado: 'ACTIVA' | 'ATENDIDA';
   atendida_por?: string | null;
   unidad_lat?: number | null;
@@ -74,6 +78,7 @@ const TERMINALS: Array<{
   shortName: string;
   badge: string;
   number: string;
+  whatsapp: string;
   lat: number;
   lng: number;
   accent: string;
@@ -82,8 +87,9 @@ const TERMINALS: Array<{
     id: 'SAMU',
     label: 'Ambulancia SAMU Cusco 106',
     shortName: 'SAMU 106',
-    badge: '🚑 Médica SAMU',
+    badge: '🚑 Médicos SAMU',
     number: '106',
+    whatsapp: '+51984106106',
     lat: -13.5236,
     lng: -71.9585,
     accent: 'border-rose-500/45 bg-rose-500/10 text-rose-300',
@@ -93,7 +99,8 @@ const TERMINALS: Array<{
     label: 'Central Serenazgo Cusco',
     shortName: 'Serenazgo',
     badge: '🛡️ Serenazgo',
-    number: 'Alerta Municipal',
+    number: 'Municipal',
+    whatsapp: '+51984100100',
     lat: -13.5179,
     lng: -71.9812,
     accent: 'border-sky-500/45 bg-sky-500/10 text-sky-300',
@@ -102,8 +109,9 @@ const TERMINALS: Array<{
     id: 'PNP_105',
     label: 'Comisaría Turismo PNP 105',
     shortName: 'Policía PNP',
-    badge: '🚓 PNP 105',
+    badge: '🚓 Policía PNP',
     number: '105',
+    whatsapp: '+51984105105',
     lat: -13.5162,
     lng: -71.9776,
     accent: 'border-emerald-500/45 bg-emerald-500/10 text-emerald-300',
@@ -114,6 +122,7 @@ const TERMINALS: Array<{
     shortName: 'Bomberos 116',
     badge: '🚒 Bomberos',
     number: '116',
+    whatsapp: '+51984116116',
     lat: -13.5218,
     lng: -71.9834,
     accent: 'border-amber-500/45 bg-amber-500/10 text-amber-300',
@@ -185,6 +194,7 @@ function inferEntityForEmergency(item: EmergencyItem): EntidadEmergencia {
 function buildWhatsAppSosHref(params: {
   codigo?: string;
   entidad: EntidadEmergencia;
+  targetPhoneDigits?: string;
   solicitanteNombre: string;
   docTipo?: string | null;
   docNumero?: string | null;
@@ -197,6 +207,8 @@ function buildWhatsAppSosHref(params: {
   const mapsUrl = `https://www.google.com/maps?q=${params.lat.toFixed(6)},${params.lng.toFixed(6)}`;
   const docStr =
     params.docNumero && params.docTipo ? ` (${params.docTipo}: ${params.docNumero})` : '';
+  const fallbackWa = TERMINALS.find((t) => t.id === params.entidad)?.whatsapp || '+51984105105';
+  const digits = (params.targetPhoneDigits || fallbackWa).replace(/\D/g, '');
   const lines = [
     `🚨 *ALERTA SOS LA CHUSPA CUSCO*${params.codigo ? ` #${params.codigo}` : ''}`,
     `*Central solicitada:* ${params.entidad}`,
@@ -207,12 +219,27 @@ function buildWhatsAppSosHref(params: {
     `*Ubicación GPS:* ${params.lat.toFixed(5)}, ${params.lng.toFixed(5)}`,
     `*Ver en Google Maps:* ${mapsUrl}`,
   ];
-  return `https://wa.me/?text=${encodeURIComponent(lines.join('\n'))}`;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(lines.join('\n'))}`;
 }
 
 export const EmergencyDispatchCenter: React.FC = () => {
+  const [authSession, setAuthSession] = useState<{
+    entity: 'TODOS' | EntidadEmergencia;
+    token: string;
+  } | null>(null);
+  const [loginEntity, setLoginEntity] = useState<'TODOS' | EntidadEmergencia>('PNP_105');
+  const [loginPin, setLoginPin] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
   const [selectedEntity, setSelectedEntity] = useState<'TODOS' | EntidadEmergencia>('TODOS');
   const [terminal, setTerminal] = useState(TERMINALS[0].label);
+  const [entityWhatsAppMap, setEntityWhatsAppMap] = useState<Record<EntidadEmergencia, string>>({
+    SAMU: '+51984106106',
+    SERENAZGO: '+51984100100',
+    PNP_105: '+51984105105',
+    BOMBEROS: '+51984116116',
+  });
   const [liveAlerts, setLiveAlerts] = useState<EmergencyItem[]>([]);
   const [localStatusOverride, setLocalStatusOverride] = useState<
     Record<string, Partial<EmergencyItem>>
@@ -229,6 +256,37 @@ export const EmergencyDispatchCenter: React.FC = () => {
   const [gpsUpdatingCode, setGpsUpdatingCode] = useState<string | null>(null);
   const prevActiveCodesRef = useRef<Set<string>>(new Set());
   const seededInitialRef = useRef(false);
+
+  async function handleEmergencyLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError(null);
+    if (!/^\d{4}$/.test(loginPin.trim())) {
+      setLoginError('Ingresa tu clave de acceso de 4 dígitos.');
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      const res = await apiFetch<{
+        ok: boolean;
+        token: string;
+        entidad: 'TODOS' | EntidadEmergencia;
+      }>('/api/public/emergencias/auth', {
+        method: 'POST',
+        body: { entidad: loginEntity, pin: loginPin.trim() },
+      });
+      setAuthSession({ entity: res.entidad || loginEntity, token: res.token });
+      setSelectedEntity(res.entidad || loginEntity);
+      if (loginEntity !== 'TODOS') {
+        const term = TERMINALS.find((t) => t.id === loginEntity);
+        if (term) setTerminal(term.label);
+      }
+      setLoginPin('');
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'PIN incorrecto para Central de Emergencias.');
+    } finally {
+      setLoginLoading(false);
+    }
+  }
 
   const loadEmergencies = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -474,8 +532,88 @@ export const EmergencyDispatchCenter: React.FC = () => {
       ) || TERMINALS[0]
     : TERMINALS[0];
 
+  if (!authSession) {
+    return (
+      <section className="rounded-[28px] border-2 border-[#2563EB]/35 bg-[#070D1F] text-slate-100 p-6 sm:p-8 shadow-2xl max-w-2xl mx-auto space-y-5 chuspa-google-border">
+        <div className="flex items-start gap-3.5">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#2563EB] to-[#E11D74] flex items-center justify-center shrink-0">
+            <Lock className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.2em] font-bold text-[#06B6D4]">
+              Seguridad · Central de Control de Emergencias
+            </p>
+            <h2 className="font-display text-2xl font-bold text-white mt-0.5">
+              Acceso por PIN a Policía, Bomberos, SAMU y Serenazgo
+            </h2>
+            <p className="text-xs text-slate-300 mt-1">
+              Selecciona tu institución e ingresa el PIN de despacho (demo: <span className="font-mono-tabular font-bold text-[#F59E0B]">1234</span>) para ver la ruta Google Maps en tiempo real.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={handleEmergencyLogin} className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {[
+              { id: 'PNP_105' as const, label: '🚓 Policía PNP 105' },
+              { id: 'BOMBEROS' as const, label: '🚒 Bomberos 116' },
+              { id: 'SAMU' as const, label: '🚑 Médicos SAMU 106' },
+              { id: 'SERENAZGO' as const, label: '🛡️ Serenazgo Cusco' },
+              { id: 'TODOS' as const, label: '📡 Central Unificada' },
+            ].map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setLoginEntity(item.id)}
+                className={`min-h-[44px] px-3 rounded-2xl border text-xs font-bold text-left transition-all ${
+                  loginEntity === item.id
+                    ? 'border-[#06B6D4] bg-[#2563EB]/25 text-white ring-2 ring-[#06B6D4]/40'
+                    : 'border-white/10 bg-[#0D1426] text-slate-300 hover:border-white/25'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          {loginError && (
+            <div className="rounded-xl border border-[#E11D74]/50 bg-[#E11D74]/15 px-4 py-2.5 text-xs text-rose-200 font-semibold">
+              {loginError}
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-2.5">
+            <div className="relative flex-1">
+              <KeyRound className="w-4 h-4 text-[#06B6D4] absolute left-3.5 top-3.5" />
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                required
+                value={loginPin}
+                onChange={(e) => setLoginPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="Clave PIN (4 dígitos · ej: 1234)"
+                className="w-full min-h-[46px] pl-10 pr-4 rounded-2xl border border-white/15 bg-[#0D1426] text-sm font-mono-tabular tracking-[0.25em] text-white"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loginLoading}
+              className="min-h-[46px] px-6 rounded-2xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-xs font-black uppercase tracking-wider chuspa-google-btn"
+            >
+              {loginLoading ? 'Verificando...' : 'Ingresar al Panel'}
+            </button>
+          </div>
+        </form>
+      </section>
+    );
+  }
+
+  const activeWhatsappEntity: EntidadEmergencia =
+    selectedEntity === 'TODOS' ? 'SAMU' : selectedEntity;
+
   return (
-    <section className="rounded-[28px] border-2 border-slate-800 bg-[#0D1117] text-slate-100 p-5 sm:p-6 shadow-2xl space-y-5 chuspa-google-border">
+    <section className="rounded-[28px] border-2 border-[#2563EB]/30 bg-[#070D1F] text-slate-100 p-5 sm:p-6 shadow-2xl space-y-5 chuspa-google-border">
       {/* Barra Superior de Central */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/10 pb-4">
         <div className="flex items-center gap-3">
@@ -484,7 +622,7 @@ export const EmergencyDispatchCenter: React.FC = () => {
           </div>
           <div>
             <h2 className="text-sm sm:text-base font-black tracking-wide text-white uppercase">
-              Central de Control de Emergencias Cusco
+              Central de Control · {selectedEntity === 'TODOS' ? 'Red Unificada Cusco' : selectedEntity}
             </h2>
             <div className="flex flex-wrap items-center gap-2 mt-0.5">
               <span className="text-[11px] text-amber-400">Operador / Unidad:</span>
@@ -495,7 +633,7 @@ export const EmergencyDispatchCenter: React.FC = () => {
                   const found = TERMINALS.find((t) => t.label === e.target.value);
                   if (found) setSelectedEntity(found.id);
                 }}
-                className="bg-[#07090E] border border-white/15 rounded-lg px-2 py-0.5 text-[11px] text-amber-300 font-semibold"
+                className="bg-[#0D1426] border border-white/15 rounded-lg px-2 py-0.5 text-[11px] text-amber-300 font-semibold"
               >
                 {TERMINALS.map((t) => (
                   <option key={t.id} value={t.label}>
@@ -508,21 +646,37 @@ export const EmergencyDispatchCenter: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] px-2.5 py-1 rounded-full border border-cyan-500/35 bg-cyan-500/10 text-cyan-300 font-semibold flex items-center gap-1">
-            <Radio className="w-3 h-3 animate-pulse" />
-            <span>Sincronizada con PNP · Bomberos · SAMU · Serenazgo</span>
-          </span>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl border border-[#25D366]/35 bg-[#25D366]/10 text-[11px]">
+            <span className="text-[#4ADE80] font-bold">WA {activeWhatsappEntity}:</span>
+            <input
+              type="tel"
+              value={entityWhatsAppMap[activeWhatsappEntity]}
+              onChange={(e) =>
+                setEntityWhatsAppMap((prev) => ({
+                  ...prev,
+                  [activeWhatsappEntity]: e.target.value,
+                }))
+              }
+              aria-label={`WhatsApp oficial ${activeWhatsappEntity}`}
+              className="w-28 bg-transparent text-white font-mono-tabular text-[11px] focus:outline-none border-b border-white/20"
+            />
+          </div>
           <button
             type="button"
             onClick={() => void loadEmergencies(false)}
-            className="min-h-[34px] px-3 rounded-full border border-white/10 bg-white/5 text-[11px] text-slate-300 flex items-center gap-1.5 hover:border-amber-400/50"
+            className="min-h-[34px] px-3 rounded-xl border border-white/10 bg-white/5 text-[11px] text-slate-300 flex items-center gap-1.5 hover:border-[#06B6D4]"
           >
             <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
             <span>Sincronizar</span>
           </button>
-          <span className="text-[11px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full font-mono-tabular">
-            En Línea ●
-          </span>
+          <button
+            type="button"
+            onClick={() => setAuthSession(null)}
+            className="min-h-[34px] px-3 rounded-xl border border-[#E11D74]/40 bg-[#E11D74]/10 text-[11px] font-bold text-rose-200 flex items-center gap-1.5"
+          >
+            <LogOut className="w-3 h-3" />
+            <span>Bloquear PIN</span>
+          </button>
         </div>
       </div>
 
@@ -678,6 +832,8 @@ export const EmergencyDispatchCenter: React.FC = () => {
             const waHref = buildWhatsAppSosHref({
               codigo: item.codigo,
               entidad: item.resolvedEntity,
+              targetPhoneDigits:
+                item.entidad_whatsapp || entityWhatsAppMap[item.resolvedEntity],
               solicitanteNombre: solicitante,
               docTipo: item.solicitante_documento_tipo,
               docNumero: item.solicitante_documento_numero,
@@ -833,7 +989,8 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
   const [docLoading, setDocLoading] = useState(false);
   const [docError, setDocError] = useState<string | null>(null);
 
-  const [telefono, setTelefono] = useState(defaultTelefono || '');
+  const [telefono, setTelefono] = useState(defaultDoc?.whatsapp || defaultTelefono || '');
+  const [showEditIdentity, setShowEditIdentity] = useState(false);
   const [paraOtraPersona, setParaOtraPersona] = useState(false);
   const [heridoNombre, setHeridoNombre] = useState(
     defaultDoc?.nombre || defaultNombre || ''
@@ -846,6 +1003,7 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
     solicitante: string;
     herido: string;
     entidad: EntidadEmergencia;
+    entidadWhatsapp: string;
     detalle: string;
     estado: 'ACTIVA' | 'ATENDIDA';
     atendida_por?: string | null;
@@ -1010,10 +1168,16 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
       return;
     }
 
+    const targetStation = TERMINALS.find((t) => t.id === entidadObjetivo) || TERMINALS[0];
+
     setSubmitting(true);
     const t0 = performance.now();
     try {
-      const res = await apiFetch<{ codigo: string; emergencia?: EmergencyItem }>('/api/public/emergencias', {
+      const res = await apiFetch<{
+        codigo: string;
+        entidad_whatsapp?: string;
+        emergencia?: EmergencyItem;
+      }>('/api/public/emergencias', {
         method: 'POST',
         body: {
           cliente_nombre: cleanHerido,
@@ -1026,16 +1190,20 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
           lat: coords.lat,
           lng: coords.lng,
           entidad_objetivo: entidadObjetivo,
+          entidad_whatsapp: targetStation.whatsapp,
           mensaje: `[${entidadObjetivo}] ${mensaje}`,
           sincronizada_todas: 1,
         },
       });
       const ms = Math.max(1, Math.round(performance.now() - t0));
+      const resolvedEntityWa =
+        res.entidad_whatsapp || res.emergencia?.entidad_whatsapp || targetStation.whatsapp;
       setActiveTicket({
         codigo: res.codigo,
         solicitante: cleanSolicitante,
         herido: cleanHerido,
         entidad: entidadObjetivo,
+        entidadWhatsapp: resolvedEntityWa,
         detalle: mensaje,
         estado: res.emergencia?.estado || 'ACTIVA',
         atendida_por: res.emergencia?.atendida_por || null,
@@ -1044,9 +1212,9 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
       });
       emitCenterNotification({
         id: `sos-sent-${res.codigo}`,
-        title: `🚨 SOS Enviado a ${entidadObjetivo} · #${res.codigo}`,
-        subtitle: `Solicita: ${cleanSolicitante} · Herido: ${cleanHerido}`,
-        detail: 'Sincronizada con Policía PNP, Bomberos, SAMU y Serenazgo en tiempo real.',
+        title: `🚨 SOS Activado → ${targetStation.shortName} (${resolvedEntityWa})`,
+        subtitle: `Ticket #${res.codigo} · Solicitante: ${cleanSolicitante}`,
+        detail: `Herido: ${cleanHerido}. Despacho WhatsApp automático preparado y sincronizado en Google Maps.`,
         tone: 'emergency',
         responseMs: ms,
       });
@@ -1057,6 +1225,7 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
         solicitante: cleanSolicitante,
         herido: cleanHerido,
         entidad: entidadObjetivo,
+        entidadWhatsapp: targetStation.whatsapp,
         detalle: mensaje,
         estado: 'ACTIVA',
       });
@@ -1065,9 +1234,14 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
     }
   }
 
+  const activeEntityStation =
+    TERMINALS.find((t) => t.id === (activeTicket?.entidad || entidadObjetivo)) || TERMINALS[0];
+  const resolvedTargetWa = activeTicket?.entidadWhatsapp || activeEntityStation.whatsapp;
+
   const whatsAppShareUrl = buildWhatsAppSosHref({
     codigo: activeTicket?.codigo,
     entidad: activeTicket?.entidad || entidadObjetivo,
+    targetPhoneDigits: resolvedTargetWa,
     solicitanteNombre: activeTicket?.solicitante || solicitanteNombre.trim() || 'Ciudadano',
     docTipo: docVerificado?.tipo || (docNumero.trim() ? docTipo : null),
     docNumero: docVerificado?.numero || docNumero.trim() || null,
@@ -1223,16 +1397,16 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
               />
             </div>
 
-            {/* Compartir por WhatsApp + Acciones */}
+            {/* Compartir por WhatsApp directo al número oficial de la entidad + Acciones */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <a
                 href={whatsAppShareUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="min-h-[44px] rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 text-xs font-black flex items-center justify-center gap-1.5 shadow-md"
+                className="min-h-[46px] px-3 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-slate-950 text-xs font-black flex items-center justify-center gap-1.5 shadow-md text-center"
               >
-                <Share2 className="w-4 h-4" />
-                <span>Compartir ubicación por WhatsApp</span>
+                <Share2 className="w-4 h-4 shrink-0" />
+                <span>Enviar al WhatsApp {activeEntityStation.shortName} ({resolvedTargetWa})</span>
               </a>
               <button
                 type="button"
@@ -1286,117 +1460,153 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
           </div>
         ) : (
           <form onSubmit={handleSubmitSos} className="space-y-3">
-            {/* Selección de Entidad */}
+            {/* Selección de Entidad con número de WhatsApp directo */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               {TERMINALS.map((t) => (
                 <button
                   key={t.id}
                   type="button"
                   onClick={() => setEntidadObjetivo(t.id)}
-                  className={`py-2 px-2 rounded-xl text-[11px] font-bold border transition-colors ${
+                  className={`py-2 px-2 rounded-xl text-[11px] font-bold border transition-colors text-center ${
                     entidadObjetivo === t.id
                       ? 'bg-red-600 text-white border-red-500 shadow-md'
                       : 'border-white/10 bg-[#07090E] text-slate-300'
                   }`}
                 >
-                  {t.shortName}
+                  <div>{t.shortName}</div>
+                  <div className="text-[9px] font-mono-tabular opacity-80">{t.whatsapp}</div>
                 </button>
               ))}
             </div>
 
-            {/* Bloque de Validación DNI / RUC / Extranjero dentro de SOS */}
-            <div className="rounded-2xl border border-amber-500/35 bg-amber-500/5 p-3 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1.5">
-                  <UserCheck className="w-3.5 h-3.5" />
-                  <span>Identidad del solicitante (DNI / RUC / Extranjero)</span>
-                </span>
-                {docVerificado?.verificado && (
-                  <span className="text-[10px] font-mono-tabular text-emerald-300 font-bold flex items-center gap-1">
-                    <BadgeCheck className="w-3.5 h-3.5" /> Verificado
-                  </span>
-                )}
-              </div>
-
-              <div className="grid grid-cols-3 gap-1.5">
-                {(['DNI', 'RUC', 'EXTRANJERO'] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => {
-                      setDocTipo(t);
-                      setDocVerificado(null);
-                      setDocError(null);
-                    }}
-                    className={`py-1.5 rounded-lg text-[11px] font-bold border transition-colors ${
-                      docTipo === t
-                        ? 'bg-[#D4AF37] text-[#0B0E14] border-[#D4AF37]'
-                        : 'border-white/10 bg-[#07090E] text-slate-300'
-                    }`}
-                  >
-                    {t === 'DNI' ? 'DNI (8)' : t === 'RUC' ? 'RUC (11)' : 'Extranjero'}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={docNumero}
-                  onChange={(e) => {
-                    setDocNumero(e.target.value);
-                    setDocVerificado(null);
-                  }}
-                  placeholder={
-                    docTipo === 'DNI'
-                      ? 'Ej: 44556677'
-                      : docTipo === 'RUC'
-                      ? 'Ej: 20601234565'
-                      : 'Pasaporte / CE'
-                  }
-                  className="flex-1 min-h-[40px] px-3 rounded-xl border border-white/15 bg-[#07090E] text-xs font-mono-tabular text-white"
-                />
+            {/* Datos de identidad: si ya validó al ingresar, no los vuelve a pedir */}
+            {docVerificado?.verificado && telefono.trim().length >= 6 && !showEditIdentity ? (
+              <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-3 flex items-start justify-between gap-2 text-xs">
+                <div className="space-y-0.5">
+                  <p className="font-bold text-emerald-300 flex items-center gap-1.5">
+                    <BadgeCheck className="w-4 h-4 shrink-0" />
+                    <span>Solicitante verificado al ingreso</span>
+                  </p>
+                  <p className="font-semibold text-white">{solicitanteNombre}</p>
+                  <p className="font-mono-tabular text-[11px] text-slate-300">
+                    {docVerificado.tipo}: {docVerificado.numero} · WhatsApp: {telefono}
+                  </p>
+                </div>
                 <button
                   type="button"
-                  disabled={docLoading}
-                  onClick={() => void handleValidateDoc()}
-                  className="min-h-[40px] px-3 rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-extrabold whitespace-nowrap"
+                  onClick={() => setShowEditIdentity(true)}
+                  className="text-[11px] font-bold text-[#06B6D4] underline shrink-0"
                 >
-                  {docLoading ? 'Validando...' : 'Validar'}
+                  Cambiar
                 </button>
               </div>
-              {docError && <p className="text-[11px] text-rose-400">{docError}</p>}
-            </div>
+            ) : (
+              <>
+                <div className="rounded-2xl border border-amber-500/35 bg-amber-500/5 p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1.5">
+                      <UserCheck className="w-3.5 h-3.5" />
+                      <span>Identidad del solicitante (DNI / RUC / Extranjero)</span>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      {docVerificado?.verificado && (
+                        <span className="text-[10px] font-mono-tabular text-emerald-300 font-bold flex items-center gap-1">
+                          <BadgeCheck className="w-3.5 h-3.5" /> Verificado
+                        </span>
+                      )}
+                      {showEditIdentity && (
+                        <button
+                          type="button"
+                          onClick={() => setShowEditIdentity(false)}
+                          className="text-[10px] font-bold text-[#06B6D4] underline"
+                        >
+                          Ocultar
+                        </button>
+                      )}
+                    </div>
+                  </div>
 
-            {/* Datos de quien pide + WhatsApp */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <div>
-                <label className="block text-[11px] text-slate-400 mb-1">
-                  Quien solicita la emergencia
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={solicitanteNombre}
-                  onChange={(e) => setSolicitanteNombre(e.target.value)}
-                  placeholder="Nombre completo o Razón Social"
-                  className="w-full min-h-[42px] px-3.5 rounded-xl border border-white/15 bg-[#07090E] text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 mb-1">
-                  WhatsApp del solicitante
-                </label>
-                <input
-                  type="tel"
-                  required
-                  value={telefono}
-                  onChange={(e) => setTelefono(e.target.value)}
-                  placeholder="+51984123456"
-                  className="w-full min-h-[42px] px-3.5 rounded-xl border border-white/15 bg-[#07090E] text-sm"
-                />
-              </div>
-            </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['DNI', 'RUC', 'EXTRANJERO'] as const).map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => {
+                          setDocTipo(t);
+                          setDocVerificado(null);
+                          setDocError(null);
+                        }}
+                        className={`py-1.5 rounded-lg text-[11px] font-bold border transition-colors ${
+                          docTipo === t
+                            ? 'bg-[#D4AF37] text-[#0B0E14] border-[#D4AF37]'
+                            : 'border-white/10 bg-[#07090E] text-slate-300'
+                        }`}
+                      >
+                        {t === 'DNI' ? 'DNI (8)' : t === 'RUC' ? 'RUC (11)' : 'Extranjero'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={docNumero}
+                      onChange={(e) => {
+                        setDocNumero(e.target.value);
+                        setDocVerificado(null);
+                      }}
+                      placeholder={
+                        docTipo === 'DNI'
+                          ? 'Ej: 44556677'
+                          : docTipo === 'RUC'
+                          ? 'Ej: 20601234565'
+                          : 'Pasaporte / CE'
+                      }
+                      className="flex-1 min-h-[40px] px-3 rounded-xl border border-white/15 bg-[#07090E] text-xs font-mono-tabular text-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={docLoading}
+                      onClick={() => void handleValidateDoc()}
+                      className="min-h-[40px] px-3 rounded-xl bg-[#D4AF37] text-[#0B0E14] text-xs font-extrabold whitespace-nowrap"
+                    >
+                      {docLoading ? 'Validando...' : 'Validar'}
+                    </button>
+                  </div>
+                  {docError && <p className="text-[11px] text-rose-400">{docError}</p>}
+                </div>
+
+                {/* Datos de quien pide + WhatsApp */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      Quien solicita la emergencia
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={solicitanteNombre}
+                      onChange={(e) => setSolicitanteNombre(e.target.value)}
+                      placeholder="Nombre completo o Razón Social"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl border border-white/15 bg-[#07090E] text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">
+                      WhatsApp del solicitante
+                    </label>
+                    <input
+                      type="tel"
+                      required
+                      value={telefono}
+                      onChange={(e) => setTelefono(e.target.value)}
+                      placeholder="+51984123456"
+                      className="w-full min-h-[42px] px-3.5 rounded-xl border border-white/15 bg-[#07090E] text-sm"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Para quién es la emergencia / Nombre del herido */}
             <div className="rounded-2xl border border-white/10 bg-[#07090E] p-3 space-y-2">
@@ -1486,7 +1696,7 @@ export const SosActiveModalCard: React.FC<SosActiveModalCardProps> = ({
                 className="min-h-[48px] px-4 rounded-xl bg-[#25D366]/15 border border-[#25D366]/45 text-[#4ADE80] text-xs font-extrabold flex items-center justify-center gap-1.5 hover:bg-[#25D366]/25 whitespace-nowrap"
               >
                 <Share2 className="w-4 h-4" />
-                <span>WhatsApp GPS</span>
+                <span>WhatsApp {activeEntityStation.shortName}</span>
               </a>
             </div>
 
