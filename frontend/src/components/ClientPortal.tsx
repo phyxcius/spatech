@@ -2300,6 +2300,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           onRefreshGps={requestGps}
           defaultNombre={clienteNombre}
           defaultTelefono={clienteTelefono}
+          defaultDoc={customerDoc}
         />
       )}
     </div>

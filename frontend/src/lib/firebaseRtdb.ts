@@ -1136,20 +1136,35 @@ export async function handleFirebaseRtdbRequest<T>(
     )
       ? String(payload.entidad_objetivo).toUpperCase()
       : 'SAMU') as EntidadEmergencia;
-    await rtdbFetch(`emergencias/${codigo}`, 'PUT', {
+    const solicitanteNombre = String(payload.solicitante_nombre || payload.cliente_nombre || 'Huésped La Chuspa').trim();
+    const heridoNombre = String(payload.herido_nombre || payload.cliente_nombre || solicitanteNombre).trim();
+    const emLat = typeof payload.lat === 'number' ? payload.lat : -13.5167;
+    const emLng = typeof payload.lng === 'number' ? payload.lng : -71.9788;
+    const record = {
       id: Date.now(),
       codigo,
-      cliente_nombre: String(payload.cliente_nombre || 'Huésped La Chuspa'),
-      ubicacion_texto: String(payload.ubicacion_texto || 'Centro Histórico, Cusco'),
-      lat: typeof payload.lat === 'number' ? payload.lat : -13.5167,
-      lng: typeof payload.lng === 'number' ? payload.lng : -71.9788,
+      cliente_nombre: heridoNombre,
+      cliente_telefono: String(payload.cliente_telefono || '+51984000000'),
+      solicitante_documento_tipo: payload.solicitante_documento_tipo || null,
+      solicitante_documento_numero: payload.solicitante_documento_numero || null,
+      solicitante_nombre: solicitanteNombre,
+      herido_nombre: heridoNombre,
+      ubicacion_texto: String(payload.ubicacion_texto || `${emLat.toFixed(5)}, ${emLng.toFixed(5)}`),
+      lat: emLat,
+      lng: emLng,
       mensaje: String(payload.mensaje || 'Asistencia prioritaria'),
       entidad_objetivo: targetEnt,
       estado: 'ACTIVA',
       atendida_por: null,
+      unidad_lat: null,
+      unidad_lng: null,
+      distancia_km: null,
+      eta_min: null,
+      sincronizada_todas: 1,
       created_at: new Date().toISOString(),
-    });
-    return { codigo, entidad_objetivo: targetEnt } as T;
+    };
+    await rtdbFetch(`emergencias/${codigo}`, 'PUT', record);
+    return { codigo, entidad_objetivo: targetEnt, estado: 'ACTIVA', emergencia: record } as T;
   }
 
   const dispatchMatch = cleanPath.match(/^\/api\/public\/emergencias\/([^/]+)\/despachar$/);
@@ -1160,13 +1175,68 @@ export async function handleFirebaseRtdbRequest<T>(
     if (!existing) {
       throw new Error('Alerta de emergencia no encontrada en Firebase RTDB.');
     }
-    await rtdbFetch(`emergencias/${codigo}`, 'PATCH', {
-      estado: 'ATENDIDA',
+    const stationCoords: Record<EntidadEmergencia, { lat: number; lng: number }> = {
+      SAMU: { lat: -13.5236, lng: -71.9585 },
+      SERENAZGO: { lat: -13.5179, lng: -71.9812 },
+      PNP_105: { lat: -13.5162, lng: -71.9776 },
+      BOMBEROS: { lat: -13.5218, lng: -71.9834 },
+    };
+    const lowU = unidad.toLowerCase();
+    const inferredKey: EntidadEmergencia = lowU.includes('pnp') || lowU.includes('polic')
+      ? 'PNP_105'
+      : lowU.includes('bomber')
+      ? 'BOMBEROS'
+      : lowU.includes('seren')
+      ? 'SERENAZGO'
+      : lowU.includes('samu')
+      ? 'SAMU'
+      : existing.entidad_objetivo || 'SAMU';
+    const defCoords = stationCoords[inferredKey] || stationCoords.SAMU;
+    const uLat = typeof payload.unidad_lat === 'number' ? payload.unidad_lat : defCoords.lat;
+    const uLng = typeof payload.unidad_lng === 'number' ? payload.unidad_lng : defCoords.lng;
+    const tLat = typeof existing.lat === 'number' ? existing.lat : -13.5167;
+    const tLng = typeof existing.lng === 'number' ? existing.lng : -71.9788;
+    const distKm = Number(Math.max(0.2, haversineKm(uLat, uLng, tLat, tLng)).toFixed(2));
+    const etaMin = Math.max(1, Math.round(distKm * 2.4 + 1));
+
+    const patch = {
+      estado: 'ATENDIDA' as const,
       atendida_por: unidad,
-    });
+      unidad_lat: uLat,
+      unidad_lng: uLng,
+      distancia_km: distKm,
+      eta_min: etaMin,
+    };
+    await rtdbFetch(`emergencias/${codigo}`, 'PATCH', patch);
     return {
       ok: true,
-      emergencia: { ...existing, estado: 'ATENDIDA', atendida_por: unidad },
+      emergencia: { ...existing, ...patch },
+    } as T;
+  }
+
+  const sosLocMatch = cleanPath.match(/^\/api\/public\/emergencias\/([^/]+)\/ubicacion$/);
+  if (sosLocMatch && method === 'POST') {
+    const codigo = decodeURIComponent(sosLocMatch[1]).toUpperCase();
+    const existing = snap.emergencias?.[codigo];
+    if (!existing) {
+      throw new Error('Alerta de emergencia no encontrada en Firebase RTDB.');
+    }
+    const uLat = Number(payload.unidad_lat);
+    const uLng = Number(payload.unidad_lng);
+    const tLat = typeof existing.lat === 'number' ? existing.lat : -13.5167;
+    const tLng = typeof existing.lng === 'number' ? existing.lng : -71.9788;
+    const distKm = Number(Math.max(0.05, haversineKm(uLat, uLng, tLat, tLng)).toFixed(2));
+    const etaMin = distKm <= 0.12 ? 1 : Math.max(1, Math.round(distKm * 2.4 + 1));
+    const patch = {
+      unidad_lat: uLat,
+      unidad_lng: uLng,
+      distancia_km: distKm,
+      eta_min: etaMin,
+    };
+    await rtdbFetch(`emergencias/${codigo}`, 'PATCH', patch);
+    return {
+      ok: true,
+      emergencia: { ...existing, ...patch },
     } as T;
   }
 

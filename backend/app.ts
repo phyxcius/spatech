@@ -1607,39 +1607,127 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  const EMERGENCY_STATION_COORDS: Record<
+    EntidadEmergencia,
+    { lat: number; lng: number; label: string }
+  > = {
+    SAMU: { lat: -13.5236, lng: -71.9585, label: 'Ambulancia SAMU Cusco 106' },
+    SERENAZGO: { lat: -13.5179, lng: -71.9812, label: 'Central Serenazgo Cusco' },
+    PNP_105: { lat: -13.5162, lng: -71.9776, label: 'Comisaría Turismo PNP 105' },
+    BOMBEROS: { lat: -13.5218, lng: -71.9834, label: 'Cía. Bomberos Santiago N° 116' },
+  };
+
+  function resolveStationForUnitLabel(
+    unitLabel: string,
+    fallbackEntity: EntidadEmergencia
+  ): { lat: number; lng: number } {
+    const low = unitLabel.toLowerCase();
+    if (low.includes('pnp') || low.includes('polic')) return EMERGENCY_STATION_COORDS.PNP_105;
+    if (low.includes('bomber')) return EMERGENCY_STATION_COORDS.BOMBEROS;
+    if (low.includes('seren')) return EMERGENCY_STATION_COORDS.SERENAZGO;
+    if (low.includes('samu') || low.includes('ambul')) return EMERGENCY_STATION_COORDS.SAMU;
+    return EMERGENCY_STATION_COORDS[fallbackEntity] || EMERGENCY_STATION_COORDS.SAMU;
+  }
+
   // Emergencias SOS
   app.post('/api/public/emergencias', publicLimiter, (req, res, next) => {
     try {
-      const { cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, entidad_objetivo } =
-        req.body || {};
-      if (typeof cliente_nombre !== 'string' || cliente_nombre.trim().length < 2) {
+      const {
+        cliente_nombre,
+        cliente_telefono,
+        solicitante_nombre,
+        solicitante_documento_tipo,
+        solicitante_documento_numero,
+        herido_nombre,
+        ubicacion_texto,
+        lat,
+        lng,
+        mensaje,
+        entidad_objetivo,
+        sincronizada_todas,
+      } = req.body || {};
+
+      const resolvedSolicitante =
+        typeof solicitante_nombre === 'string' && solicitante_nombre.trim().length >= 2
+          ? solicitante_nombre.trim()
+          : typeof cliente_nombre === 'string'
+            ? cliente_nombre.trim()
+            : '';
+
+      if (resolvedSolicitante.length < 2) {
         throw new HttpError(400, 'Nombre obligatorio');
       }
       if (typeof cliente_telefono !== 'string' || cliente_telefono.trim().length < 6) {
         throw new HttpError(400, 'Teléfono obligatorio');
       }
+
+      const resolvedHerido =
+        typeof herido_nombre === 'string' && herido_nombre.trim().length >= 2
+          ? herido_nombre.trim()
+          : typeof cliente_nombre === 'string' && cliente_nombre.trim().length >= 2
+            ? cliente_nombre.trim()
+            : resolvedSolicitante;
+
+      let cleanDocTipo: 'DNI' | 'RUC' | 'EXTRANJERO' | null = null;
+      let cleanDocNum: string | null = null;
+      if (typeof solicitante_documento_numero === 'string' && solicitante_documento_numero.trim()) {
+        const rawDoc = solicitante_documento_numero.trim();
+        const rawDigits = rawDoc.replace(/\D/g, '');
+        const reqT = String(
+          solicitante_documento_tipo ||
+            (rawDigits.length === 11 ? 'RUC' : /^\d{8}$/.test(rawDigits) ? 'DNI' : 'EXTRANJERO')
+        )
+          .trim()
+          .toUpperCase();
+        if (reqT === 'RUC' && isValidRuc(rawDigits)) {
+          cleanDocTipo = 'RUC';
+          cleanDocNum = rawDigits;
+        } else if (reqT === 'DNI' && isValidDni(rawDigits)) {
+          cleanDocTipo = 'DNI';
+          cleanDocNum = rawDigits;
+        } else if (reqT === 'EXTRANJERO' && isValidForeignDoc(rawDoc)) {
+          cleanDocTipo = 'EXTRANJERO';
+          cleanDocNum = rawDoc.toUpperCase();
+        } else {
+          throw new HttpError(400, 'Documento de identidad inválido en alerta SOS');
+        }
+      }
+
       const rawEntidad = String(entidad_objetivo || 'SAMU').trim().toUpperCase();
       const targetEntity: EntidadEmergencia = (ENTIDADES_EMERGENCIA as readonly string[]).includes(rawEntidad)
         ? (rawEntidad as EntidadEmergencia)
         : 'SAMU';
 
+      const emLat = typeof lat === 'number' && Number.isFinite(lat) ? lat : -13.5167;
+      const emLng = typeof lng === 'number' && Number.isFinite(lng) ? lng : -71.9788;
+      const syncAll = sincronizada_todas === false || sincronizada_todas === 0 ? 0 : 1;
+
       const codigo = generateCode('SOS-CUSCO');
       const resInsert = db
         .prepare(`
-          INSERT INTO alertas_emergencias (codigo, cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVA')
+          INSERT INTO alertas_emergencias (
+            codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+            solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+            estado, sincronizada_todas
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVA', ?)
         `)
         .run(
           codigo,
-          cliente_nombre.trim(),
+          resolvedHerido,
           cliente_telefono.trim(),
+          cleanDocTipo,
+          cleanDocNum,
+          resolvedSolicitante,
+          resolvedHerido,
           typeof ubicacion_texto === 'string' && ubicacion_texto.trim()
             ? ubicacion_texto.trim()
-            : 'Cusco, Perú',
-          typeof lat === 'number' ? lat : -13.5167,
-          typeof lng === 'number' ? lng : -71.9788,
+            : `${emLat.toFixed(5)}, ${emLng.toFixed(5)}`,
+          emLat,
+          emLng,
           typeof mensaje === 'string' && mensaje.trim() ? mensaje.trim() : 'Asistencia inmediata requerida',
-          targetEntity
+          targetEntity,
+          syncAll
         );
 
       logWhatsAppNotification(
@@ -1647,14 +1735,26 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         cliente_telefono.trim(),
         'alerta_sos',
         codigo,
-        `Alerta ${codigo} activada hacia ${targetEntity}. Centro de control La Chuspa y central notificados.`
+        `Alerta ${codigo} hacia ${targetEntity}. Solicitante: ${resolvedSolicitante}. Herido: ${resolvedHerido}. GPS: ${emLat.toFixed(5)}, ${emLng.toFixed(5)}. Sincronizada con centrales de emergencia.`
       );
+
+      void syncSnapshotToFirebaseRtdb(db);
+
+      const created = db
+        .prepare(
+          `SELECT id, codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+                  solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+                  estado, atendida_por, unidad_lat, unidad_lng, distancia_km, eta_min, sincronizada_todas, created_at
+           FROM alertas_emergencias WHERE codigo = ?`
+        )
+        .get(codigo);
 
       res.status(201).json({
         id: Number(resInsert.lastInsertRowid),
         codigo,
         entidad_objetivo: targetEntity,
         estado: 'ACTIVA',
+        emergencia: created,
       });
     } catch (err) {
       next(err);
@@ -1664,7 +1764,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.get('/api/public/emergencias', publicLimiter, (_req, res) => {
     const emergencias = db
       .prepare(`
-        SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por, created_at
+        SELECT id, codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+               solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+               estado, atendida_por, unidad_lat, unidad_lng, distancia_km, eta_min, sincronizada_todas, created_at
         FROM alertas_emergencias
         ORDER BY id DESC
         LIMIT 50
@@ -1676,28 +1778,104 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.post('/api/public/emergencias/:codigo/despachar', publicLimiter, (req, res, next) => {
     try {
       const codigo = String(req.params.codigo || '').trim().toUpperCase();
-      const { atendida_por } = req.body || {};
+      const { atendida_por, unidad_lat, unidad_lng } = req.body || {};
       const unidad =
         typeof atendida_por === 'string' && atendida_por.trim()
           ? atendida_por.trim().slice(0, 80)
           : 'Cía. Bomberos Santiago N° 116';
 
       const existing = db
-        .prepare('SELECT id, codigo, estado FROM alertas_emergencias WHERE codigo = ?')
-        .get(codigo) as { id: number; codigo: string; estado: string } | undefined;
+        .prepare('SELECT id, codigo, estado, entidad_objetivo, lat, lng, cliente_telefono FROM alertas_emergencias WHERE codigo = ?')
+        .get(codigo) as
+        | {
+            id: number;
+            codigo: string;
+            estado: string;
+            entidad_objetivo: EntidadEmergencia;
+            lat: number | null;
+            lng: number | null;
+            cliente_telefono: string | null;
+          }
+        | undefined;
       if (!existing) {
         throw new HttpError(404, 'Alerta de emergencia no encontrada');
       }
 
+      const fallbackCoords = resolveStationForUnitLabel(unidad, existing.entidad_objetivo || 'SAMU');
+      const uLat = typeof unidad_lat === 'number' && Number.isFinite(unidad_lat) ? unidad_lat : fallbackCoords.lat;
+      const uLng = typeof unidad_lng === 'number' && Number.isFinite(unidad_lng) ? unidad_lng : fallbackCoords.lng;
+      const tLat = existing.lat ?? -13.5167;
+      const tLng = existing.lng ?? -71.9788;
+      const distKm = Number(Math.max(0.2, haversineKm(uLat, uLng, tLat, tLng)).toFixed(2));
+      const etaMin = Math.max(1, Math.round(distKm * 2.4 + 1));
+
       db.prepare(`
         UPDATE alertas_emergencias
-        SET estado = 'ATENDIDA', atendida_por = ?
+        SET estado = 'ATENDIDA', atendida_por = ?, unidad_lat = ?, unidad_lng = ?, distancia_km = ?, eta_min = ?
         WHERE codigo = ?
-      `).run(unidad, codigo);
+      `).run(unidad, uLat, uLng, distKm, etaMin, codigo);
+
+      if (existing.cliente_telefono) {
+        logWhatsAppNotification(
+          db,
+          existing.cliente_telefono,
+          'despacho_sos',
+          codigo,
+          `Auxilio ${codigo} aceptado por ${unidad}. Unidad en ruta (${distKm} km · ETA ${etaMin} min).`
+        );
+      }
+
+      void syncSnapshotToFirebaseRtdb(db);
 
       const updated = db
         .prepare(
-          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por, created_at FROM alertas_emergencias WHERE codigo = ?'
+          `SELECT id, codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+                  solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+                  estado, atendida_por, unidad_lat, unidad_lng, distancia_km, eta_min, sincronizada_todas, created_at
+           FROM alertas_emergencias WHERE codigo = ?`
+        )
+        .get(codigo);
+
+      res.json({ ok: true, emergencia: updated });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/api/public/emergencias/:codigo/ubicacion', publicLimiter, (req, res, next) => {
+    try {
+      const codigo = String(req.params.codigo || '').trim().toUpperCase();
+      const { unidad_lat, unidad_lng } = req.body || {};
+      if (typeof unidad_lat !== 'number' || typeof unidad_lng !== 'number' || !Number.isFinite(unidad_lat) || !Number.isFinite(unidad_lng)) {
+        throw new HttpError(400, 'Coordenadas GPS de unidad inválidas');
+      }
+
+      const existing = db
+        .prepare('SELECT id, codigo, lat, lng FROM alertas_emergencias WHERE codigo = ?')
+        .get(codigo) as { id: number; codigo: string; lat: number | null; lng: number | null } | undefined;
+      if (!existing) {
+        throw new HttpError(404, 'Alerta de emergencia no encontrada');
+      }
+
+      const tLat = existing.lat ?? -13.5167;
+      const tLng = existing.lng ?? -71.9788;
+      const distKm = Number(Math.max(0.05, haversineKm(unidad_lat, unidad_lng, tLat, tLng)).toFixed(2));
+      const etaMin = distKm <= 0.12 ? 1 : Math.max(1, Math.round(distKm * 2.4 + 1));
+
+      db.prepare(`
+        UPDATE alertas_emergencias
+        SET unidad_lat = ?, unidad_lng = ?, distancia_km = ?, eta_min = ?
+        WHERE codigo = ?
+      `).run(unidad_lat, unidad_lng, distKm, etaMin, codigo);
+
+      void syncSnapshotToFirebaseRtdb(db);
+
+      const updated = db
+        .prepare(
+          `SELECT id, codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+                  solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+                  estado, atendida_por, unidad_lat, unidad_lng, distancia_km, eta_min, sincronizada_todas, created_at
+           FROM alertas_emergencias WHERE codigo = ?`
         )
         .get(codigo);
 

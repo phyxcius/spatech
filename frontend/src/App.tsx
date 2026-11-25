@@ -3,6 +3,7 @@ import { BadgeCheck, Briefcase, Compass, MapPinned, Moon, Shield, Siren, Sun, Us
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { BusinessPanel } from './components/BusinessPanel.tsx';
 import { ClientPortal } from './components/ClientPortal.tsx';
+import { EmergencyDispatchCenter } from './components/DispatchAndRouteModules.tsx';
 import { GlowingNotificationCardHost } from './components/GlowingNotificationCard.tsx';
 import { IdentityGateOverlay } from './components/IdentityGateOverlay.tsx';
 import { OrderTracking } from './components/OrderTracking.tsx';
@@ -13,11 +14,12 @@ import {
 import { isFirebaseRtdbMode, subscribeFirebaseRtdbMode } from './lib/firebaseRtdb.ts';
 import type { PedidoPublico, Rubro, SharedCustomerDoc } from './types.ts';
 
-type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'ADMIN';
+type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'CENTRAL_SOS' | 'ADMIN';
 
 export default function App() {
   const [view, setView] = useState<ViewMode>('CONCIERGE');
   const [darkMode, setDarkMode] = useState(true);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
   const [customerDoc, setCustomerDoc] = useState<SharedCustomerDoc | null>(null);
   const [identityGateOpen, setIdentityGateOpen] = useState(false);
   const [lastOrderCodigo, setLastOrderCodigo] = useState<string | null>(null);
@@ -32,6 +34,12 @@ export default function App() {
   const [rtdbMode, setRtdbMode] = useState(() => isFirebaseRtdbMode());
 
   useEffect(() => subscribeFirebaseRtdbMode(setRtdbMode), []);
+
+  useEffect(() => {
+    const onQuota = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuota);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuota);
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -76,6 +84,7 @@ export default function App() {
     { id: 'CONCIERGE', label: 'Concierge', icon: <Compass className="w-5 h-5" /> },
     { id: 'SEGUIMIENTO', label: 'Seguimiento', icon: <MapPinned className="w-5 h-5" /> },
     { id: 'NEGOCIO', label: 'Panel Negocio', icon: <Briefcase className="w-5 h-5" /> },
+    { id: 'CENTRAL_SOS', label: 'Central Emergencias', icon: <Siren className="w-5 h-5" /> },
     { id: 'ADMIN', label: 'Administración', icon: <Shield className="w-5 h-5" /> },
   ];
 
@@ -85,6 +94,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8F7F4] text-[#14171F] dark:bg-[#0B0E14] dark:text-[#F4F1EA] transition-colors">
+      {gmpQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
       {/* Overlay obligatorio al ingresar al sistema para validar DNI, RUC o Extranjero */}
       <IdentityGateOverlay
         isOpen={showIdentityGate}
@@ -222,19 +247,24 @@ export default function App() {
           <OrderTracking initialCodigo={lastOrderCodigo} clientPin={lastOrderPin} />
         )}
         {view === 'NEGOCIO' && <BusinessPanel />}
+        {view === 'CENTRAL_SOS' && (
+          <div className="pb-24 space-y-4">
+            <EmergencyDispatchCenter />
+          </div>
+        )}
         {view === 'ADMIN' && <AdminPanel />}
       </main>
 
       {/* Widget Flotante Circular del Avatar Humanoide Realista (sin bordes cuadrados, minimizable y cerrable) */}
       <FloatingAvatarWidget
-        hidden={view === 'NEGOCIO' || view === 'ADMIN'}
+        hidden={view === 'NEGOCIO' || view === 'ADMIN' || view === 'CENTRAL_SOS'}
         onAssistantDispatch={handleFloatingAssistantDispatch}
       />
 
       {/* Navegación Inferior Móvil (Zona de pulgar con icono SOS directo) */}
       <nav
         aria-label="Navegación principal móvil"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#F8F7F4]/95 dark:bg-[#0B0E14]/95 backdrop-blur-md border-t border-black/10 dark:border-white/10 grid grid-cols-5 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#F8F7F4]/95 dark:bg-[#0B0E14]/95 backdrop-blur-md border-t border-black/10 dark:border-white/10 grid grid-cols-6 items-center"
       >
         {navItems.map((item) => {
           const active = view === item.id;
@@ -248,8 +278,16 @@ export default function App() {
               }`}
             >
               {item.icon}
-              <span className="truncate max-w-[68px]">
-                {item.id === 'NEGOCIO' ? 'Negocio' : item.id === 'ADMIN' ? 'Admin' : item.label}
+              <span className="truncate max-w-[58px]">
+                {item.id === 'NEGOCIO'
+                  ? 'Negocio'
+                  : item.id === 'CENTRAL_SOS'
+                  ? 'Central'
+                  : item.id === 'ADMIN'
+                  ? 'Admin'
+                  : item.id === 'SEGUIMIENTO'
+                  ? 'Ruta'
+                  : item.label}
               </span>
             </button>
           );

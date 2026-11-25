@@ -376,6 +376,15 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
 
   ensureCols('alertas_emergencias', [
     ['entidad_objetivo', "TEXT NOT NULL DEFAULT 'SAMU'"],
+    ['solicitante_documento_tipo', 'TEXT'],
+    ['solicitante_documento_numero', 'TEXT'],
+    ['solicitante_nombre', 'TEXT'],
+    ['herido_nombre', 'TEXT'],
+    ['unidad_lat', 'REAL'],
+    ['unidad_lng', 'REAL'],
+    ['distancia_km', 'REAL'],
+    ['eta_min', 'INTEGER'],
+    ['sincronizada_todas', 'INTEGER NOT NULL DEFAULT 1'],
   ]);
 
   return db;

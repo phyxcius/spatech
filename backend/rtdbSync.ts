@@ -157,20 +157,31 @@ export async function hydrateDatabaseFromFirebaseRtdb(db: DatabaseSync): Promise
       if (!e || typeof e.codigo !== 'string') continue;
       db.prepare(`
         INSERT OR IGNORE INTO alertas_emergencias (
-          codigo, cliente_nombre, cliente_telefono, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por
+          codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+          solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+          estado, atendida_por, unidad_lat, unidad_lng, distancia_km, eta_min, sincronizada_todas
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         e.codigo,
         e.cliente_nombre || 'Huésped La Chuspa',
         e.cliente_telefono || '+51984000000',
+        e.solicitante_documento_tipo || null,
+        e.solicitante_documento_numero || null,
+        e.solicitante_nombre || e.cliente_nombre || 'Huésped La Chuspa',
+        e.herido_nombre || e.cliente_nombre || 'Huésped La Chuspa',
         e.ubicacion_texto || 'Cusco, Perú',
         typeof e.lat === 'number' ? e.lat : -13.5167,
         typeof e.lng === 'number' ? e.lng : -71.9788,
         e.mensaje || 'Asistencia prioritaria',
         e.entidad_objetivo || 'SAMU',
         e.estado === 'ATENDIDA' ? 'ATENDIDA' : 'ACTIVA',
-        e.atendida_por || null
+        e.atendida_por || null,
+        typeof e.unidad_lat === 'number' ? e.unidad_lat : null,
+        typeof e.unidad_lng === 'number' ? e.unidad_lng : null,
+        typeof e.distancia_km === 'number' ? e.distancia_km : null,
+        typeof e.eta_min === 'number' ? e.eta_min : null,
+        e.sincronizada_todas === 0 ? 0 : 1
       );
     }
 
@@ -272,7 +283,11 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
 
       const emergencias = db
         .prepare(
-          'SELECT id, codigo, cliente_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo, estado, atendida_por, created_at FROM alertas_emergencias ORDER BY id DESC LIMIT 50'
+          `SELECT id, codigo, cliente_nombre, cliente_telefono, solicitante_documento_tipo, solicitante_documento_numero,
+                  solicitante_nombre, herido_nombre, ubicacion_texto, lat, lng, mensaje, entidad_objetivo,
+                  estado, atendida_por, unidad_lat, unidad_lng, distancia_km, eta_min, sincronizada_todas, created_at
+           FROM alertas_emergencias
+           ORDER BY id DESC LIMIT 50`
         )
         .all() as Array<Record<string, any>>;
 
