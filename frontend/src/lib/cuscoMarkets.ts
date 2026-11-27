@@ -185,30 +185,299 @@ function normalizeText(text: string): string {
   return text
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+}
+
+export interface CuscoLandmark {
+  label: string;
+  lat: number;
+  lng: number;
+  aliases: string[];
+}
+
+export const CUSCO_LANDMARKS: CuscoLandmark[] = [
+  {
+    label: 'Aeropuerto Velasco Astete',
+    lat: -13.5357,
+    lng: -71.9388,
+    aliases: ['aeropuerto', 'velasco astete', 'airport'],
+  },
+  {
+    label: 'Terminal Terrestre Cusco',
+    lat: -13.5322,
+    lng: -71.9642,
+    aliases: ['terminal terrestre', 'terminal de buses', 'terminal cusco', 'terminal'],
+  },
+  {
+    label: 'Plaza de Armas Cusco',
+    lat: -13.5167,
+    lng: -71.9788,
+    aliases: ['plaza de armas', 'plaza mayor', 'centro historico'],
+  },
+  {
+    label: 'Real Plaza Cusco',
+    lat: -13.5249,
+    lng: -71.9508,
+    aliases: ['real plaza', 'mall cusco'],
+  },
+  {
+    label: 'Plaza Túpac Amaru',
+    lat: -13.5218,
+    lng: -71.9629,
+    aliases: ['tupac amaru', 'plaza tupac'],
+  },
+  {
+    label: 'Hospital Regional Cusco',
+    lat: -13.5236,
+    lng: -71.9577,
+    aliases: ['hospital regional', 'hospital'],
+  },
+  {
+    label: 'Hospital EsSalud Adolfo Guevara',
+    lat: -13.5241,
+    lng: -71.9598,
+    aliases: ['essalud', 'adolfo guevara', 'seguro social'],
+  },
+  {
+    label: 'San Blas, Cusco',
+    lat: -13.5142,
+    lng: -71.9746,
+    aliases: ['san blas', 'cuesta san blas'],
+  },
+  {
+    label: 'Wanchaq, Cusco',
+    lat: -13.5245,
+    lng: -71.9632,
+    aliases: ['wanchaq', 'estacion wanchaq', 'av la cultura', 'la cultura'],
+  },
+  {
+    label: 'Óvalo Pachacútec',
+    lat: -13.5266,
+    lng: -71.9675,
+    aliases: ['ovalo pachacutec', 'pachacutec', 'monumento pachacutec'],
+  },
+  {
+    label: 'Estadio Inca Garcilaso',
+    lat: -13.5256,
+    lng: -71.9667,
+    aliases: ['estadio garcilaso', 'estadio'],
+  },
+  {
+    label: 'Qorikancha · Av. El Sol',
+    lat: -13.5204,
+    lng: -71.9752,
+    aliases: ['qorikancha', 'koricancha', 'av el sol', 'avenida el sol'],
+  },
+  {
+    label: 'Sacsayhuamán',
+    lat: -13.5096,
+    lng: -71.9817,
+    aliases: ['sacsayhuaman', 'saqsaywaman'],
+  },
+  {
+    label: 'San Sebastián, Cusco',
+    lat: -13.5298,
+    lng: -71.9362,
+    aliases: ['san sebastian'],
+  },
+  {
+    label: 'Santiago, Cusco',
+    lat: -13.5248,
+    lng: -71.9862,
+    aliases: ['santiago', 'puente almudena'],
+  },
+  {
+    label: 'Larapa, San Jerónimo',
+    lat: -13.5364,
+    lng: -71.9114,
+    aliases: ['larapa', 'san jeronimo'],
+  },
+  {
+    label: 'Estación de Poroy',
+    lat: -13.4958,
+    lng: -72.0447,
+    aliases: ['poroy', 'estacion poroy'],
+  },
+  {
+    label: 'Ollantaytambo, Valle Sagrado',
+    lat: -13.2584,
+    lng: -72.2633,
+    aliases: ['ollantaytambo', 'ollantay'],
+  },
+  {
+    label: 'Urubamba, Valle Sagrado',
+    lat: -13.3046,
+    lng: -72.1167,
+    aliases: ['urubamba', 'valle sagrado'],
+  },
+];
+
+export function resolveCuscoDestination(
+  rawText: string,
+  originLat = -13.5167,
+  originLng = -71.9788
+): { label: string; lat: number; lng: number; matchedKnown: boolean } {
+  const clean = rawText.trim();
+  const norm = normalizeText(clean);
+  if (!norm) {
+    return {
+      label: 'Plaza de Armas Cusco',
+      lat: -13.5167,
+      lng: -71.9788,
+      matchedKnown: true,
+    };
+  }
+
+  for (const lm of CUSCO_LANDMARKS) {
+    if (lm.aliases.some((alias) => norm.includes(alias)) || normalizeText(lm.label) === norm) {
+      return { label: lm.label, lat: lm.lat, lng: lm.lng, matchedKnown: true };
+    }
+  }
+
+  // Coordenada determinística cercana dentro de Cusco para direcciones personalizadas
+  let hash = 0;
+  for (let i = 0; i < norm.length; i += 1) {
+    hash = (hash * 31 + norm.charCodeAt(i)) % 997;
+  }
+  const dLat = (((hash % 23) - 11) * 0.0014) || 0.008;
+  const dLng = ((((hash >> 3) % 23) - 11) * 0.0016) || -0.009;
+  const formatted = clean
+    .replace(/\s+/g, ' ')
+    .replace(/^(a|al|para|hasta|hacia|la|el)\s+/i, '')
+    .trim();
+  return {
+    label: formatted || clean,
+    lat: Number((originLat + dLat).toFixed(5)),
+    lng: Number((originLng + dLng).toFixed(5)),
+    matchedKnown: false,
+  };
+}
+
+export function extractCuscoDestination(query: string): string | null {
+  const cleanedRaw = query
+    .replace(/desde\s+mi\s+ubicaci[oó]n(?:\s+actual)?/gi, ' ')
+    .replace(/desde\s+aqu[ií]/gi, ' ')
+    .replace(/por\s+favor/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const norm = normalizeText(cleanedRaw);
+
+  // Primero buscar coincidencia exacta con lugares conocidos de Cusco
+  for (const lm of CUSCO_LANDMARKS) {
+    if (lm.aliases.some((alias) => norm.includes(alias))) {
+      return lm.label;
+    }
+  }
+
+  // Extraer frase después de "al / a la / para / hacia / hasta / rumbo a / a"
+  const destMatch = cleanedRaw.match(
+    /(?:rumbo\s+a|hacia|hasta|para|al|a\s+la|a\s+el|a)\s+([a-zA-Z0-9áéíóúñÁÉÍÓÚÑ°.\s-]{3,55})$/i
+  );
+  if (destMatch && destMatch[1]) {
+    const candidate = destMatch[1]
+      .replace(/^(la|el|los|las|un|una)\s+/i, '')
+      .trim();
+    const candNorm = normalizeText(candidate);
+    if (
+      candidate.length >= 3 &&
+      !['mi ubicacion', 'ubicacion', 'cusco', 'taxi', 'ciudad', 'algun punto'].includes(candNorm)
+    ) {
+      return candidate.charAt(0).toUpperCase() + candidate.slice(1);
+    }
+  }
+  return null;
+}
+
+export interface ConciergeIntentResult {
+  mode: 'TAXI' | 'MARKET' | 'DIVISAS' | 'CATALOG';
+  rubro: 'TRANSPORTE' | 'TURISMO' | 'HOTEL' | 'RESTAURANTE' | 'FARMACIA' | 'CASA_CAMBIO';
+  openOnly: boolean;
+  fromMyLocation: boolean;
+  destino: string | null;
+}
+
+export function detectConciergeIntent(query: string): ConciergeIntentResult {
+  const q = normalizeText(query);
+  const openOnly = /\b(abierta|abierto|abiertas|abiertos|de turno|turno|24h|24 horas|ahora)\b/.test(q);
+  const fromMyLocation = /\b(desde mi ubicacion|mi ubicacion|aqui donde estoy|desde aqui)\b/.test(q);
+  const destino = extractCuscoDestination(query);
+
+  const explicitTaxiRide = /\b(taxi|taxis|uber|indriver|indrive|movilidad|chofer|conductor|carrera|pasaje|traslado|llevame|llevarme)\b/.test(
+    q
+  );
+  const explicitFarmacia = /\b(farmacia|farmacias|botica|boticas|drogueria|soroche|oxigeno|pastilla|pastillas|medicina|medicinas|medicamento|medicamentos|jarabe|ibuprofeno|paracetamol|analgesico|botiquin)\b/.test(
+    q
+  );
+  const explicitRestaurante = /\b(restaurante|restaurantes|restaurant|comida|comer|almuerzo|cena|desayuno|ceviche|lomo|trucha|brasa|pollo|menu|chifa|pizzeria|cafeteria|ferreteria|ferreterias|clavos|tornillos|pinateria|veterinaria)\b/.test(
+    q
+  );
+  const explicitHotel = /\b(hotel|hoteles|hostal|hospedaje|alojamiento|habitacion|habitaciones|suite|spa|posada|day-use)\b/.test(
+    q
+  );
+  const explicitTurismo = /\b(tour|tours|turismo|guia|excursion|machu|picchu|valle sagrado|maras|moray|sacsayhuaman|vinicunca)\b/.test(
+    q
+  );
+  const explicitDivisas = /\b(casa de cambio|casas de cambio|cambiar dolares|cambiar euros|cambio|dolar|dolares|usd|eur|euro|euros|divisa|divisas|cambista)\b/.test(
+    q
+  );
+  const explicitMarket = /\b(market|markets|minimarket|minimarkets|bodega|bodegas|supermercado|abarrotes|viveres|leche|atun|arroz|aceite|pan|agua|azucar|huevos|fideos)\b/.test(
+    q
+  );
+
+  // 1. Si pide explícitamente un taxi / movilidad / traslado -> SOLO TAXIS
+  if (explicitTaxiRide) {
+    return {
+      mode: 'TAXI',
+      rubro: 'TRANSPORTE',
+      openOnly,
+      fromMyLocation,
+      destino,
+    };
+  }
+
+  // 2. Categorías explícitas de negocios (tienen prioridad sobre referencias geográficas como "cerca del aeropuerto/terminal/plaza")
+  if (explicitFarmacia) {
+    return { mode: 'CATALOG', rubro: 'FARMACIA', openOnly, fromMyLocation, destino };
+  }
+  if (explicitDivisas) {
+    return { mode: 'DIVISAS', rubro: 'CASA_CAMBIO', openOnly, fromMyLocation, destino };
+  }
+  if (explicitMarket) {
+    return { mode: 'MARKET', rubro: 'RESTAURANTE', openOnly, fromMyLocation, destino };
+  }
+  if (explicitRestaurante) {
+    return { mode: 'CATALOG', rubro: 'RESTAURANTE', openOnly, fromMyLocation, destino };
+  }
+  if (explicitHotel) {
+    return { mode: 'CATALOG', rubro: 'HOTEL', openOnly, fromMyLocation, destino };
+  }
+  if (explicitTurismo) {
+    return { mode: 'CATALOG', rubro: 'TURISMO', openOnly, fromMyLocation, destino };
+  }
+
+  // 3. Fallback si menciona transporte/destino sin pedir otro negocio
+  if (/\b(auto|carro|viaje|aeropuerto|terminal|estacion|poroy|ir al|ir a la|ir hasta)\b/.test(q)) {
+    return {
+      mode: 'TAXI',
+      rubro: 'TRANSPORTE',
+      openOnly,
+      fromMyLocation,
+      destino,
+    };
+  }
+
+  return { mode: 'CATALOG', rubro: 'RESTAURANTE', openOnly, fromMyLocation, destino };
 }
 
 export function detectIntentFromQuery(query: string): 'TAXI' | 'MARKET' | 'DIVISAS' | 'OTHER' {
-  const q = normalizeText(query);
-  if (
-    /\b(taxi|movilidad|auto|carro|uber|indriver|indrive|viaje|aeropuerto|traslado|terminal)\b/.test(q)
-  ) {
-    return 'TAXI';
-  }
-  if (
-    /\b(cambio|dolar|dolares|usd|eur|euro|euros|divisa|divisas|soles)\b/.test(q)
-  ) {
-    return 'DIVISAS';
-  }
-  if (
-    /\b(market|minimarket|bodega|tienda|supermercado|comprar|leche|atun|arroz|aceite|pan|agua|azucar|huevos|fideos|cafe)\b/.test(
-      q
-    )
-  ) {
-    return 'MARKET';
-  }
+  const parsed = detectConciergeIntent(query);
+  if (parsed.mode === 'TAXI') return 'TAXI';
+  if (parsed.mode === 'DIVISAS') return 'DIVISAS';
+  if (parsed.mode === 'MARKET') return 'MARKET';
   return 'OTHER';
 }
+
 
 export function parseMarketQuery(query: string): RequestedMarketItem[] {
   const q = normalizeText(query);

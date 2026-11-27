@@ -392,6 +392,12 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['sincronizada_todas', 'INTEGER NOT NULL DEFAULT 1'],
   ]);
 
+  db.exec(`
+    UPDATE negocios
+    SET abierto_24h = 1, horario_apertura = '00:00', horario_cierre = '23:59'
+    WHERE codigo IN ('NEG-FA-01', 'NEG-HO-01') AND abierto_24h = 0 AND horario_apertura = '07:00';
+  `);
+
   return db;
 }
 
@@ -409,8 +415,8 @@ export function seedDatabase(db: DatabaseSync): void {
   }
 
   const insertNegocio = db.prepare(`
-    INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido, calificacion)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0, ?)
+    INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0, ?, ?, ?, ?)
   `);
   const insertCred = db.prepare(
     'INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)'
@@ -567,6 +573,7 @@ export function seedDatabase(db: DatabaseSync): void {
 
   const negocioIds: Record<string, number> = {};
   for (const b of seedBusinesses) {
+    const is24h = b.codigo === 'NEG-FA-01' || b.codigo === 'NEG-HO-01';
     const res = insertNegocio.run(
       b.codigo,
       b.rubro,
@@ -577,7 +584,10 @@ export function seedDatabase(db: DatabaseSync): void {
       b.lng,
       b.zona,
       b.saldo,
-      b.calificacion
+      b.calificacion,
+      is24h ? '00:00' : '07:00',
+      is24h ? '23:59' : '22:30',
+      is24h ? 1 : 0
     );
     const id = Number(res.lastInsertRowid);
     negocioIds[b.codigo] = id;

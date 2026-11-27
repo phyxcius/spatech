@@ -1541,4 +1541,91 @@ test('14. Flujo taxi en 2 pasos: validar-pin no finaliza el viaje, activa ruta G
   }
 });
 
+test('15. Reglas del agente: taxi muestra solo taxis con destino correcto y farmacia abierta muestra solo farmacias abiertas', async () => {
+  const { server, req } = await startTestServer();
+  try {
+    const { detectConciergeIntent, resolveCuscoDestination } = await import(
+      '../frontend/src/lib/cuscoMarkets.ts'
+    );
+
+    // 1) Interpretación cliente: taxi a distintos destinos y desde ubicación
+    const intentUbic = detectConciergeIntent('Quiero un taxi Desde mi ubicación');
+    assert.equal(intentUbic.mode, 'TAXI');
+    assert.equal(intentUbic.rubro, 'TRANSPORTE');
+    assert.equal(intentUbic.fromMyLocation, true);
+
+    const intentTerminal = detectConciergeIntent('Quiero un taxi al terminal terrestre');
+    assert.equal(intentTerminal.mode, 'TAXI');
+    assert.equal(intentTerminal.destino, 'Terminal Terrestre Cusco');
+
+    const intentPlaza = detectConciergeIntent('Quiero un taxi para la plaza de armas');
+    assert.equal(intentPlaza.mode, 'TAXI');
+    assert.equal(intentPlaza.destino, 'Plaza de Armas Cusco');
+    const plazaCoords = resolveCuscoDestination('Plaza de Armas Cusco');
+    assert.equal(plazaCoords.label, 'Plaza de Armas Cusco');
+
+    const intentFarm = detectConciergeIntent('Quiero una farmacia abierta cerca del aeropuerto');
+    assert.equal(intentFarm.mode, 'CATALOG');
+    assert.equal(intentFarm.rubro, 'FARMACIA');
+    assert.equal(intentFarm.openOnly, true);
+
+    // 2) Backend /api/public/asistente: "quiero un taxi para la plaza de armas" -> SOLO TRANSPORTE
+    const taxiRes = await req('POST', '/api/public/asistente', {
+      query: 'quiero un taxi para la plaza de armas',
+      lat: -13.5228,
+      lng: -71.9648,
+    });
+    assert.equal(taxiRes.status, 200);
+    assert.equal(taxiRes.data.categoria, 'TRANSPORTE');
+    assert.equal(taxiRes.data.destino_sugerido, 'Plaza de Armas Cusco');
+    assert.ok(taxiRes.data.opciones.length > 0);
+    assert.ok(
+      taxiRes.data.opciones.every((o: any) => o.tipo === 'TAXI' && o.categoria === 'TRANSPORTE')
+    );
+
+    // 3) Backend /api/public/asistente: "quiero un taxi al terminal terrestre" -> SOLO TRANSPORTE
+    const terminalRes = await req('POST', '/api/public/asistente', {
+      query: 'quiero un taxi al terminal terrestre',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(terminalRes.status, 200);
+    assert.equal(terminalRes.data.categoria, 'TRANSPORTE');
+    assert.equal(terminalRes.data.destino_sugerido, 'Terminal Terrestre Cusco');
+    assert.ok(
+      terminalRes.data.opciones.every((o: any) => o.tipo === 'TAXI' && o.categoria === 'TRANSPORTE')
+    );
+
+    // 4) Backend /api/public/asistente: "quiero una farmacia abierta" -> SOLO FARMACIA abiertas, NUNCA taxis
+    const farmRes = await req('POST', '/api/public/asistente', {
+      query: 'quiero una farmacia abierta',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(farmRes.status, 200);
+    assert.equal(farmRes.data.categoria, 'FARMACIA');
+    assert.ok(farmRes.data.opciones.length > 0);
+    assert.ok(
+      farmRes.data.opciones.every(
+        (o: any) => o.categoria === 'FARMACIA' && o.tipo === 'CATALOGO' && o.abierto_ahora === true
+      )
+    );
+
+    // 5) Backend /api/public/asistente: "quiero una farmacia abierta cerca del aeropuerto" -> SOLO FARMACIA
+    const farmAeroRes = await req('POST', '/api/public/asistente', {
+      query: 'quiero una farmacia abierta cerca del aeropuerto',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(farmAeroRes.status, 200);
+    assert.equal(farmAeroRes.data.categoria, 'FARMACIA');
+    assert.ok(
+      farmAeroRes.data.opciones.every((o: any) => o.categoria === 'FARMACIA' && o.tipo === 'CATALOGO')
+    );
+  } finally {
+    server.close();
+  }
+});
+
+
 

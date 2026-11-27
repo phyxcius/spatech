@@ -23,8 +23,9 @@ import {
   X,
 } from 'lucide-react';
 import {
-  detectIntentFromQuery,
+  detectConciergeIntent,
   parseMarketQuery,
+  resolveCuscoDestination,
   type RequestedMarketItem,
 } from '../lib/cuscoMarkets.ts';
 import { apiFetch, speakSpanish, stopSpeaking, subscribeSpeechCadence } from '../lib/api.ts';
@@ -140,6 +141,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     'Toca al asistente y dime qué necesitas: taxi, restaurante, botica, tour o market.'
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
+  const [taxiOpciones, setTaxiOpciones] = useState<ConciergeOpcion[]>([]);
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
   const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
   const [selectedCatalogKey, setSelectedCatalogKey] = useState<string | null>(null);
@@ -337,18 +339,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     onRequestIdentityGate?.();
   }
 
-  // Precarga silenciosa de unidades reales y coordenadas de directorio en Cusco
+  // Precarga silenciosa de unidades reales de taxi y coordenadas de directorio en Cusco
   useEffect(() => {
     apiFetch<{ opciones?: ConciergeOpcion[] }>('/api/public/asistente', {
       method: 'POST',
       body: {
-        query: 'taxi ejecutivo aeropuerto',
+        query: 'taxi disponible desde mi ubicación',
         categoria: 'TRANSPORTE',
         lat: coords.lat,
         lng: coords.lng,
       },
     })
-      .then((res) => setOpciones(Array.isArray(res?.opciones) ? res.opciones : []))
+      .then((res) =>
+        setTaxiOpciones(
+          Array.isArray(res?.opciones)
+            ? res.opciones.filter((o) => o.tipo === 'TAXI' && o.categoria === 'TRANSPORTE')
+            : []
+        )
+      )
       .catch(() => {});
 
     apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio')
@@ -447,9 +455,18 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       }
     }
 
-    // 1. Detectar intención Market Abierto, Divisas, Taxi o Multinegocio
-    const intent = forcedCat ? (forcedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER') : detectIntentFromQuery(q);
-    if (intent === 'DIVISAS' || forcedCat === 'CASA_CAMBIO') {
+    // 1. Detectar intención estricta: Taxi, Market, Divisas o Categoría de Negocio
+    const parsedIntent = detectConciergeIntent(q);
+    const effectiveMode = forcedCat
+      ? forcedCat === 'TRANSPORTE'
+        ? 'TAXI'
+        : forcedCat === 'CASA_CAMBIO'
+          ? 'DIVISAS'
+          : 'CATALOG'
+      : parsedIntent.mode;
+    const effectiveRubro: Rubro = forcedCat ?? selectedRubro ?? parsedIntent.rubro;
+
+    if (effectiveMode === 'DIVISAS' || effectiveRubro === 'CASA_CAMBIO') {
       setSubTab('DIVISAS');
       const ms = Math.max(1, Math.round(performance.now() - t0));
       setLastResponseMs(ms);
@@ -470,7 +487,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       return;
     }
 
-    if (intent === 'MARKET') {
+    if (effectiveMode === 'MARKET' && !forcedCat) {
       const parsed = parseMarketQuery(q);
       setRequestedMarketItems(parsed);
       setConciergeMode('MARKET_MAP');
@@ -494,14 +511,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       return;
     }
 
-    // 2. Detectar intención Taxi InDrive / Geolocalización
-    if (intent === 'TAXI' || forcedCat === 'TRANSPORTE') {
+    // 2. Detectar intención Taxi InDrive / Geolocalización (SOLO taxis)
+    if (effectiveMode === 'TAXI' || effectiveRubro === 'TRANSPORTE') {
+      const nextDestino = parsedIntent.destino || '';
+      setDestino(nextDestino);
       setConciergeMode('TAXI_INDRIVE');
       setActiveCategory('TRANSPORTE');
-      if (gpsStatus !== 'live') requestGps();
-      if (q.toLowerCase().includes('aeropuerto')) setDestino('Aeropuerto Velasco Astete');
-      else if (q.toLowerCase().includes('real plaza')) setDestino('Real Plaza Cusco');
-      else if (q.toLowerCase().includes('terminal')) setDestino('Terminal Terrestre Cusco');
+      if (parsedIntent.fromMyLocation || gpsStatus !== 'live') requestGps();
 
       setLoading(true);
       try {
@@ -513,27 +529,32 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         }>('/api/public/asistente', {
           method: 'POST',
           body: {
-            query: q || 'taxi cusco',
+            query: q || 'taxi desde mi ubicación',
             categoria: 'TRANSPORTE',
             lat: coords.lat,
             lng: coords.lng,
-            destino: destino || undefined,
+            destino: nextDestino || undefined,
           },
         });
-        const opts = Array.isArray(res?.opciones) ? res.opciones : [];
-        setOpciones(opts);
-        if (res.destino_sugerido && !destino) setDestino(res.destino_sugerido);
+        const opts = Array.isArray(res?.opciones)
+          ? res.opciones.filter((o) => o.tipo === 'TAXI' && o.categoria === 'TRANSPORTE')
+          : [];
+        setTaxiOpciones(opts);
+        const resolvedDestText = nextDestino || res.destino_sugerido || '';
+        if (resolvedDestText && resolvedDestText !== nextDestino) {
+          setDestino(resolvedDestText);
+        }
         const ms = Math.max(1, Math.round(performance.now() - t0));
         setLastResponseMs(ms);
         const bestTaxi = opts.find((o) => o.mejor_precio) || opts[0];
         const msg = bestTaxi
-          ? `Mejor precio recomendado: ${bestTaxi.titulo} (${bestTaxi.negocio_nombre}) por ${formatSoles(bestTaxi.precio_centavos)}. Revisa los pines en el mapa.`
-          : 'Taxistas cercanos listos en el mapa. Propón tu tarifa o acepta la mejor oferta.';
+          ? `Solo taxis disponibles${resolvedDestText ? ` rumbo a ${resolvedDestText}` : ''}: ${bestTaxi.titulo} desde ${formatSoles(bestTaxi.precio_centavos)}. Revisa los pines en el mapa.`
+          : 'Taxistas cercanos listos en el mapa. Elige o escribe tu destino en Cusco.';
         setReplyText(msg);
         if (!silent) {
           emitCenterNotification({
             id: `concierge-taxi-${Date.now()}`,
-            title: 'Mejor Taxi Recomendado en Cusco',
+            title: resolvedDestText ? `Taxis hacia ${resolvedDestText}` : 'Taxis Disponibles en tu Ubicación',
             subtitle: bestTaxi
               ? `${bestTaxi.titulo} · ${formatSoles(bestTaxi.precio_centavos)}`
               : 'Taxistas geolocalizados en mapa',
@@ -547,7 +568,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       } catch {
         const ms = Math.max(1, Math.round(performance.now() - t0));
         setLastResponseMs(ms);
-        setReplyText('Mapa de taxistas listo en Cusco. Propón tu tarifa estilo InDrive.');
+        setReplyText('Mapa de taxistas listo en Cusco. Elige tu destino y confirma tu unidad.');
         if (!silent) {
           notifyDocumentAlertIfNeeded('Servicio de Taxi');
         }
@@ -557,8 +578,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       return;
     }
 
-    // 3. Otras categorías del concierge (Gastronomía, Botica, Turismo, Hoteles)
+    // 3. Otras categorías estrictas del concierge (Farmacia, Restaurante, Turismo, Hotel)
+    setOpciones([]);
+    setSelectedCatalogKey(null);
+    setActiveCategory(effectiveRubro);
     setConciergeMode('CATALOG');
+    if (parsedIntent.fromMyLocation || gpsStatus !== 'live') requestGps();
     setLoading(true);
     try {
       const res = await apiFetch<{
@@ -570,14 +595,17 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         method: 'POST',
         body: {
           query: q,
-          categoria: forcedCat ?? selectedRubro ?? undefined,
+          categoria: effectiveRubro,
           lat: coords.lat,
           lng: coords.lng,
-          destino: destino || undefined,
+          destino: parsedIntent.destino || undefined,
         },
       });
-      const safeOpciones = Array.isArray(res?.opciones) ? res.opciones : [];
-      setActiveCategory(res.categoria || 'RESTAURANTE');
+      const returnedCat = res.categoria || effectiveRubro;
+      const safeOpciones = (Array.isArray(res?.opciones) ? res.opciones : []).filter(
+        (op) => op.tipo !== 'TAXI' && op.categoria === returnedCat
+      );
+      setActiveCategory(returnedCat);
       setOpciones(safeOpciones);
       if (safeOpciones.length > 0) {
         const first = safeOpciones[0];
@@ -595,7 +623,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       if (!silent) {
         emitCenterNotification({
           id: `concierge-cat-${Date.now()}`,
-          title: `Agente La Chuspa · ${RUBRO_LABELS[res.categoria || 'RESTAURANTE']}`,
+          title: `Agente La Chuspa · ${RUBRO_LABELS[returnedCat]}`,
           subtitle: top
             ? `${top.titulo} · ${formatSoles(top.precio_centavos)}`
             : `${safeOpciones.length} opciones encontradas`,
@@ -604,7 +632,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           responseMs: ms,
           speakText: speakReplies && isDocValid ? richVoice : undefined,
         });
-        notifyDocumentAlertIfNeeded(RUBRO_LABELS[res.categoria || 'RESTAURANTE']);
+        notifyDocumentAlertIfNeeded(RUBRO_LABELS[returnedCat]);
       }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'No se pudo consultar el catálogo');
@@ -753,22 +781,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     const t0 = performance.now();
     try {
       if (selectedOption.tipo === 'TAXI' && selectedOption.unidad_id) {
-        const destLower = (destino || '').toLowerCase();
-        const isCuscoArea = Math.abs(coords.lat - -13.52) < 0.3 && Math.abs(coords.lng - -71.96) < 0.3;
-        const resolvedDest = destLower.includes('real plaza')
-          ? { lat: -13.5249, lng: -71.9508 }
-          : destLower.includes('terminal')
-            ? { lat: -13.5322, lng: -71.9642 }
-            : destLower.includes('hospital')
-              ? { lat: -13.5236, lng: -71.9577 }
-              : destLower.includes('armas')
-                ? { lat: -13.5167, lng: -71.9788 }
-                : isCuscoArea
-                  ? { lat: -13.5356, lng: -71.9388 }
-                  : {
-                      lat: Number((coords.lat - 0.0145).toFixed(5)),
-                      lng: Number((coords.lng + 0.0215).toFixed(5)),
-                    };
+        const resolvedDest = resolveCuscoDestination(
+          destino || 'Plaza de Armas Cusco',
+          coords.lat,
+          coords.lng
+        );
         const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
           '/api/public/taxi/pedir',
           {
@@ -970,21 +987,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       [0.0034, -0.0008],
       [-0.0029, 0.0009],
     ];
-    return opciones.map((op, idx) => {
-      const key = `${op.negocio_id}-${op.unidad_id || op.servicio_id || idx}`;
-      const biz = directorio.find((d) => d.id === op.negocio_id);
-      const [dLat, dLng] = offsets[idx % offsets.length];
-      const baseLat = biz?.lat ?? coords.lat;
-      const baseLng = biz?.lng ?? coords.lng;
-      const lat = Number((baseLat + (idx === 0 && biz?.lat ? 0 : dLat * 0.45)).toFixed(5));
-      const lng = Number((baseLng + (idx === 0 && biz?.lng ? 0 : dLng * 0.45)).toFixed(5));
-      const priceText =
-        op.tipo === 'DIVISA' && op.tasa_compra
-          ? `S/ ${op.tasa_compra.toFixed(3)}`
-          : formatSoles(op.precio_centavos);
-      return { key, op, lat, lng, priceText };
-    });
-  }, [opciones, directorio, coords.lat, coords.lng]);
+    return opciones
+      .filter((op) => op.tipo !== 'TAXI' && op.categoria === activeCategory)
+      .map((op, idx) => {
+        const key = `${op.negocio_id}-${op.unidad_id || op.servicio_id || idx}`;
+        const biz = directorio.find((d) => d.id === op.negocio_id);
+        const [dLat, dLng] = offsets[idx % offsets.length];
+        const baseLat = op.lat ?? biz?.lat ?? coords.lat;
+        const baseLng = op.lng ?? biz?.lng ?? coords.lng;
+        const hasRealCoords = Boolean(op.lat || biz?.lat);
+        const lat = Number((baseLat + (idx === 0 && hasRealCoords ? 0 : dLat * 0.25)).toFixed(5));
+        const lng = Number((baseLng + (idx === 0 && hasRealCoords ? 0 : dLng * 0.25)).toFixed(5));
+        const priceText =
+          op.tipo === 'DIVISA' && op.tasa_compra
+            ? `S/ ${op.tasa_compra.toFixed(3)}`
+            : formatSoles(op.precio_centavos);
+        return { key, op, lat, lng, priceText };
+      });
+  }, [opciones, activeCategory, directorio, coords.lat, coords.lng]);
 
   const catalogPins: GeoMapPin[] = useMemo(
     () =>
@@ -997,7 +1017,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         detailTitle: `${entry.op.titulo} · ${entry.op.negocio_nombre}`,
         tier: entry.op.mejor_precio ? 'cheapest' : idx % 3 === 2 ? 'high' : 'mid',
         kind: 'BUSINESS',
-        isOpen: true,
+        isOpen: entry.op.abierto_ahora !== false,
       })),
     [catalogMapEntries]
   );
@@ -1343,7 +1363,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           gpsLive={gpsStatus === 'live'}
           onRequestGps={requestGps}
           initialDestination={destino}
-          driverCatalog={opciones}
+          driverCatalog={taxiOpciones}
           speakEnabled={speakReplies}
           customerDoc={sharedCustomerDoc}
           onCustomerDocVerified={handleSharedDocSynced}
@@ -1492,6 +1512,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                           </div>
                           <div className="flex items-center justify-between gap-2 pt-1">
                             <span className="text-[10px] text-[#516478] dark:text-slate-400">
+                              <span className={entry.op.abierto_ahora !== false ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-rose-500 font-semibold'}>
+                                {entry.op.abierto_ahora !== false ? '● Abierto' : 'Cerrado'}
+                              </span>
+                              {' · '}
                               {entry.op.zona || 'Cusco'} · ★ {entry.op.calificacion.toFixed(1)}
                             </span>
                             <button

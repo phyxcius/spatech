@@ -9,6 +9,11 @@ import type {
 } from '../types.ts';
 import { buildClientFallbackPanelForRubro } from './aiPanelBuilder.ts';
 import {
+  detectConciergeIntent,
+  extractCuscoDestination,
+  resolveCuscoDestination,
+} from './cuscoMarkets.ts';
+import {
   formatPeruLookupError,
   type PeruDocumentLookupResult,
 } from './peruDocs.ts';
@@ -777,15 +782,81 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function isRtdbBusinessOpenNow(n?: RtdbNegocio): boolean {
+  if (!n) return true;
+  if (n.activo === 0 || n.en_linea === 0) return false;
+  if (n.abierto_24h === 1) return true;
+  let nowMin = 12 * 60;
+  try {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'America/Lima',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date());
+    const [h, m] = fmt.split(':').map(Number);
+    if (!Number.isNaN(h) && !Number.isNaN(m)) nowMin = h * 60 + m;
+  } catch {
+    // fallback
+  }
+  const parseMin = (val: string | undefined, fb: number) => {
+    if (!val || !/^\d{1,2}:\d{2}$/.test(val.trim())) return fb;
+    const [h, m] = val.trim().split(':').map(Number);
+    return h * 60 + m;
+  };
+  const openMin = parseMin(n.horario_apertura, 7 * 60);
+  const closeMin = parseMin(n.horario_cierre, 22 * 60 + 30);
+  if (closeMin >= openMin) return nowMin >= openMin && nowMin <= closeMin;
+  return nowMin >= openMin || nowMin <= closeMin;
+}
+
+const RTDB_STOP_WORDS = new Set([
+  'quiero',
+  'necesito',
+  'para',
+  'desde',
+  'hasta',
+  'hacia',
+  'ubicacion',
+  'busco',
+  'favor',
+  'cusco',
+  'una',
+  'uno',
+  'las',
+  'los',
+  'del',
+  'cerca',
+  'abierta',
+  'abierto',
+  'abiertas',
+  'abiertos',
+  'disponible',
+  'disponibles',
+  'ahora',
+  'hoy',
+  'aqui',
+  'ciudad',
+  'turno',
+  'farmacia',
+  'farmacias',
+  'botica',
+  'boticas',
+  'restaurante',
+  'restaurantes',
+  'hotel',
+  'hoteles',
+  'tour',
+  'tours',
+  'taxi',
+  'taxis',
+  'pedir',
+  'comprar',
+]);
+
 function inferCategoryFromQuery(q: string, forced?: Rubro): Rubro {
   if (forced) return forced;
-  const low = q.toLowerCase();
-  if (/soroche|oxigen|oxígen|pastilla|botica|farmacia|ibuprof|medic/.test(low)) return 'FARMACIA';
-  if (/ceviche|lomo|trucha|comer|cena|almuerzo|restaur|brasa|pisco|comida/.test(low)) return 'RESTAURANTE';
-  if (/tour|machu|valle|guia|guía|maras|moray|sacsay|excursi/.test(low)) return 'TURISMO';
-  if (/hotel|suite|habitaci|spa|alojam|noche/.test(low)) return 'HOTEL';
-  if (/dolar|dólar|euro|cambio|divisa|soles/.test(low)) return 'CASA_CAMBIO';
-  return 'TRANSPORTE';
+  return detectConciergeIntent(q).rubro;
 }
 
 function buildOptions(
@@ -796,85 +867,153 @@ function buildOptions(
   destino?: string,
   query?: string
 ): ConciergeOpcion[] {
-  if (cat === 'TRANSPORTE') {
-    const destLower = (destino || '').toLowerCase();
-    const tripKm = destLower.includes('ollantay')
-      ? 62
-      : destLower.includes('urubamba')
-        ? 52
-        : destLower.includes('aeropuerto') || destLower.includes('velasco')
-          ? 5.2
-          : 4.5;
+  const negociosList = toArray(snap.negocios);
+  const negById = new Map<number, RtdbNegocio>(negociosList.map((n) => [n.id, n]));
+  const normQ = (query || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const openOnly = /\b(abierta|abierto|abiertas|abiertos|de turno|turno|24h|24 horas|ahora)\b/.test(
+    normQ
+  );
 
-    const unidades = toArray(snap.unidades).filter((u) => u.certificada === 1 && u.estado === 'DISPONIBLE');
-    const taxiOpts = unidades.map((u) => {
-      const distKm = Number(haversineKm(lat, lng, u.lat, u.lng).toFixed(2));
-      const eta = Math.max(3, Math.round(distKm * 3.5 + 2));
-      const precio = Math.round(u.tarifa_base_centavos + u.tarifa_km_centavos * tripKm);
-      return {
-        tipo: 'TAXI' as const,
-        unidad_id: u.id,
-        negocio_id: u.negocio_id,
-        negocio_nombre: u.negocio_nombre,
-        categoria: 'TRANSPORTE' as const,
-        titulo: `${u.modelo} · ${u.conductor_nombre}`,
-        descripcion: `Placa ${u.placa} (${u.color}) · ${tripKm.toFixed(1)} km de ruta estimada`,
-        precio_centavos: precio,
-        calificacion: u.calificacion,
-        certificada: u.certificada === 1,
-        conductor_nombre: u.conductor_nombre,
-        distancia_km: distKm,
-        eta_min: eta,
-        placa: u.placa,
-        modelo: u.modelo,
-        mejor_precio: false,
-        disponible: true,
-      };
+  if (cat === 'TRANSPORTE') {
+    const destText = destino || extractCuscoDestination(query || '') || '';
+    const destCoords = destText ? resolveCuscoDestination(destText, lat, lng) : null;
+    const tripKm = destCoords
+      ? Math.max(1.5, Number(haversineKm(lat, lng, destCoords.lat, destCoords.lng).toFixed(2)))
+      : 3.5;
+
+    const unidades = toArray(snap.unidades).filter((u) => {
+      if (u.certificada !== 1 || u.estado !== 'DISPONIBLE') return false;
+      const biz = negById.get(u.negocio_id);
+      if (biz && (biz.activo === 0 || biz.en_linea === 0 || biz.rubro !== 'TRANSPORTE')) return false;
+      return true;
     });
+    const taxiOpts = unidades
+      .map((u) => {
+        const distKm = Number(haversineKm(lat, lng, u.lat, u.lng).toFixed(2));
+        const eta = Math.max(3, Math.round(distKm * 3.5 + 2));
+        const precio = Math.round(u.tarifa_base_centavos + u.tarifa_km_centavos * tripKm);
+        const biz = negById.get(u.negocio_id);
+        return {
+          tipo: 'TAXI' as const,
+          unidad_id: u.id,
+          negocio_id: u.negocio_id,
+          negocio_nombre: u.negocio_nombre,
+          categoria: 'TRANSPORTE' as const,
+          titulo: `${u.modelo} · ${u.conductor_nombre}`,
+          descripcion: `Placa ${u.placa} (${u.color}) · ${tripKm.toFixed(1)} km de ruta estimada`,
+          zona: biz?.zona || 'Cusco',
+          lat: u.lat,
+          lng: u.lng,
+          abierto_ahora: true,
+          horario: 'Disponible ahora',
+          precio_centavos: precio,
+          calificacion: u.calificacion,
+          certificada: u.certificada === 1,
+          conductor_nombre: u.conductor_nombre,
+          distancia_km: distKm,
+          eta_min: eta,
+          placa: u.placa,
+          modelo: u.modelo,
+          mejor_precio: false,
+          disponible: true,
+        };
+      })
+      .sort((a, b) => a.distancia_km - b.distancia_km || a.precio_centavos - b.precio_centavos);
     const minTaxi = taxiOpts.length > 0 ? Math.min(...taxiOpts.map((o) => o.precio_centavos)) : 0;
     return taxiOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minTaxi }));
   }
 
-  const allServices = toArray(snap.servicios).filter((s) => s.disponible === 1);
-  const byCat = allServices.filter((s) => s.categoria === cat);
-  const keywords = (query || '')
-    .toLowerCase()
+  if (cat === 'CASA_CAMBIO') {
+    const rates = toArray(snap.divisas).filter((d) => {
+      const biz = negById.get(d.negocio_id);
+      if (biz && (biz.activo === 0 || biz.en_linea === 0)) return false;
+      return !openOnly || isRtdbBusinessOpenNow(biz);
+    });
+    return rates.map((r, idx) => {
+      const biz = negById.get(r.negocio_id);
+      return {
+        tipo: 'DIVISA' as const,
+        negocio_id: r.negocio_id,
+        negocio_nombre: r.negocio_nombre,
+        categoria: 'CASA_CAMBIO' as const,
+        titulo: `${r.moneda_origen} / ${r.moneda_destino} · Compra ${r.tasa_compra.toFixed(3)} · Venta ${r.tasa_venta.toFixed(3)}`,
+        descripcion: `${r.zona} · Reserva de tasa con código de retiro`,
+        zona: r.zona,
+        lat: biz?.lat,
+        lng: biz?.lng,
+        abierto_ahora: isRtdbBusinessOpenNow(biz),
+        horario: biz?.abierto_24h ? '24 horas' : `${biz?.horario_apertura || '07:00'} - ${biz?.horario_cierre || '22:30'}`,
+        calificacion: biz?.calificacion || 4.9,
+        eta_min: 10,
+        precio_centavos: Math.round(r.tasa_compra * 100),
+        tasa_compra: r.tasa_compra,
+        tasa_venta: r.tasa_venta,
+        moneda_origen: r.moneda_origen,
+        mejor_precio: idx === 0,
+        disponible: true,
+      };
+    });
+  }
+
+  // Estricto por categoría: NUNCA mezcla rubros ni incluye taxis en otros rubros
+  const byCat = toArray(snap.servicios).filter((s) => {
+    if (s.disponible !== 1 || s.categoria !== cat) return false;
+    const biz = negById.get(s.negocio_id);
+    if (biz && (biz.activo === 0 || biz.en_linea === 0 || biz.rubro !== cat)) return false;
+    if (openOnly && !isRtdbBusinessOpenNow(biz)) return false;
+    return true;
+  });
+
+  const keywords = normQ
     .split(/\s+/)
-    .filter((w) => w.length >= 3);
+    .filter((w) => w.length >= 3 && !RTDB_STOP_WORDS.has(w));
   let selected = byCat;
   if (keywords.length > 0 && byCat.length > 0) {
-    const narrowed = byCat.filter((s) =>
-      keywords.some((kw) => `${s.nombre} ${s.descripcion} ${s.negocio_nombre}`.toLowerCase().includes(kw))
-    );
+    const narrowed = byCat.filter((s) => {
+      const biz = negById.get(s.negocio_id);
+      const hay = `${s.nombre} ${s.descripcion} ${s.negocio_nombre} ${biz?.tipo_negocio || ''}`
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+      return keywords.some((kw) => hay.includes(kw));
+    });
     if (narrowed.length > 0) selected = narrowed;
   }
-  if (selected.length === 0) {
-    const cross =
-      keywords.length > 0
-        ? allServices.filter((s) =>
-            keywords.some((kw) => `${s.nombre} ${s.descripcion} ${s.negocio_nombre}`.toLowerCase().includes(kw))
-          )
-        : [];
-    selected = cross.length > 0 ? cross : allServices.slice(0, 8);
-  }
+
   const catOpts = selected
-    .map((s) => ({
-      tipo: 'CATALOGO' as const,
-      servicio_id: s.id,
-      negocio_id: s.negocio_id,
-      negocio_nombre: s.negocio_nombre,
-      categoria: s.categoria,
-      titulo: s.nombre,
-      descripcion: `${s.negocio_nombre} (${s.zona}) · ${s.descripcion}`,
-      zona: s.zona,
-      precio_centavos: s.precio_centavos,
-      calificacion: s.calificacion,
-      eta_min: s.duracion_min,
-      stock: s.stock,
-      mejor_precio: false,
-      disponible: true,
-    }))
-    .sort((a, b) => a.precio_centavos - b.precio_centavos);
+    .map((s) => {
+      const biz = negById.get(s.negocio_id);
+      const openNow = isRtdbBusinessOpenNow(biz);
+      return {
+        tipo: 'CATALOGO' as const,
+        servicio_id: s.id,
+        negocio_id: s.negocio_id,
+        negocio_nombre: s.negocio_nombre,
+        categoria: s.categoria,
+        titulo: s.nombre,
+        descripcion: `${s.negocio_nombre} (${s.zona}) · ${s.descripcion}`,
+        zona: s.zona,
+        lat: biz?.lat,
+        lng: biz?.lng,
+        abierto_ahora: openNow,
+        horario: biz?.abierto_24h ? '24 horas' : `${biz?.horario_apertura || '07:00'} - ${biz?.horario_cierre || '22:30'}`,
+        precio_centavos: s.precio_centavos,
+        calificacion: s.calificacion,
+        distancia_km:
+          biz?.lat && biz?.lng ? Number(haversineKm(lat, lng, biz.lat, biz.lng).toFixed(2)) : undefined,
+        eta_min: s.duracion_min,
+        stock: s.stock,
+        mejor_precio: false,
+        disponible: true,
+      };
+    })
+    .sort((a, b) => {
+      if (a.abierto_ahora !== b.abierto_ahora) return a.abierto_ahora ? -1 : 1;
+      return a.precio_centavos - b.precio_centavos;
+    });
   const minCat = catOpts.length > 0 ? Math.min(...catOpts.map((o) => o.precio_centavos)) : 0;
   return catOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minCat }));
 }
@@ -1041,21 +1180,19 @@ export async function handleFirebaseRtdbRequest<T>(
     const lng = Number(payload.lng) || -71.9788;
     const destino = payload.destino
       ? String(payload.destino)
-      : q.toLowerCase().includes('aeropuerto')
-        ? 'Aeropuerto Velasco Astete'
-        : undefined;
+      : extractCuscoDestination(q) || undefined;
     const opciones = buildOptions(snap, cat, lat, lng, destino, q);
     const top = opciones[0];
 
-    let respuestaVoz = `Encontré ${opciones.length} opciones verificadas en Cusco para comparar precios.`;
+    let respuestaVoz = `No encontramos opciones disponibles en ${cat.toLowerCase()}.`;
     if (cat === 'TRANSPORTE' && top) {
-      respuestaVoz = `Unidad VIP disponible: ${top.titulo}, a ${top.eta_min ?? 4} minutos, tarifa estimada ${(top.precio_centavos / 100).toFixed(2)} soles.`;
+      respuestaVoz = `Unidades de taxi disponibles${destino ? ` rumbo a ${destino}` : ''}: ${top.titulo}, a ${top.eta_min ?? 4} minutos, tarifa estimada ${(top.precio_centavos / 100).toFixed(2)} soles.`;
     } else if (top) {
-      respuestaVoz = `Listo. En ${top.negocio_nombre} te recomiendo ${top.titulo} por ${(top.precio_centavos / 100).toFixed(2)} soles.`;
+      respuestaVoz = `Encontramos ${opciones.length} opciones de ${cat.toLowerCase()}. En ${top.negocio_nombre}: ${top.titulo} por ${(top.precio_centavos / 100).toFixed(2)} soles.`;
     }
 
     return {
-      categoria: top?.categoria || cat,
+      categoria: cat,
       respuesta_voz: respuestaVoz,
       destino_sugerido: destino,
       ai_error: null,

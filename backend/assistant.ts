@@ -33,22 +33,169 @@ function normalizeText(input: string): string {
     .trim();
 }
 
-export function inferCategoryFromText(query: string): Rubro {
+const STOP_SEARCH_WORDS = new Set([
+  'quiero',
+  'necesito',
+  'para',
+  'desde',
+  'hasta',
+  'hacia',
+  'ubicacion',
+  'busco',
+  'favor',
+  'cusco',
+  'una',
+  'uno',
+  'unos',
+  'unas',
+  'las',
+  'los',
+  'del',
+  'cerca',
+  'abierta',
+  'abierto',
+  'abiertas',
+  'abiertos',
+  'disponible',
+  'disponibles',
+  'ahora',
+  'hoy',
+  'aqui',
+  'ciudad',
+  'turno',
+  'farmacia',
+  'farmacias',
+  'botica',
+  'boticas',
+  'restaurante',
+  'restaurantes',
+  'hotel',
+  'hoteles',
+  'tour',
+  'tours',
+  'taxi',
+  'taxis',
+  'pedir',
+  'comprar',
+]);
+
+const SERVER_CUSCO_DESTINATIONS: Array<{ label: string; lat: number; lng: number; aliases: string[] }> = [
+  { label: 'Aeropuerto Velasco Astete', lat: -13.5357, lng: -71.9388, aliases: ['aeropuerto', 'velasco astete'] },
+  { label: 'Terminal Terrestre Cusco', lat: -13.5322, lng: -71.9642, aliases: ['terminal terrestre', 'terminal'] },
+  { label: 'Plaza de Armas Cusco', lat: -13.5167, lng: -71.9788, aliases: ['plaza de armas', 'plaza mayor'] },
+  { label: 'Real Plaza Cusco', lat: -13.5249, lng: -71.9508, aliases: ['real plaza'] },
+  { label: 'Plaza Túpac Amaru', lat: -13.5218, lng: -71.9629, aliases: ['tupac amaru'] },
+  { label: 'Hospital Regional Cusco', lat: -13.5236, lng: -71.9577, aliases: ['hospital regional', 'hospital'] },
+  { label: 'San Blas, Cusco', lat: -13.5142, lng: -71.9746, aliases: ['san blas'] },
+  { label: 'Wanchaq, Cusco', lat: -13.5245, lng: -71.9632, aliases: ['wanchaq', 'la cultura'] },
+  { label: 'Óvalo Pachacútec', lat: -13.5266, lng: -71.9675, aliases: ['ovalo pachacutec', 'pachacutec'] },
+  { label: 'Estación de Poroy', lat: -13.4958, lng: -72.0447, aliases: ['poroy'] },
+  { label: 'Ollantaytambo, Valle Sagrado', lat: -13.2584, lng: -72.2633, aliases: ['ollantaytambo', 'ollantay'] },
+  { label: 'Urubamba, Valle Sagrado', lat: -13.3046, lng: -72.1167, aliases: ['urubamba', 'valle sagrado'] },
+];
+
+function extractServerDestination(query: string, explicitDestino?: string): {
+  label: string;
+  lat: number | null;
+  lng: number | null;
+} {
+  const source = (explicitDestino || query || '').trim();
+  const norm = normalizeText(
+    source.replace(/desde\s+mi\s+ubicaci[oó]n(?:\s+actual)?/gi, ' ')
+  );
+  for (const lm of SERVER_CUSCO_DESTINATIONS) {
+    if (lm.aliases.some((alias) => norm.includes(alias))) {
+      return { label: lm.label, lat: lm.lat, lng: lm.lng };
+    }
+  }
+  if (explicitDestino?.trim()) {
+    return { label: explicitDestino.trim(), lat: null, lng: null };
+  }
+  const match = source
+    .replace(/desde\s+mi\s+ubicaci[oó]n(?:\s+actual)?/gi, ' ')
+    .match(/(?:rumbo\s+a|hacia|hasta|para|al|a\s+la|a\s+el|a)\s+([a-zA-Z0-9áéíóúñÁÉÍÓÚÑ°.\s-]{3,55})$/i);
+  if (match && match[1]) {
+    const clean = match[1].replace(/^(la|el|los|las)\s+/i, '').trim();
+    if (clean.length >= 3 && !['mi ubicacion', 'ubicacion', 'cusco'].includes(normalizeText(clean))) {
+      return { label: clean.charAt(0).toUpperCase() + clean.slice(1), lat: null, lng: null };
+    }
+  }
+  return { label: '', lat: null, lng: null };
+}
+
+function getLimaMinutesNow(): number {
+  try {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'America/Lima',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date());
+    const [h, m] = fmt.split(':').map(Number);
+    if (!Number.isNaN(h) && !Number.isNaN(m)) return h * 60 + m;
+  } catch {
+    // fallback UTC-5
+  }
+  const now = new Date();
+  const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return (utcMin - 5 * 60 + 24 * 60) % (24 * 60);
+}
+
+function parseHHMM(val: string | undefined, fallbackMin: number): number {
+  if (!val || !/^\d{1,2}:\d{2}$/.test(val.trim())) return fallbackMin;
+  const [h, m] = val.trim().split(':').map(Number);
+  return h * 60 + m;
+}
+
+export function isBusinessOpenNow(params: {
+  en_linea?: number;
+  abierto_24h?: number;
+  horario_apertura?: string;
+  horario_cierre?: string;
+}): boolean {
+  if (params.en_linea === 0) return false;
+  if (params.abierto_24h === 1) return true;
+  const nowMin = getLimaMinutesNow();
+  const openMin = parseHHMM(params.horario_apertura, 7 * 60);
+  const closeMin = parseHHMM(params.horario_cierre, 22 * 60 + 30);
+  if (closeMin >= openMin) {
+    return nowMin >= openMin && nowMin <= closeMin;
+  }
+  // Horario nocturno que cruza medianoche
+  return nowMin >= openMin || nowMin <= closeMin;
+}
+
+function detectExplicitCategoryOrNull(query: string): Rubro | null {
   const q = normalizeText(query);
-  if (/(taxi|uber|indrive|auto|movilidad|aeropuerto|traslado|carro|chofer|estacion|poroy)/.test(q)) {
+  // 1. Si pide taxi / movilidad / traslado explícitamente -> SIEMPRE TRANSPORTE
+  if (/(taxi|taxis|uber|indriver|indrive|movilidad|chofer|conductor|carrera|traslado|llevame|llevarme)/.test(q)) {
     return 'TRANSPORTE';
   }
-  if (/(tour|guia|machu|picchu|valle|sagrado|maras|moray|excursion|sacsayhuaman|vinicunca)/.test(q)) {
-    return 'TURISMO';
-  }
-  if (/(farmacia|botica|soroche|oxigeno|pastilla|medicina|dolor|muna|salud|botiquin|jarabe)/.test(q)) {
+  // 2. Categorías explícitas de comercio tienen prioridad sobre destinos ("farmacia cerca del aeropuerto")
+  if (/(farmacia|farmacias|botica|boticas|drogueria|soroche|oxigeno|pastilla|pastillas|medicina|medicinas|medicamento|medicamentos|jarabe|ibuprofeno|paracetamol|analgesico|botiquin)/.test(q)) {
     return 'FARMACIA';
   }
-  if (/(hotel|suite|habitacion|hospedaje|spa|day-use|cama|alojamiento|nazarenas)/.test(q)) {
+  if (/(cambio|dolar|dolares|euro|euros|divisa|divisas|usd|eur|cambista)/.test(q)) {
+    return 'CASA_CAMBIO';
+  }
+  if (/(hotel|hoteles|hostal|hospedaje|alojamiento|habitacion|habitaciones|suite|spa|day-use|posada)/.test(q)) {
     return 'HOTEL';
   }
-  if (/(cambio|dolar|dolares|euro|euros|divisa|usd|eur|soles|cambista)/.test(q)) {
-    return 'CASA_CAMBIO';
+  if (/(tour|tours|turismo|guia|machu|picchu|valle sagrado|maras|moray|excursion|sacsayhuaman|vinicunca)/.test(q)) {
+    return 'TURISMO';
+  }
+  if (/(restaurante|restaurantes|restaurant|ceviche|lomo|trucha|comer|cena|almuerzo|desayuno|brasa|pollo|comida|ferreteria|clavos|tornillos|pinateria)/.test(q)) {
+    return 'RESTAURANTE';
+  }
+  return null;
+}
+
+export function inferCategoryFromText(query: string): Rubro {
+  const explicit = detectExplicitCategoryOrNull(query);
+  if (explicit) return explicit;
+  const q = normalizeText(query);
+  if (/(auto|carro|aeropuerto|terminal|estacion|poroy|viaje|ir al|ir a la|ir hasta)/.test(q)) {
+    return 'TRANSPORTE';
   }
   return 'RESTAURANTE';
 }
@@ -66,12 +213,17 @@ export async function runConciergeSearch(
   const userLat = typeof params.lat === 'number' && !Number.isNaN(params.lat) ? params.lat : -13.5167;
   const userLng = typeof params.lng === 'number' && !Number.isNaN(params.lng) ? params.lng : -71.9788;
 
+  const explicitCategory = detectExplicitCategoryOrNull(params.query);
   let detectedCategory: Rubro = params.categoria || inferCategoryFromText(params.query);
-  let searchKeywords = normalizeText(params.query)
+  const normQuery = normalizeText(params.query);
+  const openOnly = /\b(abierta|abierto|abiertas|abiertos|de turno|turno|24h|24 horas|ahora)\b/.test(
+    normQuery
+  );
+  let searchKeywords = normQuery
     .split(/\s+/)
-    .filter((w) => w.length >= 3 && !['quiero', 'necesito', 'para', 'desde', 'hasta', 'ubicacion', 'busco', 'favor', 'cusco'].includes(w));
-  let conciergeReply = '';
-  let destinoExtraido = params.destino?.trim() || '';
+    .filter((w) => w.length >= 3 && !STOP_SEARCH_WORDS.has(w));
+  const extractedDest = extractServerDestination(params.query, params.destino);
+  let destinoExtraido = extractedDest.label;
   let aiUsed = false;
   let aiError: string | null = null;
 
@@ -87,7 +239,7 @@ export async function runConciergeSearch(
         contents: `Consulta del usuario en Cusco, Perú: "${params.query}"`,
         config: {
           systemInstruction:
-            'Eres el concierge de lujo de La Chuspa en Cusco, Perú. Clasifica la intención en exactamente una categoría (TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO), extrae palabras clave de búsqueda y destino si es traslado, y redacta una respuesta breve, cordial y refinada en español (máximo 22 palabras).',
+            'Eres el concierge de La Chuspa en Cusco, Perú. Clasifica estrictamente la intención en exactamente una categoría (TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO). Regla estricta: si pide farmacia/botica/medicinas usa FARMACIA aunque mencione un lugar como aeropuerto o plaza; si pide taxi/movilidad/traslado usa TRANSPORTE; nunca mezcles categorías. NO inventes ni menciones nombres de marcas o negocios externos; solo extrae palabras clave del producto/servicio y el destino si pide traslado.',
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -108,16 +260,16 @@ export async function runConciergeSearch(
         respuesta_breve?: string;
       };
       if (parsed.categoria && RUBROS.includes(parsed.categoria as Rubro)) {
-        detectedCategory = parsed.categoria as Rubro;
+        // Guardrail: respetar categoría explícita de la orden del usuario
+        detectedCategory = explicitCategory || (parsed.categoria as Rubro);
       }
       if (Array.isArray(parsed.palabras_clave) && parsed.palabras_clave.length > 0) {
-        searchKeywords = parsed.palabras_clave.map(normalizeText).filter((w) => w.length >= 2);
+        searchKeywords = parsed.palabras_clave
+          .map(normalizeText)
+          .filter((w) => w.length >= 2 && !STOP_SEARCH_WORDS.has(w));
       }
       if (parsed.destino && !destinoExtraido) {
         destinoExtraido = parsed.destino;
-      }
-      if (parsed.respuesta_breve) {
-        conciergeReply = parsed.respuesta_breve;
       }
       aiUsed = true;
     } catch (err) {
@@ -125,11 +277,15 @@ export async function runConciergeSearch(
     }
   }
 
-  // Si es TRANSPORTE: buscar unidades de conductores activas y certificadas con distancia Haversine
+  // Si es TRANSPORTE: buscar SOLO unidades de conductores activas y certificadas con distancia Haversine
   if (detectedCategory === 'TRANSPORTE') {
-    const tripKmEstimate = destinoExtraido
-      ? Math.max(2.4, Math.min(18, 2.5 + (destinoExtraido.length % 7) * 0.9))
-      : 3.2;
+    const destResolved = extractServerDestination(params.query, destinoExtraido);
+    const tripKmEstimate =
+      destResolved.lat !== null && destResolved.lng !== null
+        ? Math.max(1.5, haversineKm(userLat, userLng, destResolved.lat, destResolved.lng))
+        : destinoExtraido
+          ? Math.max(2.4, Math.min(18, 2.5 + (destinoExtraido.length % 7) * 0.9))
+          : 3.2;
 
     const units = db
       .prepare(`
@@ -172,6 +328,11 @@ export async function runConciergeSearch(
           categoria: 'TRANSPORTE' as const,
           titulo: `${u.modelo} · ${u.conductor_nombre}`,
           descripcion: `Placa ${u.placa} · ${u.color} · ${u.certificada ? 'Unidad certificada' : 'En revisión'}`,
+          zona: u.zona,
+          lat: u.lat,
+          lng: u.lng,
+          abierto_ahora: true,
+          horario: 'Disponible ahora',
           placa: u.placa,
           modelo: u.modelo,
           conductor_nombre: u.conductor_nombre,
@@ -193,25 +354,29 @@ export async function runConciergeSearch(
 
     return {
       categoria: 'TRANSPORTE' as const,
-      destino_sugerido: destinoExtraido || 'Aeropuerto / Centro Histórico',
-      distancia_estimada_km: tripKmEstimate,
+      destino_sugerido: destinoExtraido || undefined,
+      distancia_estimada_km: Number(tripKmEstimate.toFixed(2)),
       respuesta_voz:
-        conciergeReply ||
-        `Encontramos ${enriched.length} unidades ejecutivas disponibles cerca de ti desde S/ ${(minPrice / 100).toFixed(2)}.`,
+        enriched.length > 0
+          ? `Encontramos ${enriched.length} unidades de taxi disponibles cerca de tu ubicación${
+              destinoExtraido ? ` rumbo a ${destinoExtraido}` : ''
+            } desde S/ ${(minPrice / 100).toFixed(2)}.`
+          : `No hay unidades de taxi disponibles en este momento.`,
       ai_used: aiUsed,
       ai_error: aiError,
       opciones: enriched,
     };
   }
 
-  // Si es CASA_CAMBIO: mostrar tasas de cambio activas
+  // Si es CASA_CAMBIO: mostrar SOLO tasas de cambio activas
   if (detectedCategory === 'CASA_CAMBIO') {
     const rates = db
       .prepare(`
-        SELECT a.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng
+        SELECT a.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng,
+               n.horario_apertura, n.horario_cierre, n.abierto_24h, n.en_linea
         FROM agentes_cambio a
         JOIN negocios n ON n.id = a.negocio_id
-        WHERE n.rubro = 'CASA_CAMBIO' AND n.activo = 1 AND a.disponible = 1
+        WHERE n.rubro = 'CASA_CAMBIO' AND n.activo = 1 AND n.en_linea = 1 AND a.disponible = 1
         ORDER BY a.tasa_compra DESC
       `)
       .all() as Array<{
@@ -224,22 +389,36 @@ export async function runConciergeSearch(
       tasa_venta: number;
       zona: string;
       calificacion: number;
+      lat: number;
+      lng: number;
+      horario_apertura?: string;
+      horario_cierre?: string;
+      abierto_24h?: number;
+      en_linea?: number;
     }>;
+
+    const filteredRates = openOnly ? rates.filter((r) => isBusinessOpenNow(r)) : rates;
 
     return {
       categoria: 'CASA_CAMBIO' as const,
       respuesta_voz:
-        conciergeReply ||
-        `Tenemos ${rates.length} cotizaciones verificadas en casas de cambio autorizadas de Cusco.`,
+        filteredRates.length > 0
+          ? `Tenemos ${filteredRates.length} cotizaciones verificadas en casas de cambio autorizadas de Cusco.`
+          : `No hay casas de cambio disponibles en este horario.`,
       ai_used: aiUsed,
       ai_error: aiError,
-      opciones: rates.map((r, idx) => ({
+      opciones: filteredRates.map((r, idx) => ({
         tipo: 'DIVISA' as const,
         negocio_id: r.negocio_id,
         negocio_nombre: r.negocio_nombre,
         categoria: 'CASA_CAMBIO' as const,
         titulo: `${r.moneda_origen} / ${r.moneda_destino} · Compra ${r.tasa_compra.toFixed(3)} · Venta ${r.tasa_venta.toFixed(3)}`,
         descripcion: `${r.zona} · Reserva de tasa con código de retiro`,
+        zona: r.zona,
+        lat: r.lat,
+        lng: r.lng,
+        abierto_ahora: isBusinessOpenNow(r),
+        horario: r.abierto_24h ? '24 horas' : `${r.horario_apertura || '07:00'} - ${r.horario_cierre || '22:30'}`,
         calificacion: r.calificacion,
         eta_min: 10,
         precio_centavos: Math.round(r.tasa_compra * 100),
@@ -252,10 +431,11 @@ export async function runConciergeSearch(
     };
   }
 
-  // Resto de categorías: consulta ESTRICTA filtrada por categoria === n.rubro
+  // Resto de categorías: consulta ESTRICTA filtrada por categoria === n.rubro (NUNCA mezcla otros rubros)
   const rows = db
     .prepare(`
-      SELECT s.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng
+      SELECT s.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng,
+             n.horario_apertura, n.horario_cierre, n.abierto_24h, n.en_linea, n.tipo_negocio
       FROM servicios_catalogo s
       JOIN negocios n ON n.id = s.negocio_id
       WHERE s.categoria = ? AND n.rubro = ? AND n.activo = 1 AND n.en_linea = 1 AND s.disponible = 1 AND s.stock > 0
@@ -275,13 +455,28 @@ export async function runConciergeSearch(
     calificacion: number;
     lat: number;
     lng: number;
+    horario_apertura?: string;
+    horario_cierre?: string;
+    abierto_24h?: number;
+    en_linea?: number;
+    tipo_negocio?: string;
   }>;
 
+  const withOpenFlag = rows.map((r) => ({
+    ...r,
+    abiertoAhora: isBusinessOpenNow(r),
+  }));
+
+  // Si el usuario pidió explícitamente negocios "abiertos", filtrar SOLO a los abiertos ahora
+  const openScoped = openOnly ? withOpenFlag.filter((r) => r.abiertoAhora) : withOpenFlag;
+
   // Filtro tolerante por palabras clave dentro de la MISMA categoría
-  let matched = rows;
-  if (searchKeywords.length > 0) {
-    const filtered = rows.filter((item) => {
-      const hay = normalizeText(`${item.nombre} ${item.descripcion} ${item.negocio_nombre}`);
+  let matched = openScoped;
+  if (searchKeywords.length > 0 && openScoped.length > 0) {
+    const filtered = openScoped.filter((item) => {
+      const hay = normalizeText(
+        `${item.nombre} ${item.descripcion} ${item.negocio_nombre} ${item.tipo_negocio || ''}`
+      );
       return searchKeywords.some((kw) => hay.includes(kw));
     });
     if (filtered.length > 0) {
@@ -289,40 +484,24 @@ export async function runConciergeSearch(
     }
   }
 
-  // Fallback universal: si no hubo resultados en la categoría detectada, buscar en todo el catálogo activo
-  if (matched.length === 0) {
-    const allRows = db
-      .prepare(`
-        SELECT s.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng
-        FROM servicios_catalogo s
-        JOIN negocios n ON n.id = s.negocio_id
-        WHERE n.activo = 1 AND n.en_linea = 1 AND s.disponible = 1 AND s.stock > 0
-        ORDER BY s.precio_centavos ASC
-      `)
-      .all() as typeof rows;
-
-    if (searchKeywords.length > 0) {
-      const crossMatched = allRows.filter((item) => {
-        const hay = normalizeText(
-          `${item.nombre} ${item.descripcion} ${item.negocio_nombre} ${item.categoria}`
-        );
-        return searchKeywords.some((kw) => hay.includes(kw));
-      });
-      matched = crossMatched.length > 0 ? crossMatched : allRows.slice(0, 8);
-    } else {
-      matched = allRows.slice(0, 8);
-    }
-  }
+  // Ordenar: primero los abiertos ahora, luego menor distancia / precio
+  matched.sort((a, b) => {
+    if (a.abiertoAhora !== b.abiertoAhora) return a.abiertoAhora ? -1 : 1;
+    return a.precio_centavos - b.precio_centavos;
+  });
 
   const minPrice = matched.length > 0 ? Math.min(...matched.map((r) => r.precio_centavos)) : 0;
 
   return {
-    categoria: matched[0]?.categoria || detectedCategory,
+    categoria: detectedCategory,
     respuesta_voz:
-      conciergeReply ||
-      (matched.length > 0
-        ? `Seleccionamos ${matched.length} opciones verificadas para comparar precios desde S/ ${(minPrice / 100).toFixed(2)}.`
-        : `No encontramos disponibilidad inmediata en ${detectedCategory.toLowerCase()}.`),
+      matched.length > 0
+        ? `Encontramos ${matched.length} opciones de ${detectedCategory.toLowerCase()} ${
+            openOnly ? 'abiertas ahora ' : ''
+          }en ${matched[0].negocio_nombre} desde S/ ${(minPrice / 100).toFixed(2)}.`
+        : `No encontramos disponibilidad inmediata en ${detectedCategory.toLowerCase()}${
+            openOnly ? ' abierta en este horario' : ''
+          }.`,
     ai_used: aiUsed,
     ai_error: aiError,
     opciones: matched.map((r) => ({
@@ -334,6 +513,10 @@ export async function runConciergeSearch(
       titulo: r.nombre,
       descripcion: r.descripcion,
       zona: r.zona,
+      lat: r.lat,
+      lng: r.lng,
+      abierto_ahora: r.abiertoAhora,
+      horario: r.abierto_24h ? '24 horas' : `${r.horario_apertura || '07:00'} - ${r.horario_cierre || '22:30'}`,
       calificacion: r.calificacion,
       distancia_km: haversineKm(userLat, userLng, r.lat, r.lng),
       eta_min: r.duracion_min,

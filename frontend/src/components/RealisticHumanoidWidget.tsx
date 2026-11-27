@@ -16,7 +16,7 @@ import {
   subscribeAvatarSpeech,
 } from '../lib/heygenAvatar.ts';
 import { apiFetch, playLuxuryChime, subscribeSpeechCadence } from '../lib/api.ts';
-import { detectIntentFromQuery } from '../lib/cuscoMarkets.ts';
+import { detectConciergeIntent, detectIntentFromQuery } from '../lib/cuscoMarkets.ts';
 import { formatSoles, type ConciergeOpcion, type Rubro } from '../types.ts';
 
 export interface AssistantDispatchEvent {
@@ -307,8 +307,8 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
     const t0 = performance.now();
 
     try {
-      const intent = detectIntentFromQuery(clean);
-      if (intent === 'DIVISAS') {
+      const parsedIntent = detectConciergeIntent(clean);
+      if (parsedIntent.mode === 'DIVISAS') {
         const ms = Math.max(1, Math.round(performance.now() - t0));
         const reply =
           'Abriendo cotizador de casas de cambio verificadas en Cusco para reservar tu tasa.';
@@ -316,11 +316,11 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
         if (!muted) {
           await controllerRef.current?.speak(reply);
         }
-        onAssistantDispatch({ query: clean, intent: 'DIVISAS', reply, responseMs: ms });
+        onAssistantDispatch({ query: clean, intent: 'DIVISAS', categoria: 'CASA_CAMBIO', reply, responseMs: ms });
         return;
       }
 
-      if (intent === 'MARKET') {
+      if (parsedIntent.mode === 'MARKET') {
         const ms = Math.max(1, Math.round(performance.now() - t0));
         const reply =
           'Comparando minimarkets abiertos en Cusco en el mapa para que elijas el mejor precio.';
@@ -332,7 +332,7 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
         return;
       }
 
-      const forcedCat: Rubro | undefined = intent === 'TAXI' ? 'TRANSPORTE' : undefined;
+      const forcedCat: Rubro = parsedIntent.rubro;
       const res = await apiFetch<{
         categoria: Rubro;
         respuesta_voz: string;
@@ -342,11 +342,14 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
         body: {
           query: clean,
           categoria: forcedCat,
+          destino: parsedIntent.destino || undefined,
           lat: -13.5167,
           lng: -71.9788,
         },
       });
-      const opts = Array.isArray(res?.opciones) ? res.opciones : [];
+      const opts = Array.isArray(res?.opciones)
+        ? res.opciones.filter((o) => o.categoria === forcedCat)
+        : [];
       const top = opts.find((o) => o.mejor_precio) || opts[0];
       const ms = Math.max(1, Math.round(performance.now() - t0));
 
@@ -360,8 +363,8 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
       }
       onAssistantDispatch({
         query: clean,
-        intent: res.categoria === 'TRANSPORTE' ? 'TAXI' : 'OTHER',
-        categoria: res.categoria,
+        intent: forcedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER',
+        categoria: forcedCat,
         reply,
         responseMs: ms,
         opciones: opts,

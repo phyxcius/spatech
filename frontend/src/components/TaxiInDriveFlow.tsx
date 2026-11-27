@@ -13,7 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { apiFetch, speakSpanish } from '../lib/api.ts';
-import { haversineKm } from '../lib/cuscoMarkets.ts';
+import { haversineKm, resolveCuscoDestination } from '../lib/cuscoMarkets.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
@@ -44,12 +44,12 @@ interface TaxiInDriveFlowProps {
 }
 
 const DESTINATION_PRESETS: Array<{ label: string; lat: number; lng: number }> = [
+  { label: 'Plaza de Armas Cusco', lat: -13.5167, lng: -71.9788 },
+  { label: 'Terminal Terrestre Cusco', lat: -13.5322, lng: -71.9642 },
   { label: 'Aeropuerto Velasco Astete', lat: -13.5357, lng: -71.9388 },
   { label: 'Real Plaza Cusco', lat: -13.5249, lng: -71.9508 },
-  { label: 'Terminal Terrestre Cusco', lat: -13.5322, lng: -71.9642 },
-  { label: 'Plaza Túpac Amaru', lat: -13.5218, lng: -71.9629 },
   { label: 'Hospital Regional Cusco', lat: -13.5236, lng: -71.9577 },
-  { label: 'Plaza de Armas Cusco', lat: -13.5167, lng: -71.9788 },
+  { label: 'Plaza Túpac Amaru', lat: -13.5218, lng: -71.9629 },
 ];
 
 const FALLBACK_DRIVER_SEEDS = [
@@ -144,13 +144,13 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   onOrderCreated,
 }) => {
   const [destinoText, setDestinoText] = useState(
-    initialDestination?.trim() || 'Aeropuerto Velasco Astete'
+    initialDestination?.trim() || 'Plaza de Armas Cusco'
   );
   const [offerSoles, setOfferSoles] = useState<number>(initialOfferSoles || 10.0);
   const [autoAccept, setAutoAccept] = useState(false);
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
   const [searchingRound, setSearchingRound] = useState(1);
-  const [selectedDriverId, setSelectedDriverId] = useState<string>('drv-1');
+  const [selectedDriverId, setSelectedDriverId] = useState<string>('real-1');
   const [showTaxiComparison, setShowTaxiComparison] = useState(false);
 
   // Hoja de confirmación
@@ -232,13 +232,10 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     }
   }, [initialDestination]);
 
-  const destCoords = useMemo(() => {
-    const q = destinoText.toLowerCase();
-    const match = DESTINATION_PRESETS.find((p) =>
-      p.label.toLowerCase().includes(q) || q.includes(p.label.split(' ')[0].toLowerCase())
-    );
-    return match || DESTINATION_PRESETS[0];
-  }, [destinoText]);
+  const destCoords = useMemo(
+    () => resolveCuscoDestination(destinoText, userLat, userLng),
+    [destinoText, userLat, userLng]
+  );
 
   const haversineRouteKm = useMemo(
     () => Math.max(1.2, haversineKm(userLat, userLng, destCoords.lat, destCoords.lng)),
@@ -258,48 +255,74 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   }, [recommendedSoles, initialOfferSoles]);
 
   const driverBids = useMemo<DriverBidCard[]>(() => {
-    const realUnits = driverCatalog.filter((c) => c.tipo === 'TAXI' && c.unidad_id);
+    const realUnits = driverCatalog.filter(
+      (c) => c.tipo === 'TAXI' && c.categoria === 'TRANSPORTE' && c.unidad_id
+    );
     const offerCentavos = Math.round(offerSoles * 100);
+    const factors = [0.94, 1.0, 1.08, 1.16];
 
-    const list: DriverBidCard[] = FALLBACK_DRIVER_SEEDS.map((seed, idx) => {
-      const real = realUnits[idx % Math.max(1, realUnits.length)];
-      const unidadId = real?.unidad_id ?? seed.unidad_id;
-      const negocioId = real?.negocio_id ?? seed.negocio_id;
-      const negocioNombre = real?.negocio_nombre || seed.negocio_nombre;
-      const conductorNombre = real?.conductor_nombre || seed.conductor_nombre;
-      const placa = real?.placa || seed.placa;
-      const modelo = real?.modelo || seed.modelo;
-      const calificacion = real?.calificacion || seed.calificacion;
-
-      const jitter = ((searchingRound + idx) % 3) * 0.0007;
-      const lat = seed.lat + jitter;
-      const lng = seed.lng - jitter;
-      const dist = Math.max(0.5, haversineKm(userLat, userLng, lat, lng));
-      const eta = Math.max(2, Math.round(dist * 3.2 + 1));
-
-      const rawCentavos = Math.max(
-        600,
-        Math.round((offerCentavos * seed.deltaFactor) / 50) * 50
-      );
-      return {
-        id: seed.id,
-        unidad_id: unidadId,
-        negocio_id: negocioId,
-        negocio_nombre: negocioNombre,
-        conductor_nombre: conductorNombre,
-        placa,
-        modelo,
-        calificacion,
-        viajes: seed.viajes,
-        lat,
-        lng,
-        distanciaKm: dist,
-        etaMin: eta,
-        priceCentavos: rawCentavos,
-        isFairPrice: rawCentavos <= Math.round(recommendedSoles * 100) + 100,
-        priceTier: 'mid',
-      };
-    });
+    const list: DriverBidCard[] =
+      realUnits.length > 0
+        ? realUnits.map((real, idx) => {
+            const seed = FALLBACK_DRIVER_SEEDS[idx % FALLBACK_DRIVER_SEEDS.length];
+            const jitter = ((searchingRound + idx) % 3) * 0.0004;
+            const lat = (typeof real.lat === 'number' ? real.lat : seed.lat) + jitter;
+            const lng = (typeof real.lng === 'number' ? real.lng : seed.lng) - jitter;
+            const dist = Math.max(0.4, haversineKm(userLat, userLng, lat, lng));
+            const eta = Math.max(2, Math.round(dist * 3.2 + 1));
+            const factor = factors[idx % factors.length];
+            const rawCentavos = Math.max(
+              600,
+              Math.round((offerCentavos * factor) / 50) * 50
+            );
+            return {
+              id: `real-${real.unidad_id}`,
+              unidad_id: real.unidad_id!,
+              negocio_id: real.negocio_id,
+              negocio_nombre: real.negocio_nombre,
+              conductor_nombre: real.conductor_nombre || real.titulo,
+              placa: real.placa || 'CUS-VIP',
+              modelo: real.modelo || 'Sedán Ejecutivo',
+              calificacion: real.calificacion || 4.9,
+              viajes: 120 + ((real.unidad_id || 1) * 47) % 180,
+              lat,
+              lng,
+              distanciaKm: dist,
+              etaMin: eta,
+              priceCentavos: rawCentavos,
+              isFairPrice: rawCentavos <= Math.round(recommendedSoles * 100) + 100,
+              priceTier: 'mid',
+            };
+          })
+        : FALLBACK_DRIVER_SEEDS.map((seed, idx) => {
+            const jitter = ((searchingRound + idx) % 3) * 0.0007;
+            const lat = seed.lat + jitter;
+            const lng = seed.lng - jitter;
+            const dist = Math.max(0.5, haversineKm(userLat, userLng, lat, lng));
+            const eta = Math.max(2, Math.round(dist * 3.2 + 1));
+            const rawCentavos = Math.max(
+              600,
+              Math.round((offerCentavos * seed.deltaFactor) / 50) * 50
+            );
+            return {
+              id: seed.id,
+              unidad_id: seed.unidad_id,
+              negocio_id: seed.negocio_id,
+              negocio_nombre: seed.negocio_nombre,
+              conductor_nombre: seed.conductor_nombre,
+              placa: seed.placa,
+              modelo: seed.modelo,
+              calificacion: seed.calificacion,
+              viajes: seed.viajes,
+              lat,
+              lng,
+              distanciaKm: dist,
+              etaMin: eta,
+              priceCentavos: rawCentavos,
+              isFairPrice: rawCentavos <= Math.round(recommendedSoles * 100) + 100,
+              priceTier: 'mid',
+            };
+          });
 
     list.sort((a, b) => a.priceCentavos - b.priceCentavos);
     const minP = list[0]?.priceCentavos ?? 0;
@@ -537,15 +560,15 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
 
         {/* Destinos rápidos */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          {DESTINATION_PRESETS.slice(0, 5).map((preset) => (
+          {DESTINATION_PRESETS.map((preset) => (
             <button
               key={preset.label}
               type="button"
               onClick={() => setDestinoText(preset.label)}
               className={`min-h-[36px] px-3 rounded-xl text-xs font-medium whitespace-nowrap shrink-0 border transition-colors ${
                 destinoText === preset.label
-                  ? 'border-[#34A853] bg-[#34A853]/15 text-[#14171F] dark:text-[#B6F02B]'
-                  : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD] hover:border-[#4285F4]/50'
+                  ? 'border-[#1565F5] bg-[#EBF3FF] dark:bg-[#1565F5]/20 text-[#04334B] dark:text-[#F5C400]'
+                  : 'border-[#D8E2EC] dark:border-white/10 text-[#516478] dark:text-slate-300 hover:border-[#1565F5]/50'
               }`}
             >
               {preset.label}

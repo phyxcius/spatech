@@ -185,6 +185,10 @@ export interface ConciergeOpcion {
   titulo: string;
   descripcion: string;
   zona?: string;
+  lat?: number;
+  lng?: number;
+  abierto_ahora?: boolean;
+  horario?: string;
   placa?: string;
   modelo?: string;
   conductor_nombre?: string;
