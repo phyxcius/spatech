@@ -726,8 +726,8 @@ const CuscoGeoLeafletFallback: React.FC<
       L.tileLayer(
         'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         {
-          maxNativeZoom: 19,
-          maxZoom: 21,
+          maxNativeZoom: 17,
+          maxZoom: 20,
           attribution: '&copy; Esri &amp; GIS',
         }
       ).addTo(baseGroup);
@@ -736,7 +736,7 @@ const CuscoGeoLeafletFallback: React.FC<
         {
           subdomains: 'abcd',
           maxNativeZoom: 19,
-          maxZoom: 21,
+          maxZoom: 20,
           attribution: '&copy; CARTO',
         }
       ).addTo(baseGroup);
@@ -746,7 +746,7 @@ const CuscoGeoLeafletFallback: React.FC<
         {
           subdomains: 'abcd',
           maxNativeZoom: 19,
-          maxZoom: 21,
+          maxZoom: 20,
           attribution: '&copy; CARTO &copy; OpenStreetMap',
         }
       ).addTo(baseGroup);
@@ -1084,7 +1084,7 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
   } = props;
 
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [mapTypeId, setMapTypeId] = useState<'roadmap' | 'hybrid'>('hybrid');
+  const [mapTypeId, setMapTypeId] = useState<'roadmap' | 'hybrid'>('roadmap');
   const [fitSignal, setFitSignal] = useState(0);
   const [googleFailed, setGoogleFailed] = useState(false);
 
@@ -1122,7 +1122,10 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
       }
     >
       {canUseGoogleSdk ? (
-        <div className={`w-full ${isFullscreen ? 'h-full' : heightClass}`}>
+        <div
+          className={`w-full ${isFullscreen ? 'h-full' : heightClass}`}
+          style={{ minHeight: isFullscreen ? '100vh' : '240px' }}
+        >
           <APIProvider apiKey={MAPS_API_KEY} language="es" region="PE" libraries={['routes', 'marker']}>
             <GoogleCuscoInner
               {...props}
@@ -1147,11 +1150,13 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
         <span className="px-3 py-1.5 rounded-full bg-white/95 backdrop-blur-md border border-black/10 text-[11px] font-bold text-[#14171F] flex items-center gap-1.5 shadow-lg">
           <Navigation className="w-3.5 h-3.5 text-[#2563EB]" />
           <span>
-            {followDriver
-              ? 'Navegación GPS en Vivo'
-              : canUseGoogleSdk
-                ? 'Google Maps · Cusco'
-                : 'Mapa HD · Cusco'}
+            {canUseGoogleSdk
+              ? followDriver
+                ? 'Google Maps · GPS en Vivo'
+                : 'Google Maps · Cusco'
+              : googleFailed
+                ? 'Mapa Respaldo · Error/Cuota Google'
+                : 'Mapa Respaldo · Falta API Key Google'}
           </span>
         </span>
       </div>

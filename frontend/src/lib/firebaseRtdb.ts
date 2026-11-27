@@ -181,6 +181,7 @@ interface RtdbButaca {
 }
 
 interface RtdbPedido extends PedidoPublico {
+  unidad_id?: number | null;
   pin_salt?: string;
   pin_hash?: string;
   intentos_pin: number;
@@ -1351,6 +1352,7 @@ export async function handleFirebaseRtdbRequest<T>(
       id: Date.now(),
       codigo,
       negocio_id: unit.negocio_id,
+      unidad_id: unit.id,
       referido_negocio_id: null,
       negocio_nombre: unit.negocio_nombre,
       emisor_ruc: biz?.documento_numero || '20601234565',
@@ -2064,7 +2066,7 @@ export async function handleFirebaseRtdbRequest<T>(
     if (sub.startsWith('pedidos/')) {
       const pedidoId = Number(bizMatch[3]);
       const action = bizMatch[4];
-      const match = Object.values(snap.pedidos || {}).find((p) => p.id === pedidoId);
+      const match = Object.values(snap.pedidos || {}).find((p) => Number(p.id) === pedidoId);
       if (!match) throw new Error('Pedido no encontrado.');
 
       if (action === 'aceptar' && method === 'POST') {
@@ -2094,27 +2096,41 @@ export async function handleFirebaseRtdbRequest<T>(
         if (match.estado !== 'CONFIRMADO_PREPARACION') {
           throw new Error('El viaje debe estar en curso para validar PIN.');
         }
+        const cleanPin = String(payload.pin || '').trim();
         if (match.pin_validado !== 1) {
-          const hashedAttempt = await hashPinBrowser(String(payload.pin || '').trim(), match.pin_salt);
+          if (!/^\d{4}$/.test(cleanPin)) {
+            throw new Error('El PIN de validación debe tener 4 dígitos.');
+          }
+          if (!match.pin_hash || !match.pin_salt) {
+            throw new Error('PIN del pasajero aún sincronizándose. Intenta de nuevo en unos segundos.');
+          }
+          const hashedAttempt = await hashPinBrowser(cleanPin, match.pin_salt);
           if (hashedAttempt.hash !== match.pin_hash) {
             const nextAttempts = (match.intentos_pin || 0) + 1;
             await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', {
               intentos_pin: nextAttempts,
               pin_bloqueado: nextAttempts >= 5 ? 1 : 0,
             });
-            throw new Error(nextAttempts >= 5 ? 'Bloqueado tras 5 intentos fallidos.' : 'PIN incorrecto.');
+            throw new Error(
+              nextAttempts >= 5
+                ? 'PIN bloqueado tras 5 intentos fallidos.'
+                : `PIN incorrecto. Intentos restantes: ${Math.max(0, 5 - nextAttempts)}`
+            );
           }
         }
         const nowIso = new Date().toISOString();
         const patch = {
           pin_validado: 1,
           pin_validado_at: match.pin_validado_at || nowIso,
-          viaje_etapa: 'EN_RUTA_DESTINO' as const,
+          viaje_etapa:
+            match.viaje_etapa === 'LLEGADO_DESTINO'
+              ? ('LLEGADO_DESTINO' as const)
+              : ('EN_RUTA_DESTINO' as const),
         };
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', patch);
         return {
           ok: true,
-          pedido: { ...match, ...patch },
+          pedido: { ...match, ...patch, cliente_telefono: match.cliente_telefono_masked },
         } as T;
       }
 
@@ -2142,6 +2158,9 @@ export async function handleFirebaseRtdbRequest<T>(
           const cleanPin = String(payload.pin || '').trim();
           if (!/^\d{4}$/.test(cleanPin)) {
             throw new Error('Debes validar primero el PIN de 4 dígitos del pasajero antes de finalizar el viaje.');
+          }
+          if (!match.pin_hash || !match.pin_salt) {
+            throw new Error('PIN aún sincronizándose. Intenta de nuevo en unos segundos.');
           }
           const hashedAttempt = await hashPinBrowser(cleanPin, match.pin_salt);
           if (hashedAttempt.hash !== match.pin_hash) {
@@ -2183,10 +2202,13 @@ export async function handleFirebaseRtdbRequest<T>(
           comision_retenida_centavos: 0,
         };
         await rtdbFetch(`pedidos/${match.codigo}`, 'PATCH', patch);
+        if (match.unidad_id) {
+          await rtdbFetch(`unidades/${match.unidad_id}`, 'PATCH', { estado: 'DISPONIBLE' });
+        }
         return {
           ok: true,
           puntos_otorgados: 50,
-          pedido: { ...match, ...patch },
+          pedido: { ...match, ...patch, cliente_telefono: match.cliente_telefono_masked },
           comprobante: null,
         } as T;
       }

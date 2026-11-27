@@ -1487,6 +1487,17 @@ test('14. Flujo taxi en 2 pasos: validar-pin no finaliza el viaje, activa ruta G
     assert.equal(verifyRes.data.pedido.viaje_etapa, 'EN_RUTA_DESTINO');
     assert.equal(verifyRes.data.pedido.estado, 'CONFIRMADO_PREPARACION');
 
+    // Reintentar /validar-pin es idempotente y tampoco finaliza el viaje
+    const verifyRepeat = await req(
+      'POST',
+      `/api/negocio/${tx1Id}/pedidos/${pedidoId}/validar-pin`,
+      { pin: pinCliente },
+      tx1Token
+    );
+    assert.equal(verifyRepeat.status, 200);
+    assert.equal(verifyRepeat.data.pedido.estado, 'CONFIRMADO_PREPARACION');
+    assert.equal(verifyRepeat.data.pedido.viaje_etapa, 'EN_RUTA_DESTINO');
+
     const resMid = await req('GET', `/api/negocio/${tx1Id}/resumen`, undefined, tx1Token);
     assert.ok(resMid.data.negocio.saldo_retenido > 0);
 

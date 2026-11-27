@@ -278,6 +278,8 @@ export const BusinessPanel: React.FC = () => {
   const [resumen, setResumen] = useState<ResumenData | null>(null);
   const [pedidos, setPedidos] = useState<PedidoNegocio[]>([]);
   const [pinInputs, setPinInputs] = useState<Record<number, string>>({});
+  const [pinSubmittingId, setPinSubmittingId] = useState<number | null>(null);
+  const [pinErrors, setPinErrors] = useState<Record<number, string | null>>({});
   const [actionMsg, setActionMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [invoiceModal, setInvoiceModal] = useState<{
     order?: PedidoNegocio;
@@ -910,21 +912,37 @@ export const BusinessPanel: React.FC = () => {
   }
 
   async function submitTaxiPinVerify(pedidoId: number) {
-    if (!session) return;
+    if (!session || pinSubmittingId === pedidoId) return;
     setActionMsg(null);
+    setPinErrors((prev) => ({ ...prev, [pedidoId]: null }));
+    setPinSubmittingId(pedidoId);
     try {
-      await apiFetch<{ ok: boolean; pedido?: PedidoNegocio }>(
+      const res = await apiFetch<{ ok: boolean; pedido?: PedidoNegocio }>(
         `/api/negocio/${session.negocioId}/pedidos/${pedidoId}/validar-pin`,
         {
           method: 'POST',
-          body: { pin: pinInputs[pedidoId] || '' },
+          body: { pin: (pinInputs[pedidoId] || '').trim() },
           token: session.token,
         }
       );
+      setPedidos((prev) =>
+        prev.map((item) =>
+          item.id === pedidoId
+            ? {
+                ...item,
+                ...(res?.pedido || {}),
+                estado: (res?.pedido?.estado || 'CONFIRMADO_PREPARACION') as PedidoNegocio['estado'],
+                pin_validado: 1,
+                viaje_etapa: (res?.pedido?.viaje_etapa || 'EN_RUTA_DESTINO') as PedidoNegocio['viaje_etapa'],
+              }
+            : item
+        )
+      );
       setPinInputs((prev) => ({ ...prev, [pedidoId]: '' }));
+      setPinErrors((prev) => ({ ...prev, [pedidoId]: null }));
       setActionMsg({
         type: 'ok',
-        text: 'PIN verificado · Pasajero a bordo. Mapa centrado en tu GPS rumbo al Destino B.',
+        text: 'PIN verificado · Pasajero a bordo. Mapa centrado en tu GPS rumbo al Destino B (el viaje sigue en curso).',
       });
       if (soundEnabled) {
         playLuxuryChime();
@@ -932,11 +950,15 @@ export const BusinessPanel: React.FC = () => {
       }
       await loadWorkspace(true);
     } catch (err) {
+      const errText = err instanceof Error ? err.message : 'Error validando PIN del pasajero';
+      setPinErrors((prev) => ({ ...prev, [pedidoId]: errText }));
       setActionMsg({
         type: 'err',
-        text: err instanceof Error ? err.message : 'Error validando PIN del pasajero',
+        text: errText,
       });
       await loadWorkspace(true);
+    } finally {
+      setPinSubmittingId(null);
     }
   }
 
@@ -1053,8 +1075,10 @@ export const BusinessPanel: React.FC = () => {
   }
 
   async function submitPinValidation(pedidoId: number) {
-    if (!session) return;
+    if (!session || pinSubmittingId === pedidoId) return;
     setActionMsg(null);
+    setPinErrors((prev) => ({ ...prev, [pedidoId]: null }));
+    setPinSubmittingId(pedidoId);
     try {
       const res = await apiFetch<{
         puntos_otorgados: number;
@@ -1064,7 +1088,7 @@ export const BusinessPanel: React.FC = () => {
         `/api/negocio/${session.negocioId}/pedidos/${pedidoId}/entregar`,
         {
           method: 'POST',
-          body: { pin: pinInputs[pedidoId] || '' },
+          body: { pin: (pinInputs[pedidoId] || '').trim() },
           token: session.token,
         }
       );
@@ -1077,16 +1101,21 @@ export const BusinessPanel: React.FC = () => {
           : `PIN validado. Servicio completado y liquidado (+${res.puntos_otorgados} pts al cliente). Comprobante listo para imprimir.`,
       });
       setPinInputs((prev) => ({ ...prev, [pedidoId]: '' }));
+      setPinErrors((prev) => ({ ...prev, [pedidoId]: null }));
       if (!isTaxi && (res.comprobante || res.pedido)) {
         setInvoiceModal({ order: res.pedido, comprobante: res.comprobante });
       }
       await loadWorkspace(true);
     } catch (err) {
+      const errText = err instanceof Error ? err.message : 'Error validando PIN';
+      setPinErrors((prev) => ({ ...prev, [pedidoId]: errText }));
       setActionMsg({
         type: 'err',
-        text: err instanceof Error ? err.message : 'Error validando PIN',
+        text: errText,
       });
       await loadWorkspace(true);
+    } finally {
+      setPinSubmittingId(null);
     }
   }
 
@@ -2594,16 +2623,27 @@ export const BusinessPanel: React.FC = () => {
                             </div>
                             <PinKeypadCard
                               value={pinInputs[p.id] || ''}
-                              onChange={(next) =>
+                              disabled={pinSubmittingId === p.id}
+                              onChange={(next) => {
+                                setPinErrors((prev) => ({ ...prev, [p.id]: null }));
                                 setPinInputs((prev) => ({
                                   ...prev,
                                   [p.id]: next.replace(/\D/g, '').slice(0, 4),
-                                }))
-                              }
+                                }));
+                              }}
                               onSubmit={() => void submitTaxiPinVerify(p.id)}
-                              submitLabel="Validar PIN del Pasajero (Iniciar Viaje)"
+                              submitLabel={
+                                pinSubmittingId === p.id
+                                  ? 'Validando PIN...'
+                                  : 'Validar PIN del Pasajero (Iniciar Viaje)'
+                              }
                               attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
                             />
+                            {pinErrors[p.id] && (
+                              <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-semibold text-[#C81E5B] dark:text-red-300">
+                                {pinErrors[p.id]}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/8 p-4 space-y-3.5">
@@ -2710,18 +2750,27 @@ export const BusinessPanel: React.FC = () => {
                       PIN bloqueado tras 5 intentos fallidos. Solo el cliente puede cancelar el pedido.
                     </p>
                   ) : (
-                    <PinKeypadCard
-                      value={pinInputs[p.id] || ''}
-                      onChange={(next) =>
-                        setPinInputs((prev) => ({
-                          ...prev,
-                          [p.id]: next.replace(/\D/g, '').slice(0, 4),
-                        }))
-                      }
-                      onSubmit={() => void submitPinValidation(p.id)}
-                      submitLabel="Validar PIN y Cobrar"
-                      attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
-                    />
+                    <div className="space-y-2">
+                      <PinKeypadCard
+                        value={pinInputs[p.id] || ''}
+                        disabled={pinSubmittingId === p.id}
+                        onChange={(next) => {
+                          setPinErrors((prev) => ({ ...prev, [p.id]: null }));
+                          setPinInputs((prev) => ({
+                            ...prev,
+                            [p.id]: next.replace(/\D/g, '').slice(0, 4),
+                          }));
+                        }}
+                        onSubmit={() => void submitPinValidation(p.id)}
+                        submitLabel={pinSubmittingId === p.id ? 'Validando PIN...' : 'Validar PIN y Cobrar'}
+                        attemptsInfo={`Intentos fallidos: ${p.intentos_pin}/5`}
+                      />
+                      {pinErrors[p.id] && (
+                        <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-semibold text-[#C81E5B] dark:text-red-300">
+                          {pinErrors[p.id]}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </article>
               );

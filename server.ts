@@ -19,7 +19,20 @@ function resolvePort(): number {
     const parsed = Number(eqArg.split('=')[1]);
     if (Number.isInteger(parsed) && parsed > 0) return parsed;
   }
-  return Number(process.env.PORT || 3000);
+  if (process.env.npm_config_port) {
+    const parsed = Number(process.env.npm_config_port);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  if (process.env.DEFAULT_APP_PORT) {
+    const parsed = Number(process.env.DEFAULT_APP_PORT);
+    if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  }
+  const envPort = Number(process.env.PORT || 3000);
+  const nginxPort = Number(process.env.NGINX_PORT || 0);
+  if (nginxPort > 0 && envPort === nginxPort) {
+    return 3000;
+  }
+  return envPort;
 }
 
 async function bootstrap() {
@@ -27,8 +40,6 @@ async function bootstrap() {
 
   const db = initDatabase();
   seedDatabase(db);
-  await hydrateDatabaseFromFirebaseRtdb(db);
-  void syncSnapshotToFirebaseRtdb(db);
 
   setInterval(() => {
     try {
@@ -44,12 +55,19 @@ async function bootstrap() {
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
+    const vitePromise = createViteServer({
       configFile: path.resolve(process.cwd(), 'frontend/vite.config.ts'),
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else if (fs.existsSync(distDir)) {
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
@@ -60,6 +78,7 @@ async function bootstrap() {
   const port = resolvePort();
   app.listen(port, '0.0.0.0', () => {
     console.log(`La Chuspa corriendo en http://0.0.0.0:${port} (${isProd ? 'producción' : 'desarrollo'})`);
+    void hydrateDatabaseFromFirebaseRtdb(db).then(() => syncSnapshotToFirebaseRtdb(db));
   });
 }
 

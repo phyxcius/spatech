@@ -50,6 +50,27 @@ export function getFirebaseSyncState(): FirebaseSyncState {
 
 let syncInFlight: Promise<void> | null = null;
 let syncQueued = false;
+const orderPinCache = new Map<string, { pin_salt: string; pin_hash: string }>();
+
+export async function syncOrderPinToFirebaseRtdb(codigo: string, plainPin: string): Promise<void> {
+  const salt = `ord-${codigo}`;
+  const pinHash = sha256Hex(`${salt}:${plainPin}`);
+  orderPinCache.set(codigo, { pin_salt: salt, pin_hash: pinHash });
+  if (process.env.NODE_ENV === 'test' || process.env.DISABLE_FIREBASE_SYNC === 'true') {
+    return;
+  }
+  const baseUrl = getRtdbBaseUrl();
+  if (!baseUrl) return;
+  try {
+    await fetch(`${baseUrl}/lachuspa/pedidos/${encodeURIComponent(codigo)}.json`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin_salt: salt, pin_hash: pinHash }),
+    });
+  } catch {
+    // Non-blocking
+  }
+}
 
 export async function syncNegocioPinToFirebaseRtdb(codigo: string, plainPin: string): Promise<void> {
   if (process.env.NODE_ENV === 'test' || process.env.DISABLE_FIREBASE_SYNC === 'true') {
@@ -78,7 +99,9 @@ export async function hydrateDatabaseFromFirebaseRtdb(db: DatabaseSync): Promise
   if (!baseUrl) return;
 
   try {
-    const res = await fetch(`${baseUrl}/lachuspa.json`);
+    const res = await fetch(`${baseUrl}/lachuspa.json`, {
+      signal: AbortSignal.timeout(6000),
+    });
     if (!res.ok) {
       syncState.lastError = `HTTP ${res.status} al leer Firebase RTDB`;
       return;
@@ -261,14 +284,22 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
 
       const pedidos = db
         .prepare(
-          `SELECT p.id, p.codigo, p.negocio_id, p.referido_negocio_id, p.categoria, p.item_nombre, p.transcripcion,
-                  p.monto_centavos, p.metodo_pago, p.estado, p.cliente_nombre, p.cliente_telefono,
+          `SELECT p.id, p.codigo, p.negocio_id, p.referido_negocio_id, p.categoria, p.unidad_id, p.item_nombre, p.transcripcion,
+                  p.monto_centavos, p.contraoferta_centavos, p.metodo_pago, p.estado, p.cliente_nombre, p.cliente_telefono,
                   p.cliente_documento_tipo, p.cliente_documento_numero, p.cliente_documento_verificado,
-                  p.origen_texto, p.destino_texto, p.intentos_pin, p.pin_bloqueado, p.comision_plataforma_centavos,
+                  p.cliente_direccion_fiscal, p.comprobante_tipo,
+                  p.origen_texto, p.destino_texto, p.origen_lat, p.origen_lng, p.destino_lat, p.destino_lng,
+                  p.conductor_lat, p.conductor_lng, p.distancia_km, p.eta_min,
+                  p.pin_validado, p.pin_validado_at, p.viaje_etapa,
+                  p.intentos_pin, p.pin_bloqueado, p.comision_plataforma_centavos,
                   p.comision_referido_centavos, p.comision_retenida_centavos, p.created_at,
-                  n.nombre AS negocio_nombre, n.zona AS negocio_zona
+                  n.nombre AS negocio_nombre, n.zona AS negocio_zona,
+                  n.documento_numero AS emisor_ruc, COALESCE(n.razon_social, n.nombre) AS emisor_razon_social,
+                  n.zona AS emisor_direccion,
+                  u.lat AS unidad_lat, u.lng AS unidad_lng, u.conductor_nombre, u.placa, u.modelo
            FROM pedidos_ordenes p
            JOIN negocios n ON n.id = p.negocio_id
+           LEFT JOIN unidades_conductores u ON u.id = p.unidad_id
            ORDER BY p.id DESC LIMIT 100`
         )
         .all() as Array<Record<string, any>>;
@@ -291,15 +322,23 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
         )
         .all() as Array<Record<string, any>>;
 
-      // Preserve existing RTDB business pin_hash if already seeded so client-side RTDB login stays valid
+      // Preserve existing RTDB business pin_hash and RTDB order pin_hash/client-created orders
       let existingNegocios: Record<string, any> = {};
+      let existingPedidos: Record<string, any> = {};
       try {
-        const curRes = await fetch(`${baseUrl}/lachuspa/negocios.json`);
-        if (curRes.ok) {
-          existingNegocios = (await curRes.json()) || {};
+        const [curNegRes, curPedRes] = await Promise.all([
+          fetch(`${baseUrl}/lachuspa/negocios.json`, { signal: AbortSignal.timeout(6000) }),
+          fetch(`${baseUrl}/lachuspa/pedidos.json`, { signal: AbortSignal.timeout(6000) }),
+        ]);
+        if (curNegRes.ok) {
+          existingNegocios = (await curNegRes.json()) || {};
+        }
+        if (curPedRes.ok) {
+          existingPedidos = (await curPedRes.json()) || {};
         }
       } catch {
         existingNegocios = {};
+        existingPedidos = {};
       }
 
       const defaultDemoPins: Record<string, string> = {
@@ -349,12 +388,18 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
       const reglasMap: Record<string, any> = {};
       for (const reg of reglas) reglasMap[String(reg.rubro)] = reg;
 
-      const pedidosMap: Record<string, any> = {};
+      const pedidosMap: Record<string, any> = { ...existingPedidos };
       for (const p of pedidos) {
         const { cliente_telefono, ...rest } = p;
-        pedidosMap[String(p.codigo)] = {
+        const codeKey = String(p.codigo);
+        const prevOrder = existingPedidos[codeKey];
+        const cachedPin = orderPinCache.get(codeKey);
+        const pinSalt = cachedPin?.pin_salt || prevOrder?.pin_salt || null;
+        const pinHash = cachedPin?.pin_hash || prevOrder?.pin_hash || null;
+        pedidosMap[codeKey] = {
           ...rest,
           cliente_telefono_masked: maskPhone(String(cliente_telefono || '')),
+          ...(pinSalt && pinHash ? { pin_salt: pinSalt, pin_hash: pinHash } : {}),
         };
       }
 
@@ -390,6 +435,7 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(6000),
       });
 
       if (!writeRes.ok) {

@@ -454,6 +454,15 @@ export function validarSoloPin(
     }
 
     if (pedido.pin_validado === 1) {
+      if (pedido.viaje_etapa !== 'EN_RUTA_DESTINO' && pedido.viaje_etapa !== 'LLEGADO_DESTINO') {
+        db.prepare(`
+          UPDATE pedidos_ordenes
+          SET viaje_etapa = 'EN_RUTA_DESTINO',
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(pedido.id);
+        return db.prepare('SELECT * FROM pedidos_ordenes WHERE id = ?').get(pedido.id) as unknown as PedidoRow;
+      }
       return pedido;
     }
 

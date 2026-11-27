@@ -38,6 +38,7 @@ import {
   getFirebaseSyncState,
   getRtdbBaseUrl,
   syncNegocioPinToFirebaseRtdb,
+  syncOrderPinToFirebaseRtdb,
   syncSnapshotToFirebaseRtdb,
 } from './rtdbSync.ts';
 import {
@@ -1036,6 +1037,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         .prepare('SELECT * FROM pedidos_ordenes WHERE id = ?')
         .get(Number(insertRes.lastInsertRowid)) as unknown as PedidoRow;
 
+      void syncOrderPinToFirebaseRtdb(codigo, pin);
+
       res.status(201).json({
         pedido: sanitizeOrderPublic(created),
         cliente_pin: pin,
@@ -1148,6 +1151,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const created = db
         .prepare('SELECT * FROM pedidos_ordenes WHERE id = ?')
         .get(Number(insertRes.lastInsertRowid)) as unknown as PedidoRow;
+
+      void syncOrderPinToFirebaseRtdb(codigo, pin);
 
       res.status(201).json({
         pedido: sanitizeOrderPublic(created),
@@ -1324,6 +1329,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           WHERE p.id = ?
         `)
         .get(Number(insertRes.lastInsertRowid)) as unknown as PedidoRow;
+
+      void syncOrderPinToFirebaseRtdb(codigo, pin);
 
       res.status(201).json({
         pedido: sanitizeOrderPublic(created),
@@ -3026,6 +3033,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         const created = db
           .prepare('SELECT * FROM pedidos_ordenes WHERE id = ?')
           .get(Number(insertRes.lastInsertRowid)) as unknown as PedidoRow;
+
+        void syncOrderPinToFirebaseRtdb(codigo, pin);
 
         // NUNCA devolver el PIN al referidor en la respuesta
         res.status(201).json({

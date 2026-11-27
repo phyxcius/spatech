@@ -391,6 +391,7 @@ export const EmergencyGoogleMap: React.FC<EmergencyGoogleMapProps> = (props) => 
     <div className="space-y-2">
       <div
         className={`relative w-full ${heightClass} rounded-2xl overflow-hidden border border-red-500/35 bg-[#07090E]`}
+        style={{ minHeight: '240px' }}
       >
         {canUseGoogleSdk ? (
           <APIProvider apiKey={MAPS_API_KEY} language="es" region="PE" libraries={['routes', 'marker']}>
@@ -438,7 +439,9 @@ export const EmergencyGoogleMap: React.FC<EmergencyGoogleMapProps> = (props) => 
             <span>
               {canUseGoogleSdk
                 ? 'Google Maps Platform · Ruta en vivo'
-                : 'Mapa GPS Cusco · Google Maps Directo'}
+                : googleFailed
+                  ? 'Mapa Respaldo · Error/Cuota Google'
+                  : 'Mapa Respaldo · Falta API Key Google'}
             </span>
           </span>
         </div>

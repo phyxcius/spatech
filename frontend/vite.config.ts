@@ -7,7 +7,9 @@ import {defineConfig, loadEnv} from 'vite';
 const frontendDir = import.meta.dirname;
 
 export default defineConfig(({mode}) => {
-  const env = loadEnv(mode, process.cwd(), '');
+  const rootEnv = loadEnv(mode, path.resolve(frontendDir, '..'), '');
+  const cwdEnv = loadEnv(mode, process.cwd(), '');
+  const env = {...rootEnv, ...cwdEnv};
   const rawBase = process.env.VITE_BASE_PATH || env.VITE_BASE_PATH || '/';
   const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
   const googleMapsKey =
