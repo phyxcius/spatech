@@ -151,6 +151,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
   const [searchingRound, setSearchingRound] = useState(1);
   const [selectedDriverId, setSelectedDriverId] = useState<string>('drv-1');
+  const [showTaxiComparison, setShowTaxiComparison] = useState(false);
 
   // Hoja de confirmación
   const [confirmDriver, setConfirmDriver] = useState<{
@@ -485,13 +486,13 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   return (
     <section className="space-y-4">
       {/* Barra superior estilo InDrive A -> B */}
-      <div className="rounded-3xl border border-[#4285F4]/25 bg-white dark:bg-[#0D1322] p-4 sm:p-5 shadow-lg space-y-3 chuspa-google-border">
+      <div className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-4 sm:p-5 shadow-md space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#4285F4] dark:text-[#60A5FA]">
+            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#1565F5] dark:text-[#F5C400]">
               Taxi por Geolocalización · Modo InDrive / La Chuspa
             </p>
-            <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
+            <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#0B2538] dark:text-white">
               Mapa centrado en vivo · Toca un precio para solicitar tu taxi
             </h2>
           </div>
@@ -705,7 +706,7 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
             <button
               type="button"
               onClick={triggerDriverSearch}
-              className="w-full min-h-[48px] rounded-2xl bg-[#B6F02B] hover:bg-[#a6e01f] text-[#0B0E14] font-bold text-sm flex items-center justify-center gap-2 shadow-lg transition-colors chuspa-google-btn"
+              className="w-full min-h-[48px] rounded-2xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] font-extrabold text-sm flex items-center justify-center gap-2 shadow-sm transition-colors"
             >
               <Zap className="w-4 h-4" />
               <span>Buscar conductores ({driverBids.length} cerca)</span>
@@ -713,74 +714,80 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
           </div>
         </div>
 
-        {/* Columna derecha: Tabla Comparativa + Tarjetas de Conductores en Vivo */}
+        {/* Columna derecha: Tarjetas de Conductores en Vivo + Toggle discreto de tabla */}
         <div className="lg:col-span-7 space-y-3">
           <div className="flex items-center justify-between px-1">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1E40AF] dark:text-[#06B6D4]">
-              Comparativa de Tarifas de Taxis ({driverBids.length})
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1565F5] dark:text-[#F5C400]">
+              Conductores Cercanos ({driverBids.length})
             </h3>
-            <span className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
-              En Línea ●
-            </span>
+            <button
+              type="button"
+              onClick={() => setShowTaxiComparison((v) => !v)}
+              className="text-[11px] font-semibold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
+            >
+              {showTaxiComparison ? 'Ocultar lista comparativa' : 'Ver lista comparativa →'}
+            </button>
           </div>
 
-          <div className="rounded-2xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1426] p-3 overflow-x-auto">
-            <table className="w-full text-left text-[11px] border-collapse">
-              <thead>
-                <tr className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
-                  <th className="py-1.5 pr-2 font-semibold">Conductor / Auto</th>
-                  <th className="py-1.5 pr-2 font-semibold">ETA · Dist.</th>
-                  <th className="py-1.5 pr-2 font-semibold text-right">Tarifa</th>
-                  <th className="py-1.5 pl-2 font-semibold text-right">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-black/8 dark:divide-white/8">
-                {driverBids.map((drv, idx) => (
-                  <tr
-                    key={`taxi-tbl-${drv.id}`}
-                    onClick={() => setSelectedDriverId(drv.id)}
-                    className={`cursor-pointer ${
-                      drv.id === selectedDriverId
-                        ? 'bg-[#2563EB]/10'
-                        : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'
-                    }`}
-                  >
-                    <td className="py-2 pr-2">
-                      <div className="font-semibold text-[#14171F] dark:text-white">
-                        {drv.conductor_nombre}{' '}
-                        {idx === 0 && (
-                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                            · Mejor precio
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
-                        {drv.modelo} · <span className="font-mono-tabular">{drv.placa}</span>
-                      </div>
-                    </td>
-                    <td className="py-2 pr-2 font-mono-tabular text-[#555B66] dark:text-[#B4BAC4] whitespace-nowrap">
-                      {drv.etaMin} min · {drv.distanciaKm.toFixed(1)} km
-                    </td>
-                    <td className="py-2 pr-2 text-right font-mono-tabular font-black text-sm text-[#14171F] dark:text-white whitespace-nowrap">
-                      {formatSoles(drv.priceCentavos)}
-                    </td>
-                    <td className="py-2 pl-2 text-right whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white font-bold"
-                      >
-                        Escoger
-                      </button>
-                    </td>
+          {showTaxiComparison && (
+            <div className="rounded-2xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-3 overflow-x-auto">
+              <table className="w-full text-left text-[11px] border-collapse">
+                <thead>
+                  <tr className="border-b border-[#D8E2EC] dark:border-white/10 text-[#516478] dark:text-slate-400">
+                    <th className="py-1.5 pr-2 font-semibold">Conductor / Auto</th>
+                    <th className="py-1.5 pr-2 font-semibold">ETA · Dist.</th>
+                    <th className="py-1.5 pr-2 font-semibold text-right">Tarifa</th>
+                    <th className="py-1.5 pl-2 font-semibold text-right">Acción</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-[#D8E2EC]/70 dark:divide-white/10">
+                  {driverBids.map((drv, idx) => (
+                    <tr
+                      key={`taxi-tbl-${drv.id}`}
+                      onClick={() => setSelectedDriverId(drv.id)}
+                      className={`cursor-pointer ${
+                        drv.id === selectedDriverId
+                          ? 'bg-[#EBF3FF] dark:bg-[#1565F5]/15'
+                          : 'hover:bg-[#F7FAFC] dark:hover:bg-white/[0.03]'
+                      }`}
+                    >
+                      <td className="py-2 pr-2">
+                        <div className="font-semibold text-[#0B2538] dark:text-white">
+                          {drv.conductor_nombre}{' '}
+                          {idx === 0 && (
+                            <span className="text-[10px] font-bold text-[#1565F5] dark:text-[#F5C400]">
+                              · Mejor tarifa
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-[#516478] dark:text-slate-400">
+                          {drv.modelo} · <span className="font-mono-tabular">{drv.placa}</span>
+                        </div>
+                      </td>
+                      <td className="py-2 pr-2 font-mono-tabular text-[#516478] dark:text-slate-300 whitespace-nowrap">
+                        {drv.etaMin} min · {drv.distanciaKm.toFixed(1)} km
+                      </td>
+                      <td className="py-2 pr-2 text-right font-mono-tabular font-black text-sm text-[#0B2538] dark:text-white whitespace-nowrap">
+                        {formatSoles(drv.priceCentavos)}
+                      </td>
+                      <td className="py-2 pl-2 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setConfirmDriver({ driver: drv, finalCentavos: drv.priceCentavos });
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] font-extrabold"
+                        >
+                          Escoger
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {driverBids.map((drv) => {
             const isSelected = drv.id === selectedDriverId;

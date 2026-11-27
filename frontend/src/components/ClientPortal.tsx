@@ -24,7 +24,6 @@ import {
 } from 'lucide-react';
 import {
   detectIntentFromQuery,
-  haversineKm,
   parseMarketQuery,
   type RequestedMarketItem,
 } from '../lib/cuscoMarkets.ts';
@@ -45,7 +44,6 @@ import {
   type PedidoPublico,
   type Rubro,
   type SharedCustomerDoc,
-  type UnidadConductor,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
 import {
@@ -144,10 +142,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
   const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
-  const [homeUnidades, setHomeUnidades] = useState<UnidadConductor[]>([]);
-  const [homeRubroFilter, setHomeRubroFilter] = useState<'ALL' | 'CUSTOM_IA' | Rubro>('ALL');
-  const [homeSelectedPinId, setHomeSelectedPinId] = useState<string | null>(null);
   const [selectedCatalogKey, setSelectedCatalogKey] = useState<string | null>(null);
+  const [showCatalogPriceTable, setShowCatalogPriceTable] = useState(false);
   const [requestedMarketItems, setRequestedMarketItems] = useState<RequestedMarketItem[]>(() =>
     parseMarketQuery('leche, atún y arroz')
   );
@@ -355,13 +351,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       .then((res) => setOpciones(Array.isArray(res?.opciones) ? res.opciones : []))
       .catch(() => {});
 
-    apiFetch<{ negocios?: DirectorioNegocio[]; unidades?: UnidadConductor[] }>('/api/public/directorio')
+    apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio')
       .then((res) => {
         if (Array.isArray(res?.negocios)) {
           setDirectorio(res.negocios);
-        }
-        if (Array.isArray(res?.unidades)) {
-          setHomeUnidades(res.unidades);
         }
       })
       .catch(() => {});
@@ -1009,84 +1002,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     [catalogMapEntries]
   );
 
-  const homeExplorerEntries = useMemo(() => {
-    const bizEntries = directorio
-      .filter((b) => {
-        if (homeRubroFilter === 'ALL') return true;
-        if (homeRubroFilter === 'CUSTOM_IA') return Boolean(b.panel_ia || b.tipo_negocio);
-        return b.rubro === homeRubroFilter;
-      })
-      .map((b) => {
-        const km = haversineKm(coords.lat, coords.lng, b.lat || -13.5167, b.lng || -71.9788);
-        const tituloRubro = b.panel_ia?.rubro_titulo || b.tipo_negocio || RUBRO_LABELS[b.rubro];
-        const minSoles = Math.max(6, Math.round((b as { tarifa_minima_centavos?: number }).tarifa_minima_centavos ? ((b as { tarifa_minima_centavos?: number }).tarifa_minima_centavos! / 100) : 15));
-        return {
-          pinId: `biz-${b.id}`,
-          kind: (b.rubro === 'TRANSPORTE' ? 'DRIVER' : 'BUSINESS') as 'DRIVER' | 'BUSINESS',
-          rubro: b.rubro,
-          titulo: b.nombre,
-          subtitulo: `${tituloRubro} · ${b.zona}`,
-          lat: b.lat || -13.5167,
-          lng: b.lng || -71.9788,
-          km: Number(km.toFixed(2)),
-          calificacion: b.calificacion || 4.9,
-          priceText: b.rubro === 'TRANSPORTE' ? 'Taxi VIP' : `Desde S/ ${minSoles}`,
-          isOpen: b.en_linea === 1,
-          isAiCustom: Boolean(b.panel_ia),
-          searchPrompt: b.panel_ia?.rubro_usuario || b.nombre,
-        };
-      });
-
-    const taxiUnitEntries =
-      homeRubroFilter === 'ALL' || homeRubroFilter === 'TRANSPORTE'
-        ? homeUnidades.map((u) => {
-            const km = haversineKm(coords.lat, coords.lng, u.lat || -13.5167, u.lng || -71.9788);
-            const estSoles = Math.max(12, Math.round((u.tarifa_base_centavos + u.tarifa_km_centavos * 2.5) / 100));
-            return {
-              pinId: `unit-${u.id}`,
-              kind: 'DRIVER' as const,
-              rubro: 'TRANSPORTE' as Rubro,
-              titulo: `${u.modelo} · ${u.conductor_nombre}`,
-              subtitulo: `Placa ${u.placa} · ${u.negocio_nombre || 'Taxi Ejecutivo'}`,
-              lat: u.lat || -13.5174,
-              lng: u.lng || -71.9765,
-              km: Number(km.toFixed(2)),
-              calificacion: u.calificacion || 4.9,
-              priceText: `S/ ${estSoles}.00`,
-              isOpen: u.estado === 'DISPONIBLE',
-              isAiCustom: false,
-              searchPrompt: 'Quiero un taxi al aeropuerto',
-            };
-          })
-        : [];
-
-    return [...taxiUnitEntries, ...bizEntries].sort((a, b) => a.km - b.km);
-  }, [directorio, homeUnidades, homeRubroFilter, coords.lat, coords.lng]);
-
-  const homeMapPins: GeoMapPin[] = useMemo(
-    () =>
-      homeExplorerEntries.map((entry, idx) => ({
-        id: entry.pinId,
-        lat: entry.lat,
-        lng: entry.lng,
-        priceText: entry.priceText,
-        sublabel: entry.titulo,
-        detailTitle: `${entry.titulo} · ${entry.subtitulo}`,
-        tier: !entry.isOpen ? 'closed' : idx === 0 ? 'cheapest' : 'mid',
-        kind: entry.kind,
-        isOpen: entry.isOpen,
-      })),
-    [homeExplorerEntries]
-  );
-
   const isCompactSphere = subTab === 'CONCIERGE' && conciergeMode !== 'SPHERE_IDLE';
 
   return (
     <div className="space-y-6 pb-24 md:pb-12">
       {/* ==================================================================== */}
-      {/* AGENTE COMPACTO "LA CHUSPA" (COBALTO PRISMA · BOTÓN PEQUEÑO)         */}
+      {/* AGENTE COMPACTO "LA CHUSPA" (AZUL MARINO, BLANCO, COBALTO Y DORADO)  */}
       {/* ==================================================================== */}
-      <section className="rounded-3xl border border-[#2563EB]/30 bg-gradient-to-br from-white via-[#F4F7FC] to-[#EBF2FF] dark:from-[#0A1328] dark:via-[#070D1F] dark:to-[#0C1938] transition-all shadow-xl chuspa-google-border p-4 sm:p-5">
+      <section className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] transition-all shadow-[0_10px_30px_-14px_rgba(4,51,75,0.14)] p-5 sm:p-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           {/* Agente pequeño y compacto (sin ícono gigante invasivo) */}
           <div className="flex items-center gap-3.5">
@@ -1102,11 +1025,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
             <div className="text-left space-y-0.5 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[11px] uppercase tracking-[0.18em] font-bold bg-gradient-to-r from-[#2563EB] via-[#06B6D4] to-[#E11D74] bg-clip-text text-transparent">
+                <p className="text-[11px] uppercase tracking-[0.18em] font-extrabold text-[#1565F5] dark:text-[#F5C400]">
                   Agente La Chuspa · Toca para pedir
                 </p>
                 {lastResponseMs !== null && (
-                  <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD] font-semibold">
+                  <span className="text-[11px] font-mono-tabular text-[#516478] dark:text-slate-400 font-semibold">
                     · {lastResponseMs} ms
                   </span>
                 )}
@@ -1116,31 +1039,32 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     onClick={() => {
                       setConciergeMode('SPHERE_IDLE');
                       setSphereExpanded(false);
+                      setShowCatalogPriceTable(false);
                       setLastTranscript(null);
                       setReplyText(
                         'Toca el agente pequeño y dime qué necesitas: taxi, restaurante, botica, tour o market.'
                       );
                     }}
-                    className="text-[11px] font-semibold text-[#2563EB] dark:text-[#06B6D4] underline"
+                    className="text-[11px] font-bold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
                   >
-                    Volver al inicio
+                    Volver al inicio →
                   </button>
                 )}
               </div>
               {lastTranscript && (
-                <p className="text-[11px] font-mono-tabular text-[#06B6D4] dark:text-cyan-300">
+                <p className="text-[11px] font-mono-tabular text-[#1565F5] dark:text-[#60A5FA]">
                   Escuché: «{lastTranscript}»
                 </p>
               )}
               <div className="flex items-center gap-2">
-                <p className="text-xs sm:text-sm text-[#14171F] dark:text-[#F4F1EA] font-medium">
+                <p className="text-xs sm:text-sm text-[#0B2538] dark:text-[#F1F5F9] font-medium">
                   {replyText}
                 </p>
                 <button
                   type="button"
                   onClick={() => speakSpanish(replyText)}
                   aria-label="Escuchar voz"
-                  className="w-8 h-8 rounded-full border border-[#06B6D4]/40 bg-[#06B6D4]/10 text-[#1E40AF] dark:text-[#06B6D4] flex items-center justify-center shrink-0"
+                  className="w-8 h-8 rounded-full border border-[#1565F5]/25 bg-[#EBF3FF] dark:bg-[#1565F5]/15 text-[#1565F5] dark:text-[#60A5FA] flex items-center justify-center shrink-0"
                 >
                   <Volume2 className="w-3.5 h-3.5" />
                 </button>
@@ -1148,7 +1072,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             </div>
           </div>
 
-          {/* Buscador siempre listo junto al agente compacto */}
+          {/* Buscador siempre listo junto al agente compacto (sin botón de comparación de precios) */}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -1158,21 +1082,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             className="flex flex-col sm:flex-row gap-2.5 w-full lg:max-w-xl"
           >
             <div className="relative flex-1 flex items-center">
-              <Search className="w-4 h-4 text-[#2563EB] absolute left-4 pointer-events-none" />
+              <Search className="w-4 h-4 text-[#1565F5] absolute left-4 pointer-events-none" />
               <input
                 ref={inputRef}
                 type="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder='Pide cualquier servicio: "Taxi", "Pollo a la brasa", "Oxígeno", "Leche"'
-                className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1630] text-sm text-[#14171F] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#06B6D4]"
+                placeholder='Pide al agente: "Taxi", "Pollo a la brasa", "Oxígeno", "Leche"'
+                className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-[#1565F5]/35 bg-[#F7FAFC] dark:bg-[#031622] text-sm text-[#0B2538] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1565F5]"
               />
               <button
                 type="button"
                 onClick={() => handleVoiceCapture()}
                 aria-label="Dictar por voz"
                 className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
-                  voiceActive ? 'bg-[#E11D74] text-white' : 'text-[#2563EB] hover:text-[#06B6D4]'
+                  voiceActive ? 'bg-[#E11D48] text-white' : 'text-[#1565F5] hover:bg-[#1565F5]/10'
                 }`}
               >
                 {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
@@ -1181,155 +1105,155 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             <button
               type="submit"
               disabled={loading}
-              className="min-h-[46px] px-6 rounded-2xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-sm font-bold whitespace-nowrap shrink-0 chuspa-google-btn"
+              className="min-h-[46px] px-6 rounded-2xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-sm font-extrabold whitespace-nowrap shrink-0 transition-colors shadow-sm"
             >
-              {loading ? 'Comparando...' : 'Comparar Precios'}
+              {loading ? 'Solicitando...' : 'Solicitar'}
             </button>
           </form>
         </div>
 
-        {/* Botones directos principales bajo la barra del agente */}
+        {/* Botones directos principales bajo la barra del agente (activan el mapa solo al solicitar) */}
         {!isCompactSphere && (
-          <div className="w-full mt-4 space-y-3.5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Quiero un taxi al aeropuerto', 'TRANSPORTE')}
-                  className="min-h-[58px] px-5 py-3 rounded-2xl border border-[#84CC16]/50 bg-[#84CC16]/15 hover:bg-[#84CC16]/25 text-left flex items-center justify-between gap-3 transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-[#B6F02B] text-[#0B0E14] flex items-center justify-center shrink-0">
-                      <CarFront className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-[#14171F] dark:text-white">
-                        Quiero un Taxi
-                      </p>
-                      <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
-                        Mapa con taxistas y precios estilo InDrive
-                      </p>
-                    </div>
+          <div className="w-full mt-5 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Quiero un taxi al aeropuerto', 'TRANSPORTE')}
+                className="min-h-[62px] px-5 py-3.5 rounded-2xl border border-[#1565F5]/30 bg-white dark:bg-[#031622] hover:border-[#1565F5] hover:bg-[#EBF3FF]/50 text-left flex items-center justify-between gap-3 transition-colors shadow-xs"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#04334B] text-[#F5C400] flex items-center justify-center shrink-0">
+                    <CarFront className="w-5 h-5" />
                   </div>
-                  <Compass className="w-4 h-4 text-[#84CC16] shrink-0" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Comprar leche, atún y arroz en market abierto')}
-                  className="min-h-[58px] px-5 py-3 rounded-2xl border border-emerald-500/45 bg-emerald-500/12 hover:bg-emerald-500/20 text-left flex items-center justify-between gap-3 transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                      <Store className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-[#14171F] dark:text-white">
-                        Markets Abiertos
-                      </p>
-                      <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5]">
-                        Compara leche, atún y productos en mapa
-                      </p>
-                    </div>
+                  <div>
+                    <p className="text-sm font-bold text-[#0B2538] dark:text-white">
+                      Solicitar Taxi
+                    </p>
+                    <p className="text-[11px] text-[#516478] dark:text-slate-400">
+                      Activa el mapa en vivo con unidades cercanas
+                    </p>
                   </div>
-                  <ShoppingBasket className="w-4 h-4 text-emerald-500 shrink-0" />
-                </button>
-              </div>
+                </div>
+                <Compass className="w-4 h-4 text-[#1565F5] shrink-0" />
+              </button>
 
-              {/* Comandos de voz rápidos para Otros Negocios (Restaurantes, Botica, Tours, Hoteles, Divisas) */}
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Quiero pedir ceviche en restaurante', 'RESTAURANTE')}
-                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
-                >
-                  <Utensils className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>«Pedir Restaurante»</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Necesito pastillas para el soroche en botica 24h', 'FARMACIA')}
-                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
-                >
-                  <Pill className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>«Botica 24h»</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Quiero reservar tour privado a Machu Picchu', 'TURISMO')}
-                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  <span>«Tours Cusco»</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Reservar habitación de hotel oxigenada', 'HOTEL')}
-                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
-                >
-                  <Hotel className="w-3.5 h-3.5 text-sky-400" />
-                  <span>«Hoteles»</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => runVoiceCommand('Quiero cambiar dólares en casa de cambio')}
-                  className="min-h-[36px] px-3 rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121620] text-xs font-medium flex items-center gap-1.5 hover:border-[#D4AF37]"
-                >
-                  <ArrowLeftRight className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>«Cambiar Dólares»</span>
-                </button>
-              </div>
-
-              {/* Barra compacta GPS / Voz / SOS */}
-              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSphereExpanded(true);
-                    setTimeout(() => inputRef.current?.focus(), 60);
-                  }}
-                  className="min-h-[38px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs font-medium text-[#555B66] dark:text-[#A3A9B5] hover:border-[#D4AF37]"
-                >
-                  Escribir otro pedido
-                </button>
-                <button
-                  type="button"
-                  onClick={requestGps}
-                  className="min-h-[38px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs font-medium flex items-center gap-1.5"
-                >
-                  <MapPin className="w-3.5 h-3.5 text-[#D4AF37]" />
-                  <span>{gpsStatus === 'live' ? 'GPS Activo' : 'Activar mi GPS'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next = !speakReplies;
-                    setSpeakReplies(next);
-                    if (next) speakSpanish(replyText);
-                    else stopSpeaking();
-                  }}
-                  className={`min-h-[38px] px-3.5 rounded-xl border text-xs font-medium flex items-center gap-1.5 ${
-                    speakReplies
-                      ? 'border-[#D4AF37]/60 text-[#9A7B2C] dark:text-[#E5C158]'
-                      : 'border-black/10 dark:border-white/10'
-                  }`}
-                >
-                  <Volume2 className="w-3.5 h-3.5" />
-                  <span>{speakReplies ? 'Voz Activa' : 'Voz Silenciada'}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSosOpen(true)}
-                  className="min-h-[38px] px-3.5 rounded-xl border border-[#C81E5B]/45 text-xs font-semibold text-[#C81E5B] flex items-center gap-1.5 hover:bg-[#C81E5B]/10"
-                >
-                  <ShieldAlert className="w-3.5 h-3.5" />
-                  <span>Emergencia SOS</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Comprar leche, atún y arroz en market abierto')}
+                className="min-h-[62px] px-5 py-3.5 rounded-2xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#031622] hover:border-[#1565F5] hover:bg-[#EBF3FF]/50 text-left flex items-center justify-between gap-3 transition-colors shadow-xs"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#1565F5] text-white flex items-center justify-center shrink-0">
+                    <Store className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-[#0B2538] dark:text-white">
+                      Pedir en Markets Abiertos
+                    </p>
+                    <p className="text-[11px] text-[#516478] dark:text-slate-400">
+                      Activa el mapa con tiendas y víveres disponibles
+                    </p>
+                  </div>
+                </div>
+                <ShoppingBasket className="w-4 h-4 text-[#1565F5] shrink-0" />
+              </button>
             </div>
-          )}
+
+            {/* Comandos de voz rápidos para Otros Negocios */}
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Quiero pedir ceviche en restaurante', 'RESTAURANTE')}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
+              >
+                <Utensils className="w-3.5 h-3.5 text-[#1565F5]" />
+                <span>«Pedir Restaurante»</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Necesito pastillas para el soroche en botica 24h', 'FARMACIA')}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
+              >
+                <Pill className="w-3.5 h-3.5 text-[#1565F5]" />
+                <span>«Botica 24h»</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Quiero reservar tour privado a Machu Picchu', 'TURISMO')}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-[#F5C400]" />
+                <span>«Tours Cusco»</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Reservar habitación de hotel oxigenada', 'HOTEL')}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
+              >
+                <Hotel className="w-3.5 h-3.5 text-[#1565F5]" />
+                <span>«Hoteles»</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => runVoiceCommand('Quiero cambiar dólares en casa de cambio')}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
+              >
+                <ArrowLeftRight className="w-3.5 h-3.5 text-[#1565F5]" />
+                <span>«Cambiar Dólares»</span>
+              </button>
+            </div>
+
+            {/* Barra compacta GPS / Voz / SOS */}
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setSphereExpanded(true);
+                  setTimeout(() => inputRef.current?.focus(), 60);
+                }}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 hover:border-[#1565F5]"
+              >
+                Escribir otro pedido
+              </button>
+              <button
+                type="button"
+                onClick={requestGps}
+                className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
+              >
+                <MapPin className="w-3.5 h-3.5 text-[#1565F5]" />
+                <span>{gpsStatus === 'live' ? 'GPS Activo' : 'Activar mi GPS'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !speakReplies;
+                  setSpeakReplies(next);
+                  if (next) speakSpanish(replyText);
+                  else stopSpeaking();
+                }}
+                className={`min-h-[38px] px-3.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 ${
+                  speakReplies
+                    ? 'border-[#1565F5]/40 bg-[#EBF3FF] dark:bg-[#1565F5]/15 text-[#1565F5] dark:text-[#60A5FA]'
+                    : 'border-[#D8E2EC] dark:border-white/15 text-[#516478]'
+                }`}
+              >
+                <Volume2 className="w-3.5 h-3.5" />
+                <span>{speakReplies ? 'Voz Activa' : 'Voz Silenciada'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSosOpen(true)}
+                className="min-h-[38px] px-3.5 rounded-xl border border-rose-500/40 bg-rose-50 dark:bg-rose-950/30 text-xs font-bold text-rose-700 dark:text-rose-300 flex items-center gap-1.5 hover:bg-rose-100"
+              >
+                <ShieldAlert className="w-3.5 h-3.5" />
+                <span>Emergencia SOS</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Barra de acceso rápido a los módulos complementarios */}
-        <div className="mt-4 pt-4 border-t border-black/8 dark:border-white/8 flex items-center gap-2 overflow-x-auto pb-1">
+        <div className="mt-4 pt-4 border-t border-[#D8E2EC] dark:border-white/10 flex items-center gap-2 overflow-x-auto pb-1">
           <button
             type="button"
             onClick={() => {
@@ -1339,8 +1263,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             }}
             className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
               subTab === 'CONCIERGE' && conciergeMode === 'TAXI_INDRIVE'
-                ? 'border-[#84CC16] bg-[#84CC16]/15 text-[#14171F] dark:text-[#C2F238]'
-                : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD]'
+                ? 'border-[#04334B] bg-[#04334B] text-[#F5C400]'
+                : 'border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-[#0B2538] dark:text-slate-300 hover:border-[#1565F5]'
             }`}
           >
             <CarFront className="w-3.5 h-3.5" />
@@ -1356,8 +1280,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             }}
             className={`min-h-[38px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 border ${
               subTab === 'CONCIERGE' && conciergeMode === 'MARKET_MAP'
-                ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD]'
+                ? 'border-[#1565F5] bg-[#1565F5] text-white'
+                : 'border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-[#0B2538] dark:text-slate-300 hover:border-[#1565F5]'
             }`}
           >
             <Store className="w-3.5 h-3.5" />
@@ -1386,8 +1310,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 }}
                 className={`min-h-[38px] px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 border transition-colors ${
                   active
-                    ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37]/20 dark:text-[#E5C158] dark:border-[#D4AF37]/50'
-                    : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#98A0AD] hover:border-[#D4AF37]/40'
+                    ? 'bg-[#04334B] text-[#F5C400] border-[#04334B]'
+                    : 'border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-[#0B2538] dark:text-slate-300 hover:border-[#1565F5]'
                 }`}
               >
                 {sc.icon}
@@ -1399,160 +1323,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       </section>
 
       {errorMsg && (
-        <div className="rounded-2xl border border-[#C81E5B]/40 bg-[#C81E5B]/10 px-4 py-3 text-sm text-[#C81E5B]">
+        <div className="rounded-2xl border border-rose-500/40 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-sm text-rose-700 dark:text-rose-300">
           {errorMsg}
         </div>
       )}
 
       {/* ==================================================================== */}
-      {/* MODO 0 (INICIO): MAPA GOOGLE MAPS REAL + MULTI-NEGOCIOS EN CUSCO     */}
+      {/* MODO 0 (INICIO): SIN MAPA NI LISTA DE PRECIOS HASTA SOLICITAR        */}
+      {/* El mapa se activa únicamente cuando el cliente solicita al agente    */}
       {/* ==================================================================== */}
-      {subTab === 'CONCIERGE' && conciergeMode === 'SPHERE_IDLE' && (
-        <section className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0B1224] p-4 sm:p-5 shadow-2xl space-y-4 chuspa-google-border">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#4285F4] dark:text-[#60A5FA]">
-                Google Maps Real en Vivo · Red Multinegocios
-              </p>
-              <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
-                Explora Taxis y Negocios Cercanos en Cusco ({homeExplorerEntries.length})
-              </h2>
-            </div>
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
-              {(
-                [
-                  { id: 'ALL', label: 'Todos' },
-                  { id: 'TRANSPORTE', label: 'Taxis' },
-                  { id: 'RESTAURANTE', label: 'Restaurantes / Tiendas' },
-                  { id: 'FARMACIA', label: 'Boticas' },
-                  { id: 'HOTEL', label: 'Hoteles' },
-                  { id: 'TURISMO', label: 'Tours' },
-                  { id: 'CASA_CAMBIO', label: 'Divisas' },
-                  { id: 'CUSTOM_IA', label: 'Multi-Rubro IA' },
-                ] as const
-              ).map((chip) => {
-                const active = homeRubroFilter === chip.id;
-                return (
-                  <button
-                    key={chip.id}
-                    type="button"
-                    onClick={() => {
-                      setHomeRubroFilter(chip.id);
-                      setHomeSelectedPinId(null);
-                    }}
-                    className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold whitespace-nowrap shrink-0 border transition-colors ${
-                      active
-                        ? 'bg-[#2563EB] text-white border-[#2563EB] shadow'
-                        : 'border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#111A30] text-[#555B66] dark:text-[#A3A9B5] hover:border-[#4285F4]/50'
-                    }`}
-                  >
-                    {chip.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-            {/* Mapa Google Maps grande centrado */}
-            <div className="lg:col-span-8">
-              <CuscoGeoMap
-                mode="MARKET"
-                userLat={coords.lat}
-                userLng={coords.lng}
-                pins={homeMapPins}
-                selectedPinId={homeSelectedPinId ?? homeMapPins[0]?.id ?? null}
-                onSelectPin={(id) => setHomeSelectedPinId(id)}
-                onRequestPinAction={(id) => {
-                  const found = homeExplorerEntries.find((e) => e.pinId === id);
-                  if (!found) return;
-                  if (found.rubro === 'CASA_CAMBIO') {
-                    setSubTab('DIVISAS');
-                  } else {
-                    setSelectedRubro(found.rubro);
-                    setQuery(found.searchPrompt);
-                    void handleSearch(found.searchPrompt, found.rubro, true);
-                  }
-                }}
-                onRequestGps={requestGps}
-                gpsLive={gpsStatus === 'live'}
-                heightClass="h-[46vh] sm:h-[460px] min-h-[340px]"
-              />
-            </div>
-
-            {/* Banner carrusel vertical movible de arriba abajo con los negocios encontrados */}
-            <div className="lg:col-span-4 rounded-2xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0E162B] p-3 flex flex-col max-h-[460px]">
-              <div className="flex items-center justify-between pb-2 mb-2 border-b border-black/10 dark:border-white/10">
-                <p className="text-xs font-bold text-[#14171F] dark:text-white">
-                  Relación de Negocios & Unidades
-                </p>
-                <span className="text-[11px] font-mono-tabular text-[#4285F4] font-semibold">
-                  {homeExplorerEntries.length} activos
-                </span>
-              </div>
-
-              <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-                {homeExplorerEntries.length === 0 ? (
-                  <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] py-8 text-center">
-                    No hay negocios activos en este filtro todavía.
-                  </p>
-                ) : (
-                  homeExplorerEntries.map((item) => {
-                    const selected = (homeSelectedPinId ?? homeExplorerEntries[0]?.pinId) === item.pinId;
-                    return (
-                      <div
-                        key={item.pinId}
-                        onClick={() => setHomeSelectedPinId(item.pinId)}
-                        className={`rounded-xl border p-3 cursor-pointer transition-all space-y-1.5 ${
-                          selected
-                            ? 'border-[#4285F4] bg-[#4285F4]/12 shadow-md'
-                            : 'border-black/10 dark:border-white/10 bg-white dark:bg-[#131D36] hover:border-[#4285F4]/50'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-xs font-bold text-[#14171F] dark:text-white truncate">
-                              {item.titulo}
-                            </p>
-                            <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD] truncate">
-                              {item.subtitulo}
-                            </p>
-                          </div>
-                          <span className="text-[11px] font-mono-tabular font-bold text-emerald-600 dark:text-emerald-400 shrink-0">
-                            {item.priceText}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 pt-1">
-                          <span className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                            {item.km} km · ★ {item.calificacion.toFixed(1)}
-                            {item.isAiCustom ? ' · Panel IA' : ''}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (item.rubro === 'CASA_CAMBIO') {
-                                setSubTab('DIVISAS');
-                              } else {
-                                setSelectedRubro(item.rubro);
-                                setQuery(item.searchPrompt);
-                                void handleSearch(item.searchPrompt, item.rubro, true);
-                              }
-                            }}
-                            className="min-h-[30px] px-2.5 rounded-lg bg-[#14213D] dark:bg-[#4285F4] text-white text-[11px] font-semibold"
-                          >
-                            Ver / Pedir
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
 
       {/* ==================================================================== */}
       {/* MODO 1: TAXI POR GEOLOCALIZACIÓN (INDRIVE / FACILITO)                */}
@@ -1669,17 +1448,17 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   />
                 </div>
 
-                <div className="lg:col-span-4 rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1428] p-3.5 flex flex-col max-h-[520px] shadow-xl">
-                  <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-black/10 dark:border-white/10">
+                <div className="lg:col-span-4 rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-3.5 flex flex-col max-h-[520px] shadow-md">
+                  <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-[#D8E2EC] dark:border-white/10">
                     <div>
-                      <p className="text-xs font-bold text-[#14171F] dark:text-white">
+                      <p className="text-xs font-bold text-[#0B2538] dark:text-white">
                         Negocios Encontrados
                       </p>
-                      <p className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                      <p className="text-[10px] text-[#516478] dark:text-slate-400">
                         Desliza de arriba a abajo para elegir
                       </p>
                     </div>
-                    <span className="text-[11px] font-mono-tabular font-bold text-[#4285F4]">
+                    <span className="text-[11px] font-mono-tabular font-bold text-[#1565F5]">
                       {catalogMapEntries.length}
                     </span>
                   </div>
@@ -1694,25 +1473,25 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                           onClick={() => setSelectedCatalogKey(entry.key)}
                           className={`rounded-2xl border p-3 cursor-pointer transition-all space-y-1.5 ${
                             selected
-                              ? 'border-[#4285F4] bg-[#4285F4]/10 shadow-md'
-                              : 'border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#121B33]'
+                              ? 'border-[#1565F5] bg-[#EBF3FF]/70 dark:bg-[#1565F5]/15 shadow-sm'
+                              : 'border-[#D8E2EC] dark:border-white/10 bg-[#F7FAFC] dark:bg-[#031622]'
                           }`}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="text-xs font-bold text-[#14171F] dark:text-white truncate">
+                              <p className="text-xs font-bold text-[#0B2538] dark:text-white truncate">
                                 {entry.op.negocio_nombre}
                               </p>
-                              <p className="text-[11px] text-[#4B5563] dark:text-[#CBD5E1] line-clamp-2">
+                              <p className="text-[11px] text-[#516478] dark:text-slate-300 line-clamp-2">
                                 {entry.op.titulo}
                               </p>
                             </div>
-                            <span className="text-xs font-mono-tabular font-extrabold text-emerald-600 dark:text-emerald-400 shrink-0">
+                            <span className="text-xs font-mono-tabular font-extrabold text-[#1565F5] dark:text-[#F5C400] shrink-0">
                               {entry.priceText}
                             </span>
                           </div>
                           <div className="flex items-center justify-between gap-2 pt-1">
-                            <span className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
+                            <span className="text-[10px] text-[#516478] dark:text-slate-400">
                               {entry.op.zona || 'Cusco'} · ★ {entry.op.calificacion.toFixed(1)}
                             </span>
                             <button
@@ -1729,7 +1508,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                                   }
                                 }
                               }}
-                              className="min-h-[30px] px-3 rounded-lg bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold"
+                              className="min-h-[30px] px-3 rounded-lg bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-[11px] font-extrabold"
                             >
                               Solicitar
                             </button>
@@ -1741,95 +1520,107 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </div>
               </div>
 
-              {/* Tabla Comparativa de Precios · Escoge el negocio o producto */}
-              <div className="rounded-3xl border border-[#2563EB]/25 bg-white dark:bg-[#0C142B] p-4 sm:p-5 shadow-lg overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-black/10 dark:border-white/10">
-                  <div>
-                    <h3 className="text-sm font-bold text-[#14171F] dark:text-white">
-                      Tabla Comparativa de Precios · Agente La Chuspa
-                    </h3>
-                    <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
-                      Ordenado de menor a mayor tarifa para que escojas al mejor proveedor
-                    </p>
-                  </div>
-                  <span className="text-[11px] font-mono-tabular font-semibold text-[#2563EB] dark:text-[#06B6D4]">
-                    {catalogMapEntries.length} opciones comparadas
-                  </span>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="border-b border-black/10 dark:border-white/10 text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
-                        <th className="py-2.5 pr-3 font-semibold">Negocio</th>
-                        <th className="py-2.5 pr-3 font-semibold">Servicio / Producto</th>
-                        <th className="py-2.5 pr-3 font-semibold">Distancia · ETA</th>
-                        <th className="py-2.5 pr-3 font-semibold text-right">Precio</th>
-                        <th className="py-2.5 pl-3 font-semibold text-right">Acción</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-black/8 dark:divide-white/8">
-                      {catalogMapEntries.map((entry) => {
-                        const op = entry.op;
-                        return (
-                          <tr
-                            key={`tbl-${entry.key}`}
-                            onClick={() => setSelectedCatalogKey(entry.key)}
-                            className={`cursor-pointer transition-colors ${
-                              entry.key === selectedCatalogKey
-                                ? 'bg-[#2563EB]/8 dark:bg-[#2563EB]/15'
-                                : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'
-                            }`}
-                          >
-                            <td className="py-3 pr-3 font-semibold text-[#14171F] dark:text-white">
-                              <div>{op.negocio_nombre}</div>
-                              <div className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                                ★ {op.calificacion.toFixed(2)}
-                              </div>
-                            </td>
-                            <td className="py-3 pr-3 text-[#4A505C] dark:text-[#C5CBD6]">
-                              <div className="font-medium text-[#14171F] dark:text-white">
-                                {op.titulo}
-                              </div>
-                              {op.mejor_precio && (
-                                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                                  Mejor precio encontrado
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-3 pr-3 font-mono-tabular text-[#6A717E] dark:text-[#98A0AD] whitespace-nowrap">
-                              {op.distancia_km !== undefined ? `${op.distancia_km.toFixed(1)} km · ` : ''}
-                              {op.eta_min} min
-                            </td>
-                            <td className="py-3 pr-3 text-right font-mono-tabular font-black text-sm whitespace-nowrap text-[#14171F] dark:text-white">
-                              {entry.priceText}
-                            </td>
-                            <td className="py-3 pl-3 text-right whitespace-nowrap">
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (op.tipo === 'DIVISA') {
-                                    setSubTab('DIVISAS');
-                                  } else {
-                                    setSheetError(null);
-                                    setSelectedOption(op);
-                                    if (!isDocValid) {
-                                      notifyDocumentAlertIfNeeded(op.titulo, false);
-                                    }
-                                  }
-                                }}
-                                className="min-h-[34px] px-3.5 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white text-[11px] font-bold"
-                              >
-                                {op.tipo === 'DIVISA' ? 'Cotizar' : 'Escoger'}
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+              {/* Opción discreta para mostrar/ocultar la tabla comparativa si el usuario la requiere */}
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowCatalogPriceTable((v) => !v)}
+                  className="text-xs font-semibold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
+                >
+                  {showCatalogPriceTable ? 'Ocultar lista comparativa' : 'Ver lista comparativa de precios →'}
+                </button>
               </div>
+
+              {showCatalogPriceTable && (
+                <div className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-4 sm:p-5 shadow-md overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#D8E2EC] dark:border-white/10">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#0B2538] dark:text-white">
+                        Lista Comparativa · Agente La Chuspa
+                      </h3>
+                      <p className="text-[11px] text-[#516478] dark:text-slate-400">
+                        Ordenado de menor a mayor tarifa para escoger al proveedor
+                      </p>
+                    </div>
+                    <span className="text-[11px] font-mono-tabular font-semibold text-[#1565F5]">
+                      {catalogMapEntries.length} opciones
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-[#D8E2EC] dark:border-white/10 text-[11px] uppercase tracking-wider text-[#516478] dark:text-slate-400">
+                          <th className="py-2.5 pr-3 font-semibold">Negocio</th>
+                          <th className="py-2.5 pr-3 font-semibold">Servicio / Producto</th>
+                          <th className="py-2.5 pr-3 font-semibold">Distancia · ETA</th>
+                          <th className="py-2.5 pr-3 font-semibold text-right">Precio</th>
+                          <th className="py-2.5 pl-3 font-semibold text-right">Acción</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#D8E2EC]/70 dark:divide-white/10">
+                        {catalogMapEntries.map((entry) => {
+                          const op = entry.op;
+                          return (
+                            <tr
+                              key={`tbl-${entry.key}`}
+                              onClick={() => setSelectedCatalogKey(entry.key)}
+                              className={`cursor-pointer transition-colors ${
+                                entry.key === selectedCatalogKey
+                                  ? 'bg-[#EBF3FF] dark:bg-[#1565F5]/15'
+                                  : 'hover:bg-[#F7FAFC] dark:hover:bg-white/[0.03]'
+                              }`}
+                            >
+                              <td className="py-3 pr-3 font-semibold text-[#0B2538] dark:text-white">
+                                <div>{op.negocio_nombre}</div>
+                                <div className="text-[10px] font-mono-tabular text-[#516478] dark:text-slate-400">
+                                  ★ {op.calificacion.toFixed(2)}
+                                </div>
+                              </td>
+                              <td className="py-3 pr-3 text-[#516478] dark:text-slate-300">
+                                <div className="font-medium text-[#0B2538] dark:text-white">
+                                  {op.titulo}
+                                </div>
+                                {op.mejor_precio && (
+                                  <span className="text-[10px] font-bold text-[#1565F5] dark:text-[#F5C400]">
+                                    Mejor tarifa encontrada
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-3 pr-3 font-mono-tabular text-[#516478] dark:text-slate-400 whitespace-nowrap">
+                                {op.distancia_km !== undefined ? `${op.distancia_km.toFixed(1)} km · ` : ''}
+                                {op.eta_min} min
+                              </td>
+                              <td className="py-3 pr-3 text-right font-mono-tabular font-black text-sm whitespace-nowrap text-[#0B2538] dark:text-white">
+                                {entry.priceText}
+                              </td>
+                              <td className="py-3 pl-3 text-right whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (op.tipo === 'DIVISA') {
+                                      setSubTab('DIVISAS');
+                                    } else {
+                                      setSheetError(null);
+                                      setSelectedOption(op);
+                                      if (!isDocValid) {
+                                        notifyDocumentAlertIfNeeded(op.titulo, false);
+                                      }
+                                    }
+                                  }}
+                                  className="min-h-[34px] px-3.5 rounded-xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-[11px] font-extrabold"
+                                >
+                                  {op.tipo === 'DIVISA' ? 'Cotizar' : 'Escoger'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
 
               {/* Tarjetas completas debajo para detalle extendido */}
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
@@ -1901,7 +1692,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                               }
                             }
                           }}
-                          className="min-h-[44px] px-5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity chuspa-google-btn"
+                          className="min-h-[44px] px-5 rounded-xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-xs font-extrabold whitespace-nowrap shrink-0 transition-colors shadow-xs"
                         >
                           {op.tipo === 'DIVISA' ? 'Cotizar' : 'Solicitar'}
                         </button>

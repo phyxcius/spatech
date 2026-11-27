@@ -6,11 +6,13 @@
     --font-display: 'Cormorant Garamond', Georgia, serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-    --chuspa-cobalt: #2563eb;
-    --chuspa-royal: #1e40af;
-    --chuspa-cyan: #06b6d4;
-    --chuspa-magenta: #e11d74;
-    --chuspa-amber: #f59e0b;
+    --chuspa-navy: #04334b;
+    --chuspa-navy-deep: #032638;
+    --chuspa-cobalt: #1565f5;
+    --chuspa-gold: #f5c400;
+    --chuspa-ink: #0b2538;
+    --chuspa-muted: #516478;
+    --chuspa-border: #d8e2ec;
   }
 
   body {
@@ -111,79 +113,19 @@
   animation: chuspa-glow-spin 3.8s linear infinite;
 }
 
-@keyframes chuspa-google-shimmer {
-  0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-  100% {
-    background-position: 0% 50%;
-  }
-}
-
-/* Destellos cambiantes con paleta Cobalto, Cian, Magenta y Ámbar Dorado */
+/* Superficies limpias y elevación fintech inspiradas en diseño Azul Marino, Cobalto y Dorado */
 .chuspa-google-border {
   position: relative;
-  isolation: isolate;
-}
-
-.chuspa-google-border::before {
-  content: '';
-  position: absolute;
-  inset: -1.5px;
-  border-radius: inherit;
-  padding: 1.5px;
-  background: linear-gradient(
-    115deg,
-    #2563eb,
-    #06b6d4,
-    #e11d74,
-    #f59e0b,
-    #3d7eff,
-    #2563eb
-  );
-  background-size: 300% 300%;
-  animation: chuspa-google-shimmer 4.5s ease infinite;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-  z-index: 1;
+  box-shadow:
+    0 1px 3px rgba(4, 51, 75, 0.06),
+    0 12px 28px -12px rgba(4, 51, 75, 0.14);
 }
 
 .chuspa-google-btn {
   position: relative;
-  isolation: isolate;
   box-shadow:
-    0 0 0 1px rgba(37, 99, 235, 0.38),
-    0 6px 20px -4px rgba(37, 99, 235, 0.32),
-    0 2px 12px -2px rgba(225, 29, 116, 0.22);
-}
-
-.chuspa-google-btn::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border-radius: inherit;
-  padding: 1.75px;
-  background: linear-gradient(
-    120deg,
-    #2563eb,
-    #06b6d4,
-    #e11d74,
-    #f59e0b,
-    #3d7eff
-  );
-  background-size: 280% 280%;
-  animation: chuspa-google-shimmer 3.6s linear infinite;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-  opacity: 0.92;
-  z-index: 1;
+    0 2px 6px rgba(4, 51, 75, 0.14),
+    0 6px 16px -6px rgba(21, 101, 245, 0.22);
 }
 
 .chuspa-edge-scroll::-webkit-scrollbar {

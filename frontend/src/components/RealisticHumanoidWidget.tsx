@@ -100,41 +100,37 @@ export const RealisticAvatarPortrait: React.FC<RealisticAvatarPortraitProps> = (
         <>
           <span
             aria-hidden="true"
-            className="chuspa-sound-wave-1 absolute -inset-2 rounded-full border-2 border-[#4285F4]/80 pointer-events-none"
+            className="chuspa-sound-wave-1 absolute -inset-2 rounded-full border-2 border-[#1565F5]/80 pointer-events-none"
           />
           <span
             aria-hidden="true"
-            className="chuspa-sound-wave-2 absolute -inset-3 rounded-full border-2 border-[#FBBC04]/75 pointer-events-none"
-          />
-          <span
-            aria-hidden="true"
-            className="chuspa-sound-wave-3 absolute -inset-4 rounded-full border-2 border-[#34A853]/70 pointer-events-none"
+            className="chuspa-sound-wave-2 absolute -inset-3 rounded-full border-2 border-[#F5C400]/80 pointer-events-none"
           />
         </>
       )}
 
-      {/* Halo circular Google AI Studio sin marco cuadrado */}
+      {/* Halo circular Azul Marino, Cobalto y Dorado */}
       <span
         aria-hidden="true"
-        className="absolute -inset-[3px] rounded-full chuspa-aistudio-glow opacity-90 pointer-events-none"
+        className="absolute -inset-[3px] rounded-full opacity-95 pointer-events-none"
         style={{
           background:
-            'conic-gradient(from 0deg, #4285F4, #EA4335, #FBBC04, #34A853, #D4AF37, #4285F4)',
+            'conic-gradient(from 0deg, #04334B, #1565F5, #F5C400, #1565F5, #04334B)',
         }}
       />
 
-      {/* Medallón circular obsidiana con boca digital del futuro */}
-      <span className="relative flex items-center justify-center w-full h-full rounded-full bg-gradient-to-b from-[#0C1222] via-[#070B14] to-[#04070D] overflow-hidden border border-white/15">
+      {/* Medallón circular Azul Marino Profundo */}
+      <span className="relative flex items-center justify-center w-full h-full rounded-full bg-gradient-to-b from-[#06425E] via-[#04334B] to-[#032436] overflow-hidden border border-white/20">
         <span
           aria-hidden="true"
           className="absolute inset-0 opacity-45 pointer-events-none"
           style={{
             background:
-              'radial-gradient(circle at 50% 45%, rgba(66,133,244,0.34), rgba(52,168,83,0.12) 55%, transparent 78%)',
+              'radial-gradient(circle at 50% 45%, rgba(21,101,245,0.34), rgba(245,196,0,0.12) 55%, transparent 78%)',
           }}
         />
 
-        {/* SVG de Boca Digital Futurista + Arcos laterales de Parlante */}
+        {/* SVG de Boca Digital + Arcos laterales de Parlante */}
         <svg
           viewBox="0 0 160 120"
           className="relative w-[86%] h-[68%] overflow-visible"
@@ -142,15 +138,14 @@ export const RealisticAvatarPortrait: React.FC<RealisticAvatarPortraitProps> = (
         >
           <defs>
             <linearGradient id="chuspaLipGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#4285F4" />
-              <stop offset="33%" stopColor="#EA4335" />
-              <stop offset="66%" stopColor="#FBBC04" />
-              <stop offset="100%" stopColor="#34A853" />
+              <stop offset="0%" stopColor="#1565F5" />
+              <stop offset="50%" stopColor="#F5C400" />
+              <stop offset="100%" stopColor="#38BDF8" />
             </linearGradient>
             <linearGradient id="chuspaMouthCore" x1="0%" y1="0%" x2="0%" y2="100%">
               <stop offset="0%" stopColor="#38BDF8" stopOpacity="0.95" />
-              <stop offset="50%" stopColor="#FBBC04" stopOpacity="0.95" />
-              <stop offset="100%" stopColor="#34A853" stopOpacity="0.95" />
+              <stop offset="50%" stopColor="#F5C400" stopOpacity="0.95" />
+              <stop offset="100%" stopColor="#1565F5" stopOpacity="0.95" />
             </linearGradient>
           </defs>
 
@@ -234,10 +229,10 @@ export const RealisticAvatarPortrait: React.FC<RealisticAvatarPortraitProps> = (
         <span
           className={`absolute bottom-1.5 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-1 whitespace-nowrap ${
             listening
-              ? 'bg-[#4285F4] text-white'
+              ? 'bg-[#1565F5] text-white'
               : wavesOn
-              ? 'bg-[#FBBC04] text-[#0B0E14]'
-              : 'bg-white/10 text-slate-200 border border-white/15'
+              ? 'bg-[#F5C400] text-[#04334B]'
+              : 'bg-white/15 text-white border border-white/20'
           }`}
         >
           <Volume2 className="w-2.5 h-2.5" />
@@ -467,14 +462,14 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
       {!minimized && (caption || showTextBox) && (
         <div className="pointer-events-auto w-[268px] sm:w-[290px] space-y-2">
           {caption && (
-            <div className="relative rounded-2xl bg-[#090D16]/90 text-[#F4F1EA] px-3.5 py-2.5 text-xs leading-relaxed backdrop-blur-md shadow-2xl chuspa-google-border">
+            <div className="relative rounded-2xl bg-[#04334B] text-white px-3.5 py-2.5 text-xs leading-relaxed shadow-xl border border-[#1565F5]/40">
               <div className="flex items-start justify-between gap-2">
                 <p className="flex-1">{caption}</p>
                 <button
                   type="button"
                   onClick={() => setCaption(null)}
                   aria-label="Ocultar mensaje"
-                  className="text-slate-400 hover:text-white shrink-0"
+                  className="text-slate-300 hover:text-white shrink-0"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -491,20 +486,20 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
                 setTextQuery('');
                 void processAssistantPrompt(val);
               }}
-              className="flex items-center gap-1.5 rounded-full bg-[#090D16]/92 backdrop-blur-md pl-3.5 pr-1.5 py-1 shadow-xl chuspa-google-border"
+              className="flex items-center gap-1.5 rounded-full bg-white dark:bg-[#04334B] pl-3.5 pr-1.5 py-1 shadow-xl border border-[#1565F5]/40"
             >
               <input
                 type="text"
                 value={textQuery}
                 onChange={(e) => setTextQuery(e.target.value)}
                 placeholder="Pide taxi, market o botica..."
-                className="flex-1 bg-transparent text-xs text-white placeholder:text-slate-400 focus:outline-none min-h-[34px]"
+                className="flex-1 bg-transparent text-xs text-[#0B2538] dark:text-white placeholder:text-[#516478] dark:placeholder:text-slate-300 focus:outline-none min-h-[34px]"
               />
               <button
                 type="submit"
                 disabled={busy || !textQuery.trim()}
                 aria-label="Enviar mensaje al asistente"
-                className="w-8 h-8 rounded-full bg-[#FBBC04] text-[#0B0E14] flex items-center justify-center disabled:opacity-40 shrink-0"
+                className="w-8 h-8 rounded-full bg-[#F5C400] text-[#04334B] flex items-center justify-center disabled:opacity-40 shrink-0"
               >
                 <Send className="w-3.5 h-3.5" />
               </button>
@@ -521,7 +516,7 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
               onClick={() => setShowTextBox((v) => !v)}
               aria-label="Escribir texto al asistente"
               title="Escribir texto"
-              className="min-h-[36px] px-3 rounded-full bg-[#090D16]/88 hover:bg-[#131C2E] text-white/95 text-[11px] font-medium backdrop-blur-md shadow-lg transition-colors whitespace-nowrap chuspa-google-btn"
+              className="min-h-[36px] px-3 rounded-full bg-[#04334B] hover:bg-[#06425E] text-white text-[11px] font-semibold shadow-lg transition-colors whitespace-nowrap border border-white/15"
             >
               {showTextBox ? 'Ocultar texto' : 'Escribir'}
             </button>
@@ -533,9 +528,9 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
               }}
               aria-label={muted ? 'Activar parlante' : 'Silenciar parlante'}
               title={muted ? 'Activar parlante' : 'Silenciar parlante'}
-              className="self-end w-9 h-9 rounded-full bg-[#090D16]/88 hover:bg-[#131C2E] text-white flex items-center justify-center backdrop-blur-md shadow-lg transition-colors chuspa-google-btn"
+              className="self-end w-9 h-9 rounded-full bg-[#04334B] hover:bg-[#06425E] text-white flex items-center justify-center shadow-lg transition-colors border border-white/15"
             >
-              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-[#FBBC04]" />}
+              {muted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-[#F5C400]" />}
             </button>
           </div>
         )}

@@ -25,7 +25,7 @@ type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'CENTRAL_SOS' | 'ADMIN
 
 export default function App() {
   const [view, setView] = useState<ViewMode>('CONCIERGE');
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(false);
   const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
   const [customerDoc, setCustomerDoc] = useState<SharedCustomerDoc | null>(null);
   const [identityGateOpen, setIdentityGateOpen] = useState(false);
@@ -95,7 +95,7 @@ export default function App() {
     (!customerDoc?.verificado || identityGateOpen);
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F4F7FC] text-[#0F172A] dark:bg-[#070D1F] dark:text-[#F8FAFC] transition-colors">
+    <div className="min-h-screen flex flex-col bg-[#F7FAFC] text-[#0B2538] dark:bg-[#041824] dark:text-[#F1F5F9] transition-colors">
       {gmpQuotaExceeded && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
           <span>
@@ -125,8 +125,8 @@ export default function App() {
         }}
       />
 
-      {/* Top Bar Contract: exactamente 3 zonas separadas */}
-      <header className="sticky top-0 z-30 h-14 md:h-16 border-b border-[#2563EB]/15 dark:border-[#3D7EFF]/20 bg-[#F4F7FC]/92 dark:bg-[#070D1F]/92 backdrop-blur-md">
+      {/* Top Bar estilo Azul Marino Profundo + Dorado + Cobalto */}
+      <header className="sticky top-0 z-30 h-16 border-b border-[#064666] bg-[#04334B] text-white shadow-sm">
         <div className="max-w-7xl mx-auto h-full px-4 sm:px-6 flex items-center justify-between gap-8">
           {/* Zona 1: Wordmark único */}
           <a
@@ -135,9 +135,10 @@ export default function App() {
               e.preventDefault();
               setView('CONCIERGE');
             }}
-            className="font-display text-2xl sm:text-3xl font-semibold tracking-tight whitespace-nowrap shrink-0 bg-gradient-to-r from-[#1E40AF] via-[#2563EB] to-[#06B6D4] dark:from-white dark:via-[#3D7EFF] dark:to-[#06B6D4] bg-clip-text text-transparent"
+            className="font-display text-2xl sm:text-3xl font-bold tracking-tight whitespace-nowrap shrink-0 flex items-center gap-1"
           >
-            La Chuspa
+            <span className="text-[#F5C400]">La</span>
+            <span className="text-white">Chuspa</span>
           </a>
 
           {/* Zona 2: Enlaces de navegación de una sola línea */}
@@ -149,10 +150,10 @@ export default function App() {
                   key={item.id}
                   type="button"
                   onClick={() => setView(item.id)}
-                  className={`py-1 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
+                  className={`py-1.5 whitespace-nowrap shrink-0 border-b-2 transition-colors ${
                     active
-                      ? 'border-[#2563EB] dark:border-[#06B6D4] text-[#1E40AF] dark:text-white font-semibold'
-                      : 'border-transparent text-[#475569] dark:text-[#94A3B8] hover:text-[#1E40AF] dark:hover:text-[#F8FAFC]'
+                      ? 'border-[#F5C400] text-[#F5C400] font-semibold'
+                      : 'border-transparent text-slate-200 hover:text-white'
                   }`}
                 >
                   {item.label}
@@ -167,7 +168,7 @@ export default function App() {
               type="button"
               onClick={triggerSosModal}
               aria-label="Solicitar emergencia SOS"
-              className="min-h-[40px] px-3 rounded-xl bg-[#E11D74] hover:bg-rose-600 text-white text-xs font-black tracking-wide whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-sm chuspa-google-btn"
+              className="min-h-[38px] px-3 rounded-xl bg-[#E11D48] hover:bg-rose-600 text-white text-xs font-extrabold tracking-wide whitespace-nowrap shrink-0 flex items-center gap-1.5 shadow-sm transition-colors"
             >
               <Siren className="w-3.5 h-3.5" />
               <span>SOS</span>
@@ -175,7 +176,7 @@ export default function App() {
             <button
               type="button"
               onClick={triggerAssistantSphere}
-              className="min-h-[40px] px-4 rounded-xl bg-gradient-to-r from-[#1E40AF] to-[#2563EB] text-white text-xs font-semibold whitespace-nowrap shrink-0 hover:opacity-90 transition-opacity chuspa-google-btn"
+              className="min-h-[38px] px-4 rounded-xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-xs font-extrabold whitespace-nowrap shrink-0 transition-colors shadow-sm"
             >
               Agente
             </button>
@@ -184,31 +185,31 @@ export default function App() {
       </header>
 
       {/* Barra superior con Titular Verificado + WhatsApp + GPS + Selector de tema */}
-      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#475569] dark:text-[#94A3B8]">
+      <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 pt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#516478] dark:text-[#94A3B8]">
         <div className="flex flex-wrap items-center gap-2.5 min-w-0">
-          <span>Cusco · Red Multinegocio Verificada</span>
+          <span className="font-medium">Cusco · Red Multinegocio Verificada</span>
           {customerDoc?.verificado ? (
             <button
               type="button"
               onClick={() => setIdentityGateOpen(true)}
               title="Cambiar documento o WhatsApp del titular"
-              className="min-h-[34px] px-3 rounded-xl border border-[#2563EB]/35 bg-[#2563EB]/10 text-[#1E40AF] dark:text-[#93C5FD] font-semibold flex items-center gap-1.5 max-w-full"
+              className="min-h-[34px] px-3 rounded-xl border border-[#1565F5]/25 bg-white dark:bg-[#072638] text-[#0B2538] dark:text-[#E2E8F0] font-semibold flex items-center gap-1.5 max-w-full shadow-xs"
             >
-              <BadgeCheck className="w-3.5 h-3.5 text-[#06B6D4] shrink-0" />
+              <BadgeCheck className="w-3.5 h-3.5 text-[#1565F5] shrink-0" />
               <span className="truncate max-w-[260px] sm:max-w-md">
                 Titular: {customerDoc.nombre} · {customerDoc.tipo} {customerDoc.numero}
                 {customerDoc.whatsapp ? ` · ${customerDoc.whatsapp}` : ''}
               </span>
               {customerDoc.gpsVerificado && (
-                <MapPin className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
               )}
-              <span className="underline text-[11px] shrink-0">Cambiar</span>
+              <span className="text-[#1565F5] dark:text-[#60A5FA] font-bold text-[11px] shrink-0">Cambiar</span>
             </button>
           ) : (
             <button
               type="button"
               onClick={() => setIdentityGateOpen(true)}
-              className="min-h-[34px] px-3 rounded-xl border border-[#F59E0B]/45 bg-[#F59E0B]/10 text-amber-800 dark:text-[#FBBF24] font-semibold flex items-center gap-1.5"
+              className="min-h-[34px] px-3 rounded-xl border border-[#F5C400] bg-[#F5C400]/20 text-[#04334B] dark:text-[#F5C400] font-bold flex items-center gap-1.5"
             >
               <UserCheck className="w-3.5 h-3.5" />
               <span>Identificar Titular</span>
@@ -218,16 +219,16 @@ export default function App() {
         <button
           type="button"
           onClick={() => setDarkMode((v) => !v)}
-          className="min-h-[40px] px-3 rounded-xl border border-[#2563EB]/20 flex items-center gap-1.5 hover:border-[#2563EB]/50 transition-colors"
+          className="min-h-[36px] px-3 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#072638] text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5] transition-colors"
         >
-          {darkMode ? <Sun className="w-3.5 h-3.5 text-[#F59E0B]" /> : <Moon className="w-3.5 h-3.5 text-[#2563EB]" />}
+          {darkMode ? <Sun className="w-3.5 h-3.5 text-[#F5C400]" /> : <Moon className="w-3.5 h-3.5 text-[#1565F5]" />}
           <span>{darkMode ? 'Modo Claro' : 'Modo Oscuro'}</span>
         </button>
       </div>
 
       {rtdbMode && (
         <div className="max-w-7xl w-full mx-auto px-4 sm:px-6 pt-2">
-          <div className="rounded-xl border border-[#06B6D4]/30 bg-[#06B6D4]/10 px-3.5 py-2 text-[11px] text-[#0E7490] dark:text-[#67E8F9]">
+          <div className="rounded-xl border border-[#1565F5]/25 bg-[#1565F5]/8 px-3.5 py-2 text-[11px] text-[#1565F5] dark:text-[#93C5FD] font-medium">
             Conectado en tiempo real a Firebase Realtime Database (spatech-b3edf).
           </div>
         </div>
@@ -272,7 +273,7 @@ export default function App() {
       {/* Navegación Inferior Móvil (Zona de pulgar con icono SOS directo) */}
       <nav
         aria-label="Navegación principal móvil"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-[#F4F7FC]/95 dark:bg-[#070D1F]/95 backdrop-blur-md border-t border-[#2563EB]/20 grid grid-cols-6 items-center"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-white/95 dark:bg-[#04334B]/95 backdrop-blur-md border-t border-[#D8E2EC] dark:border-[#064666] grid grid-cols-6 items-center shadow-lg"
       >
         {navItems.map((item) => {
           const active = view === item.id;
@@ -282,7 +283,7 @@ export default function App() {
               type="button"
               onClick={() => setView(item.id)}
               className={`h-full flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium ${
-                active ? 'text-[#2563EB] dark:text-[#06B6D4] font-bold' : 'text-[#475569] dark:text-[#94A3B8]'
+                active ? 'text-[#1565F5] dark:text-[#F5C400] font-bold' : 'text-[#516478] dark:text-slate-300'
               }`}
             >
               {item.icon}

@@ -62,6 +62,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   const [onlyOpen, setOnlyOpen] = useState(true);
   const [sortBy, setSortBy] = useState<'PRICE' | 'DISTANCE'>('PRICE');
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
+  const [showMarketPriceTable, setShowMarketPriceTable] = useState(false);
   const [addSku, setAddSku] = useState<string>('aceite');
 
   // Checkout / Reserva Modal
@@ -353,14 +354,14 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   return (
     <section className="space-y-4">
       {/* Canasta de productos solicitados + Filtros de Comparador */}
-      <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 shadow-lg space-y-4">
+      <div className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-4 sm:p-5 shadow-md space-y-4">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-emerald-600 dark:text-emerald-400">
-              Comparador Facilito · Solo Markets Abiertos en Cusco
+            <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#1565F5] dark:text-[#F5C400]">
+              Markets Abiertos en Cusco · Pedido por Geolocalización
             </p>
-            <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#14171F] dark:text-white">
-              Compara tu lista en markets abiertos por geolocalización
+            <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#0B2538] dark:text-white">
+              Elige tu minimarket abierto en el mapa
             </h2>
           </div>
 
@@ -574,7 +575,7 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                   type="button"
                   disabled={!activeResult.market.abiertoAhora || activeResult.totalCentavos === 0}
                   onClick={() => setCheckoutTarget({ result: activeResult, mode: 'COMPRA' })}
-                  className="flex-1 min-h-[46px] px-5 rounded-2xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 chuspa-google-btn"
+                  className="flex-1 min-h-[46px] px-5 rounded-2xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm transition-colors"
                 >
                   <ShoppingBasket className="w-4 h-4" />
                   <span>Comprar Ahora ({fmtSoles(activeResult.totalCentavos)})</span>
@@ -583,9 +584,9 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                   type="button"
                   disabled={!activeResult.market.abiertoAhora || activeResult.totalCentavos === 0}
                   onClick={() => setCheckoutTarget({ result: activeResult, mode: 'RESERVA' })}
-                  className="flex-1 min-h-[46px] px-5 rounded-2xl border border-[#D4AF37]/60 bg-[#D4AF37]/10 text-[#9A7B2C] dark:text-[#E5C158] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
+                  className="flex-1 min-h-[46px] px-5 rounded-2xl border border-[#CBD5E1] dark:border-white/20 bg-white dark:bg-[#031622] text-[#0B2538] dark:text-white hover:border-[#1565F5] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50"
                 >
-                  <Clock className="w-4 h-4" />
+                  <Clock className="w-4 h-4 text-[#1565F5]" />
                   <span>Reservar Canasta (Recojo)</span>
                 </button>
               </div>
@@ -593,68 +594,74 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
           )}
         </div>
 
-        {/* Columna derecha: Tabla Comparativa + Ranking completo de Markets Abiertos */}
+        {/* Columna derecha: Ranking de Markets Abiertos + toggle discreto para Tabla */}
         <div className="lg:col-span-5 space-y-3">
           <div className="flex items-center justify-between px-1">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1E40AF] dark:text-[#06B6D4]">
-              Tabla Comparativa de Precios ({comparisons.length})
+            <h3 className="text-xs font-bold uppercase tracking-wider text-[#1565F5] dark:text-[#F5C400]">
+              Markets Disponibles ({comparisons.length})
             </h3>
-            <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-              Facilito Multi-Canasta
-            </span>
+            <button
+              type="button"
+              onClick={() => setShowMarketPriceTable((v) => !v)}
+              className="text-[11px] font-semibold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
+            >
+              {showMarketPriceTable ? 'Ocultar lista comparativa' : 'Ver lista comparativa →'}
+            </button>
           </div>
 
-          <div className="rounded-2xl border border-[#2563EB]/25 bg-white dark:bg-[#0D1426] p-3 overflow-x-auto">
-            <table className="w-full text-left text-[11px] border-collapse">
-              <thead>
-                <tr className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
-                  <th className="py-1.5 pr-2 font-semibold">Minimarket</th>
-                  <th className="py-1.5 pr-2 font-semibold">Stock</th>
-                  <th className="py-1.5 pr-2 font-semibold text-right">Canasta</th>
-                  <th className="py-1.5 pl-2 font-semibold text-right">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-black/8 dark:divide-white/8">
-                {comparisons.map((res, idx) => (
-                  <tr
-                    key={`mkt-row-${res.market.id}`}
-                    onClick={() => setSelectedMarketId(res.market.id)}
-                    className={`cursor-pointer ${
-                      activeResult?.market.id === res.market.id
-                        ? 'bg-[#2563EB]/10'
-                        : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.03]'
-                    }`}
-                  >
-                    <td className="py-2 pr-2 font-semibold text-[#14171F] dark:text-white">
-                      <div className="truncate max-w-[130px]">{res.market.nombre}</div>
-                      <div className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                        {res.distanciaKm.toFixed(1)} km {idx === 0 && res.market.abiertoAhora ? '· Mejor precio' : ''}
-                      </div>
-                    </td>
-                    <td className="py-2 pr-2 font-mono-tabular text-[#555B66] dark:text-[#B4BAC4] whitespace-nowrap">
-                      {res.matchedCount}/{requestedItems.length}
-                    </td>
-                    <td className="py-2 pr-2 text-right font-mono-tabular font-black text-[#14171F] dark:text-white whitespace-nowrap">
-                      {fmtSoles(res.totalCentavos)}
-                    </td>
-                    <td className="py-2 pl-2 text-right whitespace-nowrap">
-                      <button
-                        type="button"
-                        disabled={!res.market.abiertoAhora || res.totalCentavos === 0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCheckoutTarget({ result: res, mode: 'COMPRA' });
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-gradient-to-r from-[#2563EB] to-[#06B6D4] text-white font-bold disabled:opacity-40"
-                      >
-                        Escoger
-                      </button>
-                    </td>
+          {showMarketPriceTable && (
+            <div className="rounded-2xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-3 overflow-x-auto">
+              <table className="w-full text-left text-[11px] border-collapse">
+                <thead>
+                  <tr className="border-b border-[#D8E2EC] dark:border-white/10 text-[#516478] dark:text-slate-400">
+                    <th className="py-1.5 pr-2 font-semibold">Minimarket</th>
+                    <th className="py-1.5 pr-2 font-semibold">Stock</th>
+                    <th className="py-1.5 pr-2 font-semibold text-right">Canasta</th>
+                    <th className="py-1.5 pl-2 font-semibold text-right">Acción</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-[#D8E2EC]/70 dark:divide-white/10">
+                  {comparisons.map((res, idx) => (
+                    <tr
+                      key={`mkt-row-${res.market.id}`}
+                      onClick={() => setSelectedMarketId(res.market.id)}
+                      className={`cursor-pointer ${
+                        activeResult?.market.id === res.market.id
+                          ? 'bg-[#EBF3FF] dark:bg-[#1565F5]/15'
+                          : 'hover:bg-[#F7FAFC] dark:hover:bg-white/[0.03]'
+                      }`}
+                    >
+                      <td className="py-2 pr-2 font-semibold text-[#0B2538] dark:text-white">
+                        <div className="truncate max-w-[130px]">{res.market.nombre}</div>
+                        <div className="text-[10px] font-mono-tabular text-[#516478] dark:text-slate-400">
+                          {res.distanciaKm.toFixed(1)} km {idx === 0 && res.market.abiertoAhora ? '· Mejor precio' : ''}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-2 font-mono-tabular text-[#516478] dark:text-slate-300 whitespace-nowrap">
+                        {res.matchedCount}/{requestedItems.length}
+                      </td>
+                      <td className="py-2 pr-2 text-right font-mono-tabular font-black text-[#0B2538] dark:text-white whitespace-nowrap">
+                        {fmtSoles(res.totalCentavos)}
+                      </td>
+                      <td className="py-2 pl-2 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          disabled={!res.market.abiertoAhora || res.totalCentavos === 0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCheckoutTarget({ result: res, mode: 'COMPRA' });
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] font-extrabold disabled:opacity-40"
+                        >
+                          Escoger
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
           {comparisons.map((res, idx) => {
             const selected = activeResult?.market.id === res.market.id;
