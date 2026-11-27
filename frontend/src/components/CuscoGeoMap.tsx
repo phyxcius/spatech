@@ -732,24 +732,19 @@ const CuscoGeoLeafletFallback: React.FC<
         }
       ).addTo(baseGroup);
       L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}@2x.png',
+        'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
         {
-          subdomains: 'abcd',
-          maxNativeZoom: 19,
+          maxNativeZoom: 16,
           maxZoom: 20,
-          attribution: '&copy; CARTO',
+          attribution: '&copy; Esri',
         }
       ).addTo(baseGroup);
     } else {
-      L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-        {
-          subdomains: 'abcd',
-          maxNativeZoom: 19,
-          maxZoom: 20,
-          attribution: '&copy; CARTO &copy; OpenStreetMap',
-        }
-      ).addTo(baseGroup);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxNativeZoom: 19,
+        maxZoom: 20,
+        attribution: '&copy; OpenStreetMap contributors',
+      }).addTo(baseGroup);
     }
   }, [mapTypeId]);
 
@@ -1154,9 +1149,9 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
               ? followDriver
                 ? 'Google Maps · GPS en Vivo'
                 : 'Google Maps · Cusco'
-              : googleFailed
-                ? 'Mapa Respaldo · Error/Cuota Google'
-                : 'Mapa Respaldo · Falta API Key Google'}
+              : followDriver
+                ? 'Mapa en Vivo · GPS Cusco'
+                : 'Mapa en Vivo · Cusco'}
           </span>
         </span>
       </div>

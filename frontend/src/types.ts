@@ -177,6 +177,8 @@ export interface UnidadConductor {
 
 export interface ConciergeOpcion {
   tipo: 'TAXI' | 'CATALOGO' | 'DIVISA';
+  es_negocio?: boolean;
+  total_productos?: number;
   unidad_id?: number;
   servicio_id?: number;
   negocio_id: number;

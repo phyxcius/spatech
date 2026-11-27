@@ -439,9 +439,7 @@ export const EmergencyGoogleMap: React.FC<EmergencyGoogleMapProps> = (props) => 
             <span>
               {canUseGoogleSdk
                 ? 'Google Maps Platform · Ruta en vivo'
-                : googleFailed
-                  ? 'Mapa Respaldo · Error/Cuota Google'
-                  : 'Mapa Respaldo · Falta API Key Google'}
+                : 'Mapa en Vivo · Emergencia Cusco'}
             </span>
           </span>
         </div>

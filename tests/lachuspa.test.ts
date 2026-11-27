@@ -1596,7 +1596,7 @@ test('15. Reglas del agente: taxi muestra solo taxis con destino correcto y farm
       terminalRes.data.opciones.every((o: any) => o.tipo === 'TAXI' && o.categoria === 'TRANSPORTE')
     );
 
-    // 4) Backend /api/public/asistente: "quiero una farmacia abierta" -> SOLO FARMACIA abiertas, NUNCA taxis
+    // 4) Backend /api/public/asistente: "quiero una farmacia abierta" -> SOLO farmacias abiertas (modo NEGOCIOS, sin lista de productos)
     const farmRes = await req('POST', '/api/public/asistente', {
       query: 'quiero una farmacia abierta',
       lat: -13.5167,
@@ -1604,14 +1604,21 @@ test('15. Reglas del agente: taxi muestra solo taxis con destino correcto y farm
     });
     assert.equal(farmRes.status, 200);
     assert.equal(farmRes.data.categoria, 'FARMACIA');
+    assert.equal(farmRes.data.modo_resultado, 'NEGOCIOS');
     assert.ok(farmRes.data.opciones.length > 0);
     assert.ok(
       farmRes.data.opciones.every(
-        (o: any) => o.categoria === 'FARMACIA' && o.tipo === 'CATALOGO' && o.abierto_ahora === true
+        (o: any) =>
+          o.categoria === 'FARMACIA' &&
+          o.tipo === 'CATALOGO' &&
+          o.es_negocio === true &&
+          o.abierto_ahora === true
       )
     );
+    const farmIds = farmRes.data.opciones.map((o: any) => o.negocio_id);
+    assert.equal(new Set(farmIds).size, farmIds.length);
 
-    // 5) Backend /api/public/asistente: "quiero una farmacia abierta cerca del aeropuerto" -> SOLO FARMACIA
+    // 5) Backend /api/public/asistente: "quiero una farmacia abierta cerca del aeropuerto" -> SOLO farmacias abiertas (modo NEGOCIOS)
     const farmAeroRes = await req('POST', '/api/public/asistente', {
       query: 'quiero una farmacia abierta cerca del aeropuerto',
       lat: -13.5167,
@@ -1619,8 +1626,27 @@ test('15. Reglas del agente: taxi muestra solo taxis con destino correcto y farm
     });
     assert.equal(farmAeroRes.status, 200);
     assert.equal(farmAeroRes.data.categoria, 'FARMACIA');
+    assert.equal(farmAeroRes.data.modo_resultado, 'NEGOCIOS');
     assert.ok(
-      farmAeroRes.data.opciones.every((o: any) => o.categoria === 'FARMACIA' && o.tipo === 'CATALOGO')
+      farmAeroRes.data.opciones.every(
+        (o: any) => o.categoria === 'FARMACIA' && o.tipo === 'CATALOGO' && o.es_negocio === true
+      )
+    );
+
+    // 6) Backend /api/public/asistente: cuando pide un producto ("pastillas para el soroche") -> modo PRODUCTOS
+    const prodRes = await req('POST', '/api/public/asistente', {
+      query: 'necesito pastillas para el soroche',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(prodRes.status, 200);
+    assert.equal(prodRes.data.categoria, 'FARMACIA');
+    assert.equal(prodRes.data.modo_resultado, 'PRODUCTOS');
+    assert.ok(prodRes.data.opciones.length > 0);
+    assert.ok(
+      prodRes.data.opciones.every(
+        (o: any) => o.categoria === 'FARMACIA' && o.es_negocio === false && o.precio_centavos > 0
+      )
     );
   } finally {
     server.close();

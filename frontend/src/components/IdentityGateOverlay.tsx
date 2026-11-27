@@ -1,11 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
-  BadgeCheck,
   Briefcase,
   Building2,
-  Crosshair,
   Globe2,
-  MapPin,
   Phone,
   Shield,
   ShieldCheck,
@@ -136,7 +133,7 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
     const localDigits = whatsappLocal.replace(/\D/g, '');
     if (localDigits.length < 6) {
       setError(
-        `Ingresa tu número de WhatsApp válido de ${selectedCountry.name} (${selectedCountry.dialCode}) para no volver a pedirlo en tus pedidos.`
+        `Ingresa tu número de WhatsApp válido de ${selectedCountry.name} (${selectedCountry.dialCode}).`
       );
       return;
     }
@@ -227,22 +224,39 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Identificación Obligatoria del Titular"
-      className="fixed inset-0 z-50 bg-[#04334B]/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 bg-[#031F2E]/82 backdrop-blur-md flex flex-col justify-between p-3 sm:p-6 overflow-y-auto"
     >
-      <div className="w-full max-w-lg rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] text-[#0B2538] dark:text-[#F1F5F9] shadow-2xl overflow-hidden my-auto">
-        {/* Cabecera Azul Marino Profundo con marca blanca y dorada */}
-        <div className="bg-[#04334B] text-white px-6 sm:px-8 pt-6 pb-5 relative">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.18em] font-bold text-[#F5C400]">
-                <ShieldCheck className="w-4 h-4" />
-                <span>La Chuspa Cusco · Identidad y GPS</span>
+      <div className="my-auto mx-auto w-full max-w-lg rounded-3xl border border-[#F5C400]/35 dark:border-[#F5C400]/25 bg-white dark:bg-[#052030] text-[#0B2538] dark:text-[#F1F5F9] shadow-[0_28px_70px_-15px_rgba(3,31,46,0.65)] overflow-hidden">
+        {/* Cabecera Imperial Cusco */}
+        <div
+          className="bg-[#04334B] text-white px-6 sm:px-8 pt-6 pb-5 relative overflow-hidden border-b border-[#F5C400]/35"
+          style={{
+            backgroundImage:
+              'radial-gradient(circle at 90% 10%, rgba(245, 196, 0, 0.22), transparent 55%), linear-gradient(160deg, #04334B 0%, #064566 60%, #032638 100%)',
+          }}
+        >
+          <div className="relative flex items-start justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <svg viewBox="0 0 32 32" className="w-6 h-6 shrink-0" aria-hidden="true">
+                  <circle cx="16" cy="16" r="10" fill="none" stroke="#F5C400" strokeWidth="1.5" />
+                  <circle cx="16" cy="16" r="5" fill="#F5C400" />
+                  <path
+                    d="M16 1v4M16 27v4M1 16h4M27 16h4M5.4 5.4l2.8 2.8M23.8 23.8l2.8 2.8M26.6 5.4l-2.8 2.8M8.2 23.8l-2.8 2.8"
+                    stroke="#F5C400"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                  />
+                </svg>
+                <span className="font-display text-lg sm:text-xl font-bold tracking-wide text-[#F5C400]">
+                  La Chuspa
+                </span>
               </div>
               <h2 className="font-display text-2xl sm:text-3xl font-bold leading-tight text-white">
                 Identifícate para ingresar
               </h2>
-              <p className="text-xs sm:text-sm text-slate-200">
-                Registra una sola vez tu DNI, RUC o Extranjero, tu WhatsApp y tu ubicación para todos tus pedidos y emergencias.
+              <p className="text-xs sm:text-sm text-slate-200 leading-relaxed">
+                Bienvenido a Cusco. Registra tu DNI, RUC o Pasaporte y tu WhatsApp para disfrutar taxis, comercios y asistencia inmediata.
               </p>
             </div>
             {canClose && onClose && (
@@ -315,7 +329,7 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
             <div className="space-y-1.5">
               <label className="block text-xs font-semibold text-[#1565F5] dark:text-[#60A5FA]">
                 {tipo === 'DNI'
-                  ? 'Número de DNI peruano (8 dígitos · sincronizado RENIEC)'
+                  ? 'Número de DNI peruano (8 dígitos)'
                   : tipo === 'RUC'
                   ? 'Número de RUC (11 dígitos · Facturación Electrónica)'
                   : 'Número de Pasaporte o Carné de Extranjería'}
@@ -370,7 +384,7 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
             {/* WhatsApp con Selector de País */}
             <div className="space-y-1.5">
               <label className="block text-xs font-semibold text-[#516478] dark:text-slate-300">
-                WhatsApp con código de país (se guardará para todos tus pedidos y SOS)
+                WhatsApp con código de país
               </label>
               <div className="flex gap-2">
                 <select
@@ -406,50 +420,16 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
               </div>
             </div>
 
-            {/* Captura de Ubicación GPS del Celular */}
-            <div className="rounded-2xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] p-3 flex flex-wrap items-center justify-between gap-2.5">
-              <div className="flex items-start gap-2.5 min-w-0">
-                <MapPin className="w-4 h-4 text-[#1565F5] shrink-0 mt-0.5" />
-                <div className="text-[11px]">
-                  <p className="font-bold text-[#0B2538] dark:text-white">
-                    {gpsState === 'live' && gpsCoords
-                      ? `Ubicación GPS activa (${gpsCoords.lat.toFixed(4)}, ${gpsCoords.lng.toFixed(4)})`
-                      : gpsState === 'loading'
-                      ? 'Obteniendo ubicación GPS del celular...'
-                      : 'Ubicación del celular (Cusco · Centro por defecto)'}
-                  </p>
-                  <p className="text-[#516478] dark:text-slate-400">
-                    Para ubicarte cuando solicites taxi, negocios o emergencias SOS.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={requestCellLocation}
-                className="min-h-[34px] px-3 rounded-xl border border-[#1565F5]/30 bg-[#1565F5]/10 text-[#1565F5] dark:text-[#60A5FA] text-[11px] font-bold inline-flex items-center gap-1.5 shrink-0 hover:bg-[#1565F5]/15"
-              >
-                <Crosshair className="w-3.5 h-3.5" />
-                <span>{gpsState === 'live' ? 'Actualizar GPS' : 'Activar GPS'}</span>
-              </button>
-            </div>
-
             {error && (
               <div className="rounded-2xl border border-rose-500/40 bg-rose-50 dark:bg-rose-950/30 px-4 py-3 text-xs text-rose-700 dark:text-rose-300 font-medium">
                 {error}
               </div>
             )}
 
-            <div className="rounded-2xl border border-[#1565F5]/20 bg-[#EBF3FF] dark:bg-[#1565F5]/12 px-3.5 py-2.5 text-[11px] text-[#0B2538] dark:text-slate-200 flex items-start gap-2">
-              <BadgeCheck className="w-4 h-4 text-[#1565F5] shrink-0 mt-0.5" />
-              <span>
-                Tu nombre, documento y WhatsApp quedarán fijados arriba para no volver a pedirlos en pedidos, taxis ni SOS.
-              </span>
-            </div>
-
             <button
               type="submit"
               disabled={loading}
-              className="w-full min-h-[50px] rounded-2xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-sm font-extrabold flex items-center justify-center gap-2 disabled:opacity-60 transition-colors shadow-sm"
+              className="w-full min-h-[50px] rounded-2xl bg-gradient-to-r from-[#F5C400] via-[#FFD83B] to-[#E5B200] hover:brightness-95 text-[#04334B] text-sm font-extrabold flex items-center justify-center gap-2 disabled:opacity-60 transition-all shadow-md"
             >
               <ShieldCheck className="w-4 h-4" />
               <span>
@@ -461,41 +441,40 @@ export const IdentityGateOverlay: React.FC<IdentityGateOverlayProps> = ({
               </span>
             </button>
           </form>
-
-          {onSwitchView && (
-            <div className="pt-4 border-t border-[#D8E2EC] dark:border-white/10 space-y-2.5 text-xs">
-              <span className="block text-[#516478] dark:text-slate-400">
-                ¿Eres socio conductor, empresa o central de emergencias?
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => onSwitchView('NEGOCIO')}
-                  className="min-h-[38px] px-3.5 rounded-xl border border-[#CBD5E1] dark:border-white/20 bg-white dark:bg-[#031622] text-[#0B2538] dark:text-white hover:border-[#1565F5] font-semibold inline-flex items-center gap-1.5"
-                >
-                  <Briefcase className="w-3.5 h-3.5 text-[#1565F5]" />
-                  <span>Panel Negocio / Taxi</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSwitchView('CENTRAL_SOS')}
-                  className="min-h-[38px] px-3.5 rounded-xl border border-rose-500/35 bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 hover:bg-rose-100 font-semibold inline-flex items-center gap-1.5"
-                >
-                  <Siren className="w-3.5 h-3.5 text-rose-600" />
-                  <span>Central Emergencias</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSwitchView('ADMIN')}
-                  className="min-h-[38px] px-3.5 rounded-xl border border-[#CBD5E1] dark:border-white/20 text-[#1565F5] dark:text-[#60A5FA] hover:border-[#1565F5] font-semibold inline-flex items-center gap-1.5"
-                >
-                  <Shield className="w-3.5 h-3.5" />
-                  <span>Admin →</span>
-                </button>
-              </div>
-            </div>
-          )}
         </div>
+
+        {/* Menú inferior centrado estilo barra principal para Negocio/Taxis, Emergencias y Admin */}
+        {onSwitchView && (
+          <nav
+            aria-label="Accesos de operación"
+            className="h-16 border-t border-[#D8E2EC] dark:border-[#064666] bg-[#F7FAFC]/95 dark:bg-[#031B29]/95 grid grid-cols-3 items-center px-2"
+          >
+            <button
+              type="button"
+              onClick={() => onSwitchView('NEGOCIO')}
+              className="h-full flex flex-col items-center justify-center gap-1 text-[11px] font-semibold text-[#0B2538] dark:text-slate-200 hover:text-[#1565F5] dark:hover:text-[#F5C400] transition-colors"
+            >
+              <Briefcase className="w-5 h-5 text-[#1565F5] dark:text-[#60A5FA]" />
+              <span className="truncate max-w-[110px]">Negocio / Taxis</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onSwitchView('CENTRAL_SOS')}
+              className="h-full flex flex-col items-center justify-center gap-1 text-[11px] font-semibold text-rose-600 dark:text-rose-400 hover:text-rose-700 transition-colors"
+            >
+              <Siren className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+              <span className="truncate max-w-[110px]">Emergencias</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onSwitchView('ADMIN')}
+              className="h-full flex flex-col items-center justify-center gap-1 text-[11px] font-semibold text-[#0B2538] dark:text-slate-200 hover:text-[#1565F5] dark:hover:text-[#F5C400] transition-colors"
+            >
+              <Shield className="w-5 h-5 text-[#04334B] dark:text-[#F5C400]" />
+              <span className="truncate max-w-[110px]">Admin</span>
+            </button>
+          </nav>
+        )}
       </div>
     </div>
   );

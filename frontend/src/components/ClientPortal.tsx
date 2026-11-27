@@ -44,6 +44,7 @@ import {
   type MetodoPago,
   type PedidoPublico,
   type Rubro,
+  type ServicioCatalogo,
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
@@ -57,7 +58,7 @@ import {
   CampoDirectoModule,
   OficiosModule,
 } from './MarketplaceModules.tsx';
-import { RealisticAvatarPortrait } from './RealisticHumanoidWidget.tsx';
+import { IncaSolarDiscButton } from './RealisticHumanoidWidget.tsx';
 import { TaxiInDriveFlow } from './TaxiInDriveFlow.tsx';
 
 interface ClientPortalProps {
@@ -138,12 +139,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [speakReplies, setSpeakReplies] = useState(true);
   const [lastResponseMs, setLastResponseMs] = useState<number | null>(null);
   const [replyText, setReplyText] = useState<string>(
-    'Toca al asistente y dime qué necesitas: taxi, restaurante, botica, tour o market.'
+    'Presiona el Disco Solar Inca y dime qué necesitas en Cusco: taxi, farmacia, restaurante, tour o market.'
   );
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [taxiOpciones, setTaxiOpciones] = useState<ConciergeOpcion[]>([]);
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
+  const [modoResultado, setModoResultado] = useState<'NEGOCIOS' | 'PRODUCTOS'>('NEGOCIOS');
   const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
+  const [allServicios, setAllServicios] = useState<ServicioCatalogo[]>([]);
+  const [selectedBusinessDrawer, setSelectedBusinessDrawer] = useState<ConciergeOpcion | null>(null);
   const [selectedCatalogKey, setSelectedCatalogKey] = useState<string | null>(null);
   const [showCatalogPriceTable, setShowCatalogPriceTable] = useState(false);
   const [requestedMarketItems, setRequestedMarketItems] = useState<RequestedMarketItem[]>(() =>
@@ -359,10 +363,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       )
       .catch(() => {});
 
-    apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio')
+    apiFetch<{ negocios?: DirectorioNegocio[]; servicios?: ServicioCatalogo[] }>('/api/public/directorio')
       .then((res) => {
         if (Array.isArray(res?.negocios)) {
           setDirectorio(res.negocios);
+        }
+        if (Array.isArray(res?.servicios)) {
+          setAllServicios(res.servicios);
         }
       })
       .catch(() => {});
@@ -580,6 +587,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
 
     // 3. Otras categorías estrictas del concierge (Farmacia, Restaurante, Turismo, Hotel)
     setOpciones([]);
+    setSelectedBusinessDrawer(null);
+    setShowCatalogPriceTable(false);
     setSelectedCatalogKey(null);
     setActiveCategory(effectiveRubro);
     setConciergeMode('CATALOG');
@@ -588,6 +597,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     try {
       const res = await apiFetch<{
         categoria: Rubro;
+        modo_resultado?: 'NEGOCIOS' | 'PRODUCTOS';
         respuesta_voz: string;
         destino_sugerido?: string;
         opciones: ConciergeOpcion[];
@@ -605,6 +615,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       const safeOpciones = (Array.isArray(res?.opciones) ? res.opciones : []).filter(
         (op) => op.tipo !== 'TAXI' && op.categoria === returnedCat
       );
+      const nextModo: 'NEGOCIOS' | 'PRODUCTOS' =
+        res.modo_resultado === 'NEGOCIOS' ||
+        (safeOpciones.length > 0 && safeOpciones.every((o) => o.es_negocio === true))
+          ? 'NEGOCIOS'
+          : 'PRODUCTOS';
+
+      setModoResultado(nextModo);
       setActiveCategory(returnedCat);
       setOpciones(safeOpciones);
       if (safeOpciones.length > 0) {
@@ -616,17 +633,21 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       const ms = Math.max(1, Math.round(performance.now() - t0));
       setLastResponseMs(ms);
       const top = safeOpciones[0];
-      const richVoice = top
-        ? `${res.respuesta_voz} Mejor opción: ${top.titulo} en ${top.negocio_nombre} por ${formatSoles(top.precio_centavos)}.`
-        : res.respuesta_voz;
+      const richVoice =
+        nextModo === 'NEGOCIOS' || !top
+          ? res.respuesta_voz
+          : `${res.respuesta_voz} Mejor opción: ${top.titulo} en ${top.negocio_nombre} por ${formatSoles(top.precio_centavos)}.`;
       setReplyText(richVoice);
       if (!silent) {
         emitCenterNotification({
           id: `concierge-cat-${Date.now()}`,
-          title: `Agente La Chuspa · ${RUBRO_LABELS[returnedCat]}`,
-          subtitle: top
-            ? `${top.titulo} · ${formatSoles(top.precio_centavos)}`
-            : `${safeOpciones.length} opciones encontradas`,
+          title: `La Chuspa · ${RUBRO_LABELS[returnedCat]}`,
+          subtitle:
+            nextModo === 'NEGOCIOS'
+              ? `${safeOpciones.length} establecimientos disponibles en Cusco`
+              : top
+              ? `${top.titulo} · ${formatSoles(top.precio_centavos)}`
+              : `${safeOpciones.length} opciones encontradas`,
           detail: richVoice,
           tone: 'ai',
           responseMs: ms,
@@ -966,10 +987,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     icon: React.ReactNode;
     prompt?: string;
   }> = [
-    { label: 'Gastronomía', rubro: 'RESTAURANTE', icon: <Utensils className="w-4 h-4" />, prompt: 'Ceviche gourmet y lomo saltado' },
-    { label: 'Botica 24h', rubro: 'FARMACIA', icon: <Pill className="w-4 h-4" />, prompt: 'Kit soroche oxígeno y pastillas' },
-    { label: 'Tours Privados', rubro: 'TURISMO', icon: <Sparkles className="w-4 h-4" />, prompt: 'Guía privado Machu Picchu o Valle Sagrado' },
-    { label: 'Hoteles', rubro: 'HOTEL', icon: <Hotel className="w-4 h-4" />, prompt: 'Suite oxigenada o spa andino' },
+    { label: 'Gastronomía', rubro: 'RESTAURANTE', icon: <Utensils className="w-4 h-4" />, prompt: 'Quiero un restaurante abierto' },
+    { label: 'Botica 24h', rubro: 'FARMACIA', icon: <Pill className="w-4 h-4" />, prompt: 'Quiero una farmacia abierta' },
+    { label: 'Tours Privados', rubro: 'TURISMO', icon: <Sparkles className="w-4 h-4" />, prompt: 'Tours en Cusco' },
+    { label: 'Hoteles', rubro: 'HOTEL', icon: <Hotel className="w-4 h-4" />, prompt: 'Hoteles disponibles' },
     { label: 'Butacas VIP', tab: 'BUTACAS', icon: <Ticket className="w-4 h-4" /> },
     { label: 'Divisas', tab: 'DIVISAS', icon: <ArrowLeftRight className="w-4 h-4" /> },
     { label: 'Bodega & Vivero', tab: 'BODEGA', icon: <ShoppingBasket className="w-4 h-4" /> },
@@ -998,10 +1019,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         const hasRealCoords = Boolean(op.lat || biz?.lat);
         const lat = Number((baseLat + (idx === 0 && hasRealCoords ? 0 : dLat * 0.25)).toFixed(5));
         const lng = Number((baseLng + (idx === 0 && hasRealCoords ? 0 : dLng * 0.25)).toFixed(5));
-        const priceText =
-          op.tipo === 'DIVISA' && op.tasa_compra
-            ? `S/ ${op.tasa_compra.toFixed(3)}`
-            : formatSoles(op.precio_centavos);
+        const priceText = op.es_negocio
+          ? op.horario === '24 horas'
+            ? 'Abierta 24h'
+            : op.abierto_ahora !== false
+            ? 'Abierta'
+            : 'Cerrada'
+          : op.tipo === 'DIVISA' && op.tasa_compra
+          ? `S/ ${op.tasa_compra.toFixed(3)}`
+          : formatSoles(op.precio_centavos);
         return { key, op, lat, lng, priceText };
       });
   }, [opciones, activeCategory, directorio, coords.lat, coords.lng]);
@@ -1014,127 +1040,171 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         lng: entry.lng,
         priceText: entry.priceText,
         sublabel: entry.op.negocio_nombre,
-        detailTitle: `${entry.op.titulo} · ${entry.op.negocio_nombre}`,
-        tier: entry.op.mejor_precio ? 'cheapest' : idx % 3 === 2 ? 'high' : 'mid',
+        detailTitle: entry.op.es_negocio
+          ? `${entry.op.negocio_nombre} · ${entry.op.zona || 'Cusco'}`
+          : `${entry.op.titulo} · ${entry.op.negocio_nombre}`,
+        tier:
+          entry.op.abierto_ahora === false
+            ? 'closed'
+            : entry.op.mejor_precio
+            ? 'cheapest'
+            : idx % 3 === 2
+            ? 'high'
+            : 'mid',
         kind: 'BUSINESS',
         isOpen: entry.op.abierto_ahora !== false,
       })),
     [catalogMapEntries]
   );
 
+  function openCatalogItemOrBusiness(op: ConciergeOpcion) {
+    if (op.tipo === 'DIVISA') {
+      setSubTab('DIVISAS');
+      return;
+    }
+    if (op.es_negocio) {
+      setSelectedBusinessDrawer(op);
+      if (allServicios.length === 0) {
+        apiFetch<{ servicios?: ServicioCatalogo[] }>('/api/public/directorio')
+          .then((res) => {
+            if (Array.isArray(res?.servicios)) setAllServicios(res.servicios);
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+    setSheetError(null);
+    setSelectedOption(op);
+    if (!isDocValid) {
+      notifyDocumentAlertIfNeeded(op.titulo, false);
+    }
+  }
+
   const isCompactSphere = subTab === 'CONCIERGE' && conciergeMode !== 'SPHERE_IDLE';
 
   return (
     <div className="space-y-6 pb-24 md:pb-12">
       {/* ==================================================================== */}
-      {/* AGENTE COMPACTO "LA CHUSPA" (AZUL MARINO, BLANCO, COBALTO Y DORADO)  */}
+      {/* ENTRADA IMPERIAL CUSCO CON DISCO SOLAR INCA CENTRADO                 */}
       {/* ==================================================================== */}
-      <section className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] transition-all shadow-[0_10px_30px_-14px_rgba(4,51,75,0.14)] p-5 sm:p-6">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          {/* Agente pequeño y compacto (sin ícono gigante invasivo) */}
-          <div className="flex items-center gap-3.5">
-            <RealisticAvatarPortrait
-              sizeClass="w-14 h-14 shrink-0"
-              listening={voiceActive}
-              speaking={avatarSpeaking}
-              mouthLevel={avatarMouthLevel}
-              onClick={handleSpherePress}
-              ariaLabel="Presionar agente La Chuspa para pedir por voz o escribir"
-              title="Toca el agente pequeño para pedir por voz o escribir tu solicitud"
-            />
+      <section className="rounded-3xl border border-[#F5C400]/35 dark:border-[#F5C400]/20 bg-white dark:bg-[#052030] transition-all shadow-[0_14px_40px_-14px_rgba(4,51,75,0.2)] overflow-hidden">
+        {/* Vitrina Imperial Cusco: Disco Solar Inca al centro para sorprender a turistas */}
+        <div
+          className="px-5 sm:px-8 pt-6 pb-7 text-center text-white relative border-b border-[#F5C400]/35"
+          style={{
+            backgroundImage:
+              'radial-gradient(circle at 50% 42%, rgba(245, 196, 0, 0.22), transparent 60%), linear-gradient(180deg, #04334B 0%, #063E5B 55%, #032638 100%)',
+          }}
+        >
+          <div className="max-w-2xl mx-auto flex flex-col items-center gap-4">
+            <div className="space-y-1">
+              <p className="font-display text-xl sm:text-2xl font-bold tracking-wide text-[#F5C400]">
+                Cusco Imperial Concierge
+              </p>
+              {conciergeMode !== 'SPHERE_IDLE' && subTab === 'CONCIERGE' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConciergeMode('SPHERE_IDLE');
+                    setSphereExpanded(false);
+                    setShowCatalogPriceTable(false);
+                    setSelectedBusinessDrawer(null);
+                    setLastTranscript(null);
+                    setReplyText(
+                      'Presiona el Disco Solar Inca y dime qué necesitas en Cusco: taxi, farmacia, restaurante, tour o market.'
+                    );
+                  }}
+                  className="text-xs font-semibold text-sky-200 hover:text-[#F5C400] hover:underline"
+                >
+                  Volver al inicio →
+                </button>
+              )}
+            </div>
 
-            <div className="text-left space-y-0.5 min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-[11px] uppercase tracking-[0.18em] font-extrabold text-[#1565F5] dark:text-[#F5C400]">
-                  Agente La Chuspa · Toca para pedir
-                </p>
-                {lastResponseMs !== null && (
-                  <span className="text-[11px] font-mono-tabular text-[#516478] dark:text-slate-400 font-semibold">
-                    · {lastResponseMs} ms
-                  </span>
-                )}
-                {conciergeMode !== 'SPHERE_IDLE' && subTab === 'CONCIERGE' && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConciergeMode('SPHERE_IDLE');
-                      setSphereExpanded(false);
-                      setShowCatalogPriceTable(false);
-                      setLastTranscript(null);
-                      setReplyText(
-                        'Toca el agente pequeño y dime qué necesitas: taxi, restaurante, botica, tour o market.'
-                      );
-                    }}
-                    className="text-[11px] font-bold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
-                  >
-                    Volver al inicio →
-                  </button>
-                )}
-              </div>
+            {/* Disco Solar Inca en el centro */}
+            <div className="py-1">
+              <IncaSolarDiscButton
+                sizeClass="w-28 h-28 sm:w-32 sm:h-32"
+                listening={voiceActive}
+                speaking={avatarSpeaking}
+                mouthLevel={avatarMouthLevel}
+                onClick={handleSpherePress}
+                ariaLabel="Presionar Disco Solar Inca para solicitar"
+                title="Presiona el Disco Solar Inca para dictar o activar tu solicitud"
+              />
+            </div>
+
+            <div className="space-y-1.5 max-w-xl">
               {lastTranscript && (
-                <p className="text-[11px] font-mono-tabular text-[#1565F5] dark:text-[#60A5FA]">
+                <p className="text-[11px] font-mono-tabular text-[#F5C400]">
                   Escuché: «{lastTranscript}»
                 </p>
               )}
-              <div className="flex items-center gap-2">
-                <p className="text-xs sm:text-sm text-[#0B2538] dark:text-[#F1F5F9] font-medium">
+              <div className="flex items-center justify-center gap-2">
+                <p className="text-xs sm:text-sm text-slate-100 font-medium leading-relaxed">
                   {replyText}
                 </p>
                 <button
                   type="button"
                   onClick={() => speakSpanish(replyText)}
                   aria-label="Escuchar voz"
-                  className="w-8 h-8 rounded-full border border-[#1565F5]/25 bg-[#EBF3FF] dark:bg-[#1565F5]/15 text-[#1565F5] dark:text-[#60A5FA] flex items-center justify-center shrink-0"
+                  className="w-8 h-8 rounded-full border border-[#F5C400]/40 bg-white/10 text-[#F5C400] flex items-center justify-center shrink-0 hover:bg-white/20"
                 >
                   <Volume2 className="w-3.5 h-3.5" />
                 </button>
               </div>
+              {lastResponseMs !== null && (
+                <p className="text-[10px] font-mono-tabular text-sky-200/80">
+                  Respuesta en {lastResponseMs} ms
+                </p>
+              )}
             </div>
-          </div>
 
-          {/* Buscador siempre listo junto al agente compacto (sin botón de comparación de precios) */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setSelectedRubro(null);
-              handleSearch();
-            }}
-            className="flex flex-col sm:flex-row gap-2.5 w-full lg:max-w-xl"
-          >
-            <div className="relative flex-1 flex items-center">
-              <Search className="w-4 h-4 text-[#1565F5] absolute left-4 pointer-events-none" />
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder='Pide al agente: "Taxi", "Pollo a la brasa", "Oxígeno", "Leche"'
-                className="w-full min-h-[46px] pl-11 pr-12 rounded-2xl border border-[#1565F5]/35 bg-[#F7FAFC] dark:bg-[#031622] text-sm text-[#0B2538] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1565F5]"
-              />
-              <button
-                type="button"
-                onClick={() => handleVoiceCapture()}
-                aria-label="Dictar por voz"
-                className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
-                  voiceActive ? 'bg-[#E11D48] text-white' : 'text-[#1565F5] hover:bg-[#1565F5]/10'
-                }`}
-              >
-                {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-              </button>
-            </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="min-h-[46px] px-6 rounded-2xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-sm font-extrabold whitespace-nowrap shrink-0 transition-colors shadow-sm"
+            {/* Buscador centrado bajo el Disco Solar Inca */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                setSelectedRubro(null);
+                handleSearch();
+              }}
+              className="flex flex-col sm:flex-row gap-2.5 w-full max-w-xl pt-1"
             >
-              {loading ? 'Solicitando...' : 'Solicitar'}
-            </button>
-          </form>
+              <div className="relative flex-1 flex items-center">
+                <Search className="w-4 h-4 text-[#1565F5] absolute left-4 pointer-events-none" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder='Ej: "Taxi al aeropuerto", "Farmacia abierta", "Pastillas soroche"'
+                  className="w-full min-h-[48px] pl-11 pr-12 rounded-2xl border border-white/25 bg-white text-sm text-[#0B2538] placeholder:text-[#516478] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5C400] shadow-md"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleVoiceCapture()}
+                  aria-label="Dictar por voz"
+                  className={`absolute right-2 w-9 h-9 rounded-xl flex items-center justify-center ${
+                    voiceActive ? 'bg-[#E11D48] text-white' : 'text-[#1565F5] hover:bg-[#1565F5]/10'
+                  }`}
+                >
+                  {voiceActive ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="min-h-[48px] px-7 rounded-2xl bg-gradient-to-r from-[#F5C400] via-[#FFD83B] to-[#E5B200] hover:brightness-95 text-[#04334B] text-sm font-extrabold whitespace-nowrap shrink-0 transition-all shadow-md"
+              >
+                {loading ? 'Solicitando...' : 'Solicitar'}
+              </button>
+            </form>
+          </div>
         </div>
 
-        {/* Botones directos principales bajo la barra del agente (activan el mapa solo al solicitar) */}
+        {/* Cuerpo inferior de accesos rápidos dentro de la tarjeta */}
+        <div className="p-5 sm:p-6">
         {!isCompactSphere && (
-          <div className="w-full mt-5 space-y-4">
+          <div className="w-full space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
                 type="button"
@@ -1183,19 +1253,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             <div className="flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
-                onClick={() => runVoiceCommand('Quiero pedir ceviche en restaurante', 'RESTAURANTE')}
+                onClick={() => runVoiceCommand('Quiero un restaurante abierto', 'RESTAURANTE')}
                 className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
               >
                 <Utensils className="w-3.5 h-3.5 text-[#1565F5]" />
-                <span>«Pedir Restaurante»</span>
+                <span>«Restaurantes»</span>
               </button>
               <button
                 type="button"
-                onClick={() => runVoiceCommand('Necesito pastillas para el soroche en botica 24h', 'FARMACIA')}
+                onClick={() => runVoiceCommand('Quiero una farmacia abierta', 'FARMACIA')}
                 className="min-h-[38px] px-3.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-[#F7FAFC] dark:bg-[#031622] text-xs font-semibold text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5]"
               >
                 <Pill className="w-3.5 h-3.5 text-[#1565F5]" />
-                <span>«Botica 24h»</span>
+                <span>«Farmacias 24h»</span>
               </button>
               <button
                 type="button"
@@ -1340,6 +1410,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
             );
           })}
         </div>
+        </div>
       </section>
 
       {errorMsg && (
@@ -1390,7 +1461,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       )}
 
       {/* ==================================================================== */}
-      {/* MODO 3: CATÁLOGO + MAPA CENTRADO + CARRUSEL LATERAL DERECHO         */}
+      {/* MODO 3: NEGOCIOS O PRODUCTOS + MAPA CENTRADO + CARRUSEL DERECHO      */}
       {/* ==================================================================== */}
       {subTab === 'CONCIERGE' && conciergeMode === 'CATALOG' && (
         <section className="space-y-5">
@@ -1400,10 +1471,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 Búsqueda Geolocalizada · La Chuspa
               </p>
               <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
-                {RUBRO_LABELS[activeCategory]} ({opciones.length} encontrados)
+                {RUBRO_LABELS[activeCategory]} ({opciones.length}{' '}
+                {modoResultado === 'NEGOCIOS' ? 'establecimientos' : 'productos encontrados'})
               </h2>
               <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
-                Mapa centrado en Cusco · Toca cualquier precio del negocio en el mapa para abrir su petición superpuesta
+                {modoResultado === 'NEGOCIOS'
+                  ? 'Mostrando únicamente establecimientos registrados · Toca uno para ver sus productos'
+                  : 'Mapa centrado en Cusco · Toca cualquier producto en el mapa para confirmar tu pedido'}
               </p>
             </div>
           </div>
@@ -1421,12 +1495,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 }}
                 className="min-h-[44px] px-5 rounded-xl border border-[#D4AF37]/50 text-xs font-medium text-[#9A7B2C] dark:text-[#E5C158] chuspa-google-btn"
               >
-                Ver todo el catálogo de {RUBRO_LABELS[activeCategory]}
+                Ver establecimientos de {RUBRO_LABELS[activeCategory]}
               </button>
             </div>
           ) : (
             <div className="space-y-5">
-              {/* Mapa Google Maps grande centrado + Carrusel lateral derecho movible de arriba abajo */}
+              {/* Mapa grande centrado + Carrusel lateral derecho */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
                 <div className="lg:col-span-8">
                   <CuscoGeoMap
@@ -1439,28 +1513,12 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       setSelectedCatalogKey(id);
                       const found = catalogMapEntries.find((e) => e.key === id);
                       if (!found) return;
-                      if (found.op.tipo === 'DIVISA') {
-                        setSubTab('DIVISAS');
-                      } else {
-                        setSheetError(null);
-                        setSelectedOption(found.op);
-                        if (!isDocValid) {
-                          notifyDocumentAlertIfNeeded(found.op.titulo, false);
-                        }
-                      }
+                      openCatalogItemOrBusiness(found.op);
                     }}
                     onRequestPinAction={(id) => {
                       const found = catalogMapEntries.find((e) => e.key === id);
                       if (!found) return;
-                      if (found.op.tipo === 'DIVISA') {
-                        setSubTab('DIVISAS');
-                      } else {
-                        setSheetError(null);
-                        setSelectedOption(found.op);
-                        if (!isDocValid) {
-                          notifyDocumentAlertIfNeeded(found.op.titulo, false);
-                        }
-                      }
+                      openCatalogItemOrBusiness(found.op);
                     }}
                     onRequestGps={requestGps}
                     gpsLive={gpsStatus === 'live'}
@@ -1472,10 +1530,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-[#D8E2EC] dark:border-white/10">
                     <div>
                       <p className="text-xs font-bold text-[#0B2538] dark:text-white">
-                        Negocios Encontrados
+                        {modoResultado === 'NEGOCIOS'
+                          ? 'Establecimientos Disponibles'
+                          : 'Productos Encontrados'}
                       </p>
                       <p className="text-[10px] text-[#516478] dark:text-slate-400">
-                        Desliza de arriba a abajo para elegir
+                        {modoResultado === 'NEGOCIOS'
+                          ? 'Toca un establecimiento para ver sus productos'
+                          : 'Desliza de arriba a abajo para elegir'}
                       </p>
                     </div>
                     <span className="text-[11px] font-mono-tabular font-bold text-[#1565F5]">
@@ -1487,6 +1549,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     {catalogMapEntries.map((entry) => {
                       const selected =
                         (selectedCatalogKey ?? catalogMapEntries[0]?.key) === entry.key;
+                      const isBiz = Boolean(entry.op.es_negocio);
                       return (
                         <div
                           key={entry.key}
@@ -1503,38 +1566,41 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                                 {entry.op.negocio_nombre}
                               </p>
                               <p className="text-[11px] text-[#516478] dark:text-slate-300 line-clamp-2">
-                                {entry.op.titulo}
+                                {isBiz ? entry.op.descripcion : entry.op.titulo}
                               </p>
                             </div>
-                            <span className="text-xs font-mono-tabular font-extrabold text-[#1565F5] dark:text-[#F5C400] shrink-0">
+                            <span className="text-[11px] font-mono-tabular font-extrabold text-[#1565F5] dark:text-[#F5C400] shrink-0">
                               {entry.priceText}
                             </span>
                           </div>
                           <div className="flex items-center justify-between gap-2 pt-1">
                             <span className="text-[10px] text-[#516478] dark:text-slate-400">
-                              <span className={entry.op.abierto_ahora !== false ? 'text-emerald-600 dark:text-emerald-400 font-semibold' : 'text-rose-500 font-semibold'}>
-                                {entry.op.abierto_ahora !== false ? '● Abierto' : 'Cerrado'}
+                              <span
+                                className={
+                                  entry.op.abierto_ahora !== false
+                                    ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+                                    : 'text-rose-500 font-semibold'
+                                }
+                              >
+                                {entry.op.abierto_ahora !== false
+                                  ? `Abierta${entry.op.horario ? ` · ${entry.op.horario}` : ''}`
+                                  : 'Cerrado'}
                               </span>
                               {' · '}
-                              {entry.op.zona || 'Cusco'} · ★ {entry.op.calificacion.toFixed(1)}
+                              {entry.op.zona || 'Cusco'}
+                              {entry.op.distancia_km !== undefined
+                                ? ` · ${entry.op.distancia_km.toFixed(1)} km`
+                                : ''}
                             </span>
                             <button
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (entry.op.tipo === 'DIVISA') {
-                                  setSubTab('DIVISAS');
-                                } else {
-                                  setSheetError(null);
-                                  setSelectedOption(entry.op);
-                                  if (!isDocValid) {
-                                    notifyDocumentAlertIfNeeded(entry.op.titulo, false);
-                                  }
-                                }
+                                openCatalogItemOrBusiness(entry.op);
                               }}
-                              className="min-h-[30px] px-3 rounded-lg bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-[11px] font-extrabold"
+                              className="min-h-[30px] px-3 rounded-lg bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-[11px] font-extrabold shrink-0"
                             >
-                              Solicitar
+                              {isBiz ? 'Ver productos' : 'Solicitar'}
                             </button>
                           </div>
                         </div>
@@ -1544,38 +1610,42 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </div>
               </div>
 
-              {/* Opción discreta para mostrar/ocultar la tabla comparativa si el usuario la requiere */}
-              <div className="flex items-center justify-end">
-                <button
-                  type="button"
-                  onClick={() => setShowCatalogPriceTable((v) => !v)}
-                  className="text-xs font-semibold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
-                >
-                  {showCatalogPriceTable ? 'Ocultar lista comparativa' : 'Ver lista comparativa de precios →'}
-                </button>
-              </div>
-
-              {showCatalogPriceTable && (
-                <div className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-4 sm:p-5 shadow-md overflow-hidden">
-                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#D8E2EC] dark:border-white/10">
-                    <div>
-                      <h3 className="text-sm font-bold text-[#0B2538] dark:text-white">
-                        Lista Comparativa · Agente La Chuspa
-                      </h3>
-                      <p className="text-[11px] text-[#516478] dark:text-slate-400">
-                        Ordenado de menor a mayor tarifa para escoger al proveedor
-                      </p>
-                    </div>
-                    <span className="text-[11px] font-mono-tabular font-semibold text-[#1565F5]">
-                      {catalogMapEntries.length} opciones
-                    </span>
+              {/* Solo mostrar tabla comparativa de precios cuando el usuario pidió un PRODUCTO concreto */}
+              {modoResultado === 'PRODUCTOS' && (
+                <>
+                  <div className="flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setShowCatalogPriceTable((v) => !v)}
+                      className="text-xs font-semibold text-[#1565F5] dark:text-[#60A5FA] hover:underline"
+                    >
+                      {showCatalogPriceTable
+                        ? 'Ocultar lista comparativa'
+                        : 'Ver lista comparativa de precios →'}
+                    </button>
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead>
-                        <tr className="border-b border-[#D8E2EC] dark:border-white/10 text-[11px] uppercase tracking-wider text-[#516478] dark:text-slate-400">
-                          <th className="py-2.5 pr-3 font-semibold">Negocio</th>
-                          <th className="py-2.5 pr-3 font-semibold">Servicio / Producto</th>
+
+                  {showCatalogPriceTable && (
+                    <div className="rounded-3xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#052030] p-4 sm:p-5 shadow-md overflow-hidden">
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#D8E2EC] dark:border-white/10">
+                        <div>
+                          <h3 className="text-sm font-bold text-[#0B2538] dark:text-white">
+                            Lista Comparativa · La Chuspa
+                          </h3>
+                          <p className="text-[11px] text-[#516478] dark:text-slate-400">
+                            Ordenado de menor a mayor tarifa para escoger al proveedor
+                          </p>
+                        </div>
+                        <span className="text-[11px] font-mono-tabular font-semibold text-[#1565F5]">
+                          {catalogMapEntries.length} opciones
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="border-b border-[#D8E2EC] dark:border-white/10 text-[11px] uppercase tracking-wider text-[#516478] dark:text-slate-400">
+                              <th className="py-2.5 pr-3 font-semibold">Negocio</th>
+                              <th className="py-2.5 pr-3 font-semibold">Servicio / Producto</th>
                           <th className="py-2.5 pr-3 font-semibold">Distancia · ETA</th>
                           <th className="py-2.5 pr-3 font-semibold text-right">Precio</th>
                           <th className="py-2.5 pl-3 font-semibold text-right">Acción</th>
@@ -1644,6 +1714,8 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     </table>
                   </div>
                 </div>
+                  )}
+                </>
               )}
 
               {/* Tarjetas completas debajo para detalle extendido */}
@@ -1651,6 +1723,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 {catalogMapEntries.map((entry) => {
                   const op = entry.op;
                   const isHighlighted = entry.key === selectedCatalogKey;
+                  const isBiz = Boolean(op.es_negocio);
                   return (
                     <article
                       key={entry.key}
@@ -1665,26 +1738,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     >
                       <div className="space-y-2.5">
                         <div className="flex items-center justify-between gap-2 text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                          <span className="truncate">{op.negocio_nombre}</span>
+                          <span className="truncate">{op.zona || op.negocio_nombre}</span>
                           <span className="font-mono-tabular shrink-0">
                             ★ {op.calificacion.toFixed(2)}
                           </span>
                         </div>
                         <h3 className="font-display text-2xl font-semibold leading-snug text-[#14171F] dark:text-[#F4F1EA]">
-                          {op.titulo}
+                          {isBiz ? op.negocio_nombre : op.titulo}
                         </h3>
                         <p className="text-xs sm:text-sm text-[#555B66] dark:text-[#A3A9B5] leading-relaxed">
                           {op.descripcion}
                         </p>
                         <div className="text-xs text-[#6A717E] dark:text-[#98A0AD] flex flex-wrap items-center gap-2 pt-1">
-                          <span>{op.eta_min} min aprox.</span>
+                          <span>{isBiz ? (op.horario || 'Disponible') : `${op.eta_min} min aprox.`}</span>
                           {op.distancia_km !== undefined && (
                             <>
                               <span aria-hidden="true">·</span>
                               <span className="font-mono-tabular">{op.distancia_km.toFixed(1)} km</span>
                             </>
                           )}
-                          {op.mejor_precio && (
+                          {!isBiz && op.mejor_precio && (
                             <>
                               <span aria-hidden="true">·</span>
                               <span className="text-[#34A853] font-semibold">Mejor tarifa</span>
@@ -1696,7 +1769,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                       <div className="flex items-center justify-between gap-4 pt-4 border-t border-black/8 dark:border-white/8">
                         <div>
                           <p className="text-[11px] uppercase tracking-wider text-[#6A717E] dark:text-[#98A0AD]">
-                            Tarifa verificada {op.unidad_medida ? `· por ${op.unidad_medida}` : ''}
+                            {isBiz
+                              ? 'Estado del establecimiento'
+                              : `Tarifa verificada${op.unidad_medida ? ` · por ${op.unidad_medida}` : ''}`}
                           </p>
                           <p className="font-mono-tabular text-xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
                             {entry.priceText}
@@ -1706,19 +1781,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (op.tipo === 'DIVISA') {
-                              setSubTab('DIVISAS');
-                            } else {
-                              setSheetError(null);
-                              setSelectedOption(op);
-                              if (!isDocValid) {
-                                notifyDocumentAlertIfNeeded(op.titulo, false);
-                              }
-                            }
+                            openCatalogItemOrBusiness(op);
                           }}
                           className="min-h-[44px] px-5 rounded-xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-xs font-extrabold whitespace-nowrap shrink-0 transition-colors shadow-xs"
                         >
-                          {op.tipo === 'DIVISA' ? 'Cotizar' : 'Solicitar'}
+                          {op.tipo === 'DIVISA' ? 'Cotizar' : isBiz ? 'Ver productos' : 'Solicitar'}
                         </button>
                       </div>
                     </article>
@@ -2290,6 +2357,107 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         />
       )}
       {subTab === 'DESPACHO' && <EmergencyDispatchCenter />}
+
+      {/* MODAL DE PRODUCTOS DE UN ESTABLECIMIENTO SELECCIONADO */}
+      {selectedBusinessDrawer && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Productos de ${selectedBusinessDrawer.negocio_nombre}`}
+          className="fixed inset-0 z-[115] bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+        >
+          <div className="w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl bg-white dark:bg-[#052030] border border-[#D8E2EC] dark:border-white/15 p-6 space-y-4 max-h-[85vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold text-[#1565F5] dark:text-[#F5C400]">
+                  {selectedBusinessDrawer.zona || 'Cusco'} ·{' '}
+                  {selectedBusinessDrawer.horario || 'Horario verificado'}
+                </p>
+                <h3 className="font-display text-2xl font-bold text-[#0B2538] dark:text-white">
+                  {selectedBusinessDrawer.negocio_nombre}
+                </h3>
+                <p className="text-xs text-[#516478] dark:text-slate-300 mt-1">
+                  {selectedBusinessDrawer.descripcion}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedBusinessDrawer(null)}
+                aria-label="Cerrar establecimiento"
+                className="min-h-[40px] min-w-[40px] rounded-xl border border-[#D8E2EC] dark:border-white/15 flex items-center justify-center text-[#516478] dark:text-slate-300 hover:text-[#0B2538] dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5 pt-2 border-t border-[#D8E2EC] dark:border-white/10">
+              {allServicios
+                .filter((s) => s.negocio_id === selectedBusinessDrawer.negocio_id)
+                .map((srv) => (
+                  <div
+                    key={srv.id}
+                    className="rounded-2xl border border-[#D8E2EC] dark:border-white/10 bg-[#F7FAFC] dark:bg-[#031622] p-3.5 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-[#0B2538] dark:text-white">
+                        {srv.nombre}
+                      </p>
+                      <p className="text-xs text-[#516478] dark:text-slate-300">
+                        {srv.descripcion}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span className="text-sm font-mono-tabular font-extrabold text-[#1565F5] dark:text-[#F5C400]">
+                        {formatSoles(srv.precio_centavos)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedBusinessDrawer(null);
+                          setSheetError(null);
+                          setSelectedOption({
+                            tipo: 'CATALOGO',
+                            es_negocio: false,
+                            servicio_id: srv.id,
+                            negocio_id: selectedBusinessDrawer.negocio_id,
+                            negocio_nombre: selectedBusinessDrawer.negocio_nombre,
+                            categoria: srv.categoria,
+                            titulo: srv.nombre,
+                            descripcion: srv.descripcion,
+                            zona: selectedBusinessDrawer.zona,
+                            lat: selectedBusinessDrawer.lat,
+                            lng: selectedBusinessDrawer.lng,
+                            abierto_ahora: selectedBusinessDrawer.abierto_ahora,
+                            horario: selectedBusinessDrawer.horario,
+                            calificacion: selectedBusinessDrawer.calificacion,
+                            distancia_km: selectedBusinessDrawer.distancia_km,
+                            eta_min: srv.duracion_min,
+                            stock: srv.stock,
+                            precio_centavos: srv.precio_centavos,
+                            mejor_precio: false,
+                            disponible: true,
+                          });
+                          if (!isDocValid) {
+                            notifyDocumentAlertIfNeeded(srv.nombre, false);
+                          }
+                        }}
+                        className="min-h-[34px] px-3.5 rounded-xl bg-[#F5C400] hover:bg-[#E2B400] text-[#04334B] text-xs font-extrabold"
+                      >
+                        Pedir
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              {allServicios.filter((s) => s.negocio_id === selectedBusinessDrawer.negocio_id)
+                .length === 0 && (
+                <p className="text-xs text-[#516478] dark:text-slate-300 py-4 text-center">
+                  Este establecimiento no tiene productos publicados en catálogo en este momento.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* HOJA DE CONFIRMACIÓN DE PEDIDO */}
       {selectedOption && (

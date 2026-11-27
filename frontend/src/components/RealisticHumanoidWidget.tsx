@@ -245,6 +245,207 @@ export const RealisticAvatarPortrait: React.FC<RealisticAvatarPortraitProps> = (
 
 export const DigitalMouthPortrait = RealisticAvatarPortrait;
 
+export const IncaSolarDiscButton: React.FC<RealisticAvatarPortraitProps> = ({
+  sizeClass = 'w-32 h-32 sm:w-36 sm:h-36',
+  listening = false,
+  speaking = false,
+  mouthLevel = 0,
+  onClick,
+  ariaLabel = 'Presionar Disco Solar Inca para solicitar',
+  title = 'Presiona el Disco Solar Inca para pedir por voz o activar tu solicitud',
+}) => {
+  const [pulseWaveActive, setPulseWaveActive] = useState(false);
+  const pulseTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pulseTimerRef.current) {
+        window.clearTimeout(pulseTimerRef.current);
+      }
+    };
+  }, []);
+
+  function triggerDiscPress() {
+    setPulseWaveActive(true);
+    playLuxuryChime();
+    if (pulseTimerRef.current) {
+      window.clearTimeout(pulseTimerRef.current);
+    }
+    pulseTimerRef.current = window.setTimeout(() => {
+      setPulseWaveActive(false);
+    }, 2200);
+    onClick?.();
+  }
+
+  const wavesOn = listening || speaking || pulseWaveActive;
+  const activeEnergy = speaking
+    ? Math.max(0.32, mouthLevel)
+    : pulseWaveActive
+    ? 0.72
+    : listening
+    ? 0.5
+    : 0.16;
+
+  const solarAngles = Array.from({ length: 16 }, (_, i) => i * 22.5);
+
+  return (
+    <button
+      type="button"
+      onClick={triggerDiscPress}
+      aria-label={ariaLabel}
+      title={title}
+      className={`relative group rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F5C400] transition-transform duration-200 hover:scale-[1.03] active:scale-95 ${sizeClass}`}
+      style={{
+        filter: wavesOn
+          ? 'drop-shadow(0 0 28px rgba(245, 196, 0, 0.58))'
+          : 'drop-shadow(0 16px 28px rgba(4, 51, 75, 0.35))',
+      }}
+    >
+      {wavesOn && (
+        <>
+          <span
+            aria-hidden="true"
+            className="chuspa-sound-wave-1 absolute -inset-2 rounded-full border-2 border-[#F5C400]/85 pointer-events-none"
+          />
+          <span
+            aria-hidden="true"
+            className="chuspa-sound-wave-2 absolute -inset-4 rounded-full border-2 border-[#1565F5]/65 pointer-events-none"
+          />
+        </>
+      )}
+
+      <svg viewBox="0 0 200 200" className="w-full h-full overflow-visible" aria-hidden="true">
+        <defs>
+          <radialGradient id="intiGoldDisc" cx="50%" cy="45%" r="55%">
+            <stop offset="0%" stopColor="#FFF4B8" />
+            <stop offset="42%" stopColor="#F5C400" />
+            <stop offset="82%" stopColor="#C99306" />
+            <stop offset="100%" stopColor="#805802" />
+          </radialGradient>
+          <radialGradient id="intiInnerNavy" cx="50%" cy="40%" r="60%">
+            <stop offset="0%" stopColor="#085378" />
+            <stop offset="70%" stopColor="#04334B" />
+            <stop offset="100%" stopColor="#021D2C" />
+          </radialGradient>
+          <linearGradient id="intiRayGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#FFE67A" />
+            <stop offset="55%" stopColor="#F5C400" />
+            <stop offset="100%" stopColor="#9C6E04" />
+          </linearGradient>
+        </defs>
+
+        {/* Halo externo dorado Inca */}
+        <circle
+          cx="100"
+          cy="100"
+          r="94"
+          fill="none"
+          stroke="url(#intiRayGrad)"
+          strokeWidth="1.5"
+          opacity={wavesOn ? 0.9 : 0.45}
+        />
+
+        {/* 16 Rayos Solares del Inti (triángulos y trapecios escalonados) */}
+        <g>
+          {solarAngles.map((deg, idx) => {
+            const isMajor = idx % 2 === 0;
+            return (
+              <g key={deg} transform={`rotate(${deg} 100 100)`}>
+                {isMajor ? (
+                  <polygon
+                    points="100,4 93,26 107,26"
+                    fill="url(#intiRayGrad)"
+                    stroke="#FFF4B8"
+                    strokeWidth="0.6"
+                  />
+                ) : (
+                  <polygon
+                    points="96,12 104,12 107,27 93,27"
+                    fill="#D4AF37"
+                    stroke="#7C5603"
+                    strokeWidth="0.5"
+                  />
+                )}
+              </g>
+            );
+          })}
+        </g>
+
+        {/* Disco principal dorado Qorikancha */}
+        <circle
+          cx="100"
+          cy="100"
+          r="72"
+          fill="url(#intiGoldDisc)"
+          stroke="#FFF4B8"
+          strokeWidth="2"
+        />
+
+        {/* Anillo de grecas andinas grabadas */}
+        <circle
+          cx="100"
+          cy="100"
+          r="64"
+          fill="none"
+          stroke="#6A4802"
+          strokeWidth="2"
+          strokeDasharray="6 4"
+        />
+
+        {/* Centro Azul Marino Profundo Imperial */}
+        <circle
+          cx="100"
+          cy="100"
+          r="53"
+          fill="url(#intiInnerNavy)"
+          stroke="#F5C400"
+          strokeWidth="2.5"
+        />
+
+        {/* Sol interior / rostro geométrico Inti */}
+        <circle
+          cx="100"
+          cy="100"
+          r={24 + activeEnergy * 4}
+          fill="url(#intiGoldDisc)"
+          opacity={0.95}
+        />
+
+        {/* Barras de voz / pulso solar en el núcleo del disco */}
+        <g>
+          {[0.46, 0.8, 1.0, 0.8, 0.46].map((h, i) => {
+            const barH = Math.max(5, (h * 22 + 4) * (0.35 + activeEnergy * 0.78));
+            const x = 86 + i * 6.5;
+            return (
+              <rect
+                key={i}
+                x={x}
+                y={100 - barH / 2}
+                width="3.6"
+                height={barH}
+                rx="1.8"
+                fill="#04334B"
+              />
+            );
+          })}
+        </g>
+      </svg>
+
+      <span
+        className={`absolute -bottom-2 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider whitespace-nowrap shadow-md border ${
+          listening
+            ? 'bg-[#1565F5] text-white border-white/60'
+            : wavesOn
+            ? 'bg-[#F5C400] text-[#04334B] border-[#04334B]/20'
+            : 'bg-[#04334B] text-[#F5C400] border-[#F5C400]/60'
+        }`}
+      >
+        {listening ? 'Escuchando' : wavesOn ? 'Respondiendo' : 'Tocar Sol'}
+      </span>
+    </button>
+  );
+};
+
 interface FloatingAvatarWidgetProps {
   hidden?: boolean;
   onAssistantDispatch: (event: AssistantDispatchEvent) => void;

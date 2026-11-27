@@ -842,16 +842,41 @@ const RTDB_STOP_WORDS = new Set([
   'farmacias',
   'botica',
   'boticas',
+  'drogueria',
   'restaurante',
   'restaurantes',
+  'restaurant',
   'hotel',
   'hoteles',
+  'hostal',
+  'hospedaje',
+  'alojamiento',
   'tour',
   'tours',
+  'turismo',
   'taxi',
   'taxis',
   'pedir',
   'comprar',
+  'ver',
+  'mostrar',
+  'dame',
+  'lista',
+  'aeropuerto',
+  'terminal',
+  'terrestre',
+  'plaza',
+  'armas',
+  'mayor',
+  'velasco',
+  'astete',
+  'wanchaq',
+  'blas',
+  'san',
+  'centro',
+  'poroy',
+  '24h',
+  'horas',
 ]);
 
 function inferCategoryFromQuery(q: string, forced?: Rubro): Rubro {
@@ -958,7 +983,60 @@ function buildOptions(
     });
   }
 
-  // Estricto por categoría: NUNCA mezcla rubros ni incluye taxis en otros rubros
+  const keywords = normQ
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !RTDB_STOP_WORDS.has(w));
+
+  // Regla: si no pide un producto concreto (ej. "farmacias", "quiero una farmacia abierta"),
+  // devolver SOLO los negocios registrados de ese rubro (sin listar sus productos).
+  if (keywords.length === 0) {
+    const allServices = toArray(snap.servicios);
+    const matchingBiz = negociosList
+      .filter((n) => n.activo !== 0 && n.en_linea !== 0 && n.rubro === cat)
+      .filter((n) => !openOnly || isRtdbBusinessOpenNow(n))
+      .map((n) => {
+        const openNow = isRtdbBusinessOpenNow(n);
+        const distKm = Number(haversineKm(lat, lng, n.lat, n.lng).toFixed(2));
+        const prodCount = allServices.filter(
+          (s) => s.negocio_id === n.id && s.disponible === 1 && s.stock > 0
+        ).length;
+        return {
+          openNow,
+          distKm,
+          opt: {
+            tipo: 'CATALOGO' as const,
+            es_negocio: true,
+            total_productos: prodCount,
+            negocio_id: n.id,
+            negocio_nombre: n.nombre,
+            categoria: n.rubro,
+            titulo: n.nombre,
+            descripcion: n.descripcion,
+            zona: n.zona,
+            lat: n.lat,
+            lng: n.lng,
+            abierto_ahora: openNow,
+            horario: n.abierto_24h
+              ? '24 horas'
+              : `${n.horario_apertura || '07:00'} - ${n.horario_cierre || '22:30'}`,
+            calificacion: n.calificacion,
+            distancia_km: distKm,
+            eta_min: 15,
+            precio_centavos: 0,
+            mejor_precio: false,
+            disponible: true,
+          },
+        };
+      })
+      .sort((a, b) => {
+        if (a.openNow !== b.openNow) return a.openNow ? -1 : 1;
+        return a.distKm - b.distKm || b.opt.calificacion - a.opt.calificacion;
+      });
+    return matchingBiz.map((entry, idx) => ({ ...entry.opt, mejor_precio: idx === 0 }));
+  }
+
+  // Búsqueda por producto/servicio concreto dentro de los negocios registrados
   const byCat = toArray(snap.servicios).filter((s) => {
     if (s.disponible !== 1 || s.categoria !== cat) return false;
     const biz = negById.get(s.negocio_id);
@@ -967,9 +1045,6 @@ function buildOptions(
     return true;
   });
 
-  const keywords = normQ
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !RTDB_STOP_WORDS.has(w));
   let selected = byCat;
   if (keywords.length > 0 && byCat.length > 0) {
     const narrowed = byCat.filter((s) => {
@@ -989,6 +1064,7 @@ function buildOptions(
       const openNow = isRtdbBusinessOpenNow(biz);
       return {
         tipo: 'CATALOGO' as const,
+        es_negocio: false,
         servicio_id: s.id,
         negocio_id: s.negocio_id,
         negocio_nombre: s.negocio_nombre,
@@ -1184,15 +1260,20 @@ export async function handleFirebaseRtdbRequest<T>(
     const opciones = buildOptions(snap, cat, lat, lng, destino, q);
     const top = opciones[0];
 
+    const isBusinessList = opciones.length > 0 && opciones.every((o) => o.es_negocio === true);
     let respuestaVoz = `No encontramos opciones disponibles en ${cat.toLowerCase()}.`;
     if (cat === 'TRANSPORTE' && top) {
       respuestaVoz = `Unidades de taxi disponibles${destino ? ` rumbo a ${destino}` : ''}: ${top.titulo}, a ${top.eta_min ?? 4} minutos, tarifa estimada ${(top.precio_centavos / 100).toFixed(2)} soles.`;
+    } else if (isBusinessList) {
+      const nombres = opciones.slice(0, 3).map((o) => o.negocio_nombre).join(', ');
+      respuestaVoz = `Encontramos ${opciones.length} opciones disponibles en Cusco: ${nombres}. Toca un negocio para ver sus productos.`;
     } else if (top) {
-      respuestaVoz = `Encontramos ${opciones.length} opciones de ${cat.toLowerCase()}. En ${top.negocio_nombre}: ${top.titulo} por ${(top.precio_centavos / 100).toFixed(2)} soles.`;
+      respuestaVoz = `Encontramos ${opciones.length} productos de ${cat.toLowerCase()}. En ${top.negocio_nombre}: ${top.titulo} por ${(top.precio_centavos / 100).toFixed(2)} soles.`;
     }
 
     return {
       categoria: cat,
+      modo_resultado: isBusinessList ? 'NEGOCIOS' : 'PRODUCTOS',
       respuesta_voz: respuestaVoz,
       destino_sugerido: destino,
       ai_error: null,

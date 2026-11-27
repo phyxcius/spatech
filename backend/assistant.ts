@@ -67,16 +67,41 @@ const STOP_SEARCH_WORDS = new Set([
   'farmacias',
   'botica',
   'boticas',
+  'drogueria',
   'restaurante',
   'restaurantes',
+  'restaurant',
   'hotel',
   'hoteles',
+  'hostal',
+  'hospedaje',
+  'alojamiento',
   'tour',
   'tours',
+  'turismo',
   'taxi',
   'taxis',
   'pedir',
   'comprar',
+  'ver',
+  'mostrar',
+  'dame',
+  'lista',
+  'aeropuerto',
+  'terminal',
+  'terrestre',
+  'plaza',
+  'armas',
+  'mayor',
+  'velasco',
+  'astete',
+  'wanchaq',
+  'blas',
+  'san',
+  'centro',
+  'poroy',
+  '24h',
+  'horas',
 ]);
 
 const SERVER_CUSCO_DESTINATIONS: Array<{ label: string; lat: number; lng: number; aliases: string[] }> = [
@@ -219,9 +244,9 @@ export async function runConciergeSearch(
   const openOnly = /\b(abierta|abierto|abiertas|abiertos|de turno|turno|24h|24 horas|ahora)\b/.test(
     normQuery
   );
-  let searchKeywords = normQuery
-    .split(/\s+/)
-    .filter((w) => w.length >= 3 && !STOP_SEARCH_WORDS.has(w));
+  const normWords = normQuery.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
+  let searchKeywords = normWords.filter((w) => w.length >= 3 && !STOP_SEARCH_WORDS.has(w));
+  const rawHadProductKeywords = searchKeywords.length > 0;
   const extractedDest = extractServerDestination(params.query, params.destino);
   let destinoExtraido = extractedDest.label;
   let aiUsed = false;
@@ -238,8 +263,13 @@ export async function runConciergeSearch(
         model: 'gemini-4-hydrogen',
         contents: `Consulta del usuario en Cusco, Perú: "${params.query}"`,
         config: {
-          systemInstruction:
-            'Eres el concierge de La Chuspa en Cusco, Perú. Clasifica estrictamente la intención en exactamente una categoría (TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO). Regla estricta: si pide farmacia/botica/medicinas usa FARMACIA aunque mencione un lugar como aeropuerto o plaza; si pide taxi/movilidad/traslado usa TRANSPORTE; nunca mezcles categorías. NO inventes ni menciones nombres de marcas o negocios externos; solo extrae palabras clave del producto/servicio y el destino si pide traslado.',
+          systemInstruction: [
+            'Eres el concierge de La Chuspa en Cusco, Perú.',
+            'Clasifica estrictamente la intención en exactamente una categoría (TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO).',
+            'Regla estricta: si pide farmacia/botica/medicinas usa FARMACIA aunque mencione un lugar como aeropuerto o plaza; si pide taxi/movilidad/traslado usa TRANSPORTE; nunca mezcles categorías.',
+            'Si el usuario solo pide un tipo de negocio (ej. "farmacias", "quiero una farmacia abierta", "restaurantes", "hoteles") sin nombrar un producto concreto, devuelve "palabras_clave": [].',
+            'NO inventes ni menciones nombres de marcas o negocios externos; solo extrae palabras clave del producto/servicio y el destino si pide traslado.',
+          ].join(' '),
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -263,10 +293,13 @@ export async function runConciergeSearch(
         // Guardrail: respetar categoría explícita de la orden del usuario
         detectedCategory = explicitCategory || (parsed.categoria as Rubro);
       }
-      if (Array.isArray(parsed.palabras_clave) && parsed.palabras_clave.length > 0) {
-        searchKeywords = parsed.palabras_clave
+      if (rawHadProductKeywords && Array.isArray(parsed.palabras_clave) && parsed.palabras_clave.length > 0) {
+        const aiKeys = parsed.palabras_clave
           .map(normalizeText)
           .filter((w) => w.length >= 2 && !STOP_SEARCH_WORDS.has(w));
+        if (aiKeys.length > 0) {
+          searchKeywords = aiKeys;
+        }
       }
       if (parsed.destino && !destinoExtraido) {
         destinoExtraido = parsed.destino;
@@ -431,7 +464,103 @@ export async function runConciergeSearch(
     };
   }
 
-  // Resto de categorías: consulta ESTRICTA filtrada por categoria === n.rubro (NUNCA mezcla otros rubros)
+  // Resto de categorías:
+  // Regla: si el usuario pidió solo el negocio/categoría ("farmacias", "quiero una farmacia abierta", "restaurantes", "hoteles")
+  // SIN pedir un producto concreto -> devolver SOLO los negocios registrados (1 tarjeta por negocio, sin lista de productos).
+  // Solo si pidió un producto específico ("pastillas soroche", "oxígeno", "ceviche", "clavos") -> buscar productos en los negocios registrados.
+  if (searchKeywords.length === 0) {
+    const bizRows = db
+      .prepare(`
+        SELECT n.*,
+          (SELECT COUNT(*) FROM servicios_catalogo s
+           WHERE s.negocio_id = n.id AND s.disponible = 1 AND s.stock > 0) AS total_productos
+        FROM negocios n
+        WHERE n.rubro = ? AND n.activo = 1 AND n.en_linea = 1
+        ORDER BY n.calificacion DESC
+      `)
+      .all(detectedCategory) as Array<{
+      id: number;
+      rubro: Rubro;
+      nombre: string;
+      descripcion: string;
+      zona: string;
+      lat: number;
+      lng: number;
+      calificacion: number;
+      horario_apertura?: string;
+      horario_cierre?: string;
+      abierto_24h?: number;
+      en_linea?: number;
+      total_productos?: number;
+    }>;
+
+    const withOpenFlag = bizRows.map((n) => ({
+      ...n,
+      abiertoAhora: isBusinessOpenNow(n),
+      distanciaKm: haversineKm(userLat, userLng, n.lat, n.lng),
+    }));
+
+    const scopedBusinesses = (openOnly ? withOpenFlag.filter((n) => n.abiertoAhora) : withOpenFlag).sort(
+      (a, b) => {
+        if (a.abiertoAhora !== b.abiertoAhora) return a.abiertoAhora ? -1 : 1;
+        return a.distanciaKm - b.distanciaKm || b.calificacion - a.calificacion;
+      }
+    );
+
+    const categoryNoun =
+      detectedCategory === 'FARMACIA'
+        ? 'farmacias'
+        : detectedCategory === 'RESTAURANTE'
+        ? 'restaurantes'
+        : detectedCategory === 'HOTEL'
+        ? 'hoteles'
+        : detectedCategory === 'TURISMO'
+        ? 'agencias de turismo'
+        : 'negocios';
+
+    const namesPreview = scopedBusinesses
+      .slice(0, 3)
+      .map((b) => b.nombre)
+      .join(', ');
+
+    return {
+      categoria: detectedCategory,
+      modo_resultado: 'NEGOCIOS' as const,
+      respuesta_voz:
+        scopedBusinesses.length > 0
+          ? `Encontramos ${scopedBusinesses.length} ${categoryNoun} ${
+              openOnly ? 'abiertas ahora ' : 'disponibles '
+            }en Cusco: ${namesPreview}. Selecciona una para ver sus productos.`
+          : `No encontramos ${categoryNoun} ${openOnly ? 'abiertas en este horario' : 'disponibles'}.`,
+      ai_used: aiUsed,
+      ai_error: aiError,
+      opciones: scopedBusinesses.map((n, idx) => ({
+        tipo: 'CATALOGO' as const,
+        es_negocio: true,
+        total_productos: Number(n.total_productos || 0),
+        negocio_id: n.id,
+        negocio_nombre: n.nombre,
+        categoria: n.rubro,
+        titulo: n.nombre,
+        descripcion: n.descripcion,
+        zona: n.zona,
+        lat: n.lat,
+        lng: n.lng,
+        abierto_ahora: n.abiertoAhora,
+        horario: n.abierto_24h
+          ? '24 horas'
+          : `${n.horario_apertura || '07:00'} - ${n.horario_cierre || '22:30'}`,
+        calificacion: n.calificacion,
+        distancia_km: n.distanciaKm,
+        eta_min: 15,
+        precio_centavos: 0,
+        mejor_precio: idx === 0,
+        disponible: true,
+      })),
+    };
+  }
+
+  // Búsqueda por producto/servicio concreto dentro de los negocios registrados de la categoría
   const rows = db
     .prepare(`
       SELECT s.*, n.nombre AS negocio_nombre, n.zona, n.calificacion, n.lat, n.lng,
@@ -470,7 +599,7 @@ export async function runConciergeSearch(
   // Si el usuario pidió explícitamente negocios "abiertos", filtrar SOLO a los abiertos ahora
   const openScoped = openOnly ? withOpenFlag.filter((r) => r.abiertoAhora) : withOpenFlag;
 
-  // Filtro tolerante por palabras clave dentro de la MISMA categoría
+  // Filtro por palabras clave del producto dentro de la MISMA categoría
   let matched = openScoped;
   if (searchKeywords.length > 0 && openScoped.length > 0) {
     const filtered = openScoped.filter((item) => {
@@ -484,7 +613,7 @@ export async function runConciergeSearch(
     }
   }
 
-  // Ordenar: primero los abiertos ahora, luego menor distancia / precio
+  // Ordenar: primero los abiertos ahora, luego menor precio
   matched.sort((a, b) => {
     if (a.abiertoAhora !== b.abiertoAhora) return a.abiertoAhora ? -1 : 1;
     return a.precio_centavos - b.precio_centavos;
@@ -494,9 +623,10 @@ export async function runConciergeSearch(
 
   return {
     categoria: detectedCategory,
+    modo_resultado: 'PRODUCTOS' as const,
     respuesta_voz:
       matched.length > 0
-        ? `Encontramos ${matched.length} opciones de ${detectedCategory.toLowerCase()} ${
+        ? `Encontramos ${matched.length} productos en ${detectedCategory.toLowerCase()} ${
             openOnly ? 'abiertas ahora ' : ''
           }en ${matched[0].negocio_nombre} desde S/ ${(minPrice / 100).toFixed(2)}.`
         : `No encontramos disponibilidad inmediata en ${detectedCategory.toLowerCase()}${
@@ -506,6 +636,7 @@ export async function runConciergeSearch(
     ai_error: aiError,
     opciones: matched.map((r) => ({
       tipo: 'CATALOGO' as const,
+      es_negocio: false,
       servicio_id: r.id,
       negocio_id: r.negocio_id,
       negocio_nombre: r.negocio_nombre,
