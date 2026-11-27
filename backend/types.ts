@@ -128,6 +128,14 @@ export interface NegocioRow {
   panel_ia_json?: string | null;
   estado_regla?: EstadoRegla;
   motivo_estado?: string | null;
+  mp_public_key?: string | null;
+  mp_access_token?: string | null;
+  yape_numero?: string | null;
+  plin_numero?: string | null;
+  banco_nombre?: string | null;
+  banco_titular?: string | null;
+  banco_cuenta?: string | null;
+  banco_cci?: string | null;
   created_at: string;
 }
 
@@ -190,6 +198,9 @@ export interface PedidoRow {
   comision_retenida_centavos: number;
   contraoferta_centavos: number | null;
   motivo_cancelacion: string | null;
+  pago_gateway?: string | null;
+  pago_referencia?: string | null;
+  pago_estado?: string | null;
   expires_at: string | null;
   created_at: string;
   updated_at: string;

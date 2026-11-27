@@ -10,6 +10,8 @@ import {
   Siren,
   Sun,
   UserCheck,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { BusinessPanel } from './components/BusinessPanel.tsx';
@@ -19,6 +21,12 @@ import { GlowingNotificationCardHost } from './components/GlowingNotificationCar
 import { IdentityGateOverlay } from './components/IdentityGateOverlay.tsx';
 import { OrderTracking } from './components/OrderTracking.tsx';
 import { isFirebaseRtdbMode, subscribeFirebaseRtdbMode } from './lib/firebaseRtdb.ts';
+import {
+  isNotificationSoundEnabled,
+  setNotificationSoundEnabled,
+  subscribeNotificationSoundToggle,
+  unlockNotificationAudio,
+} from './lib/notificationSounds.ts';
 import type { PedidoPublico, SharedCustomerDoc } from './types.ts';
 
 type ViewMode = 'CONCIERGE' | 'SEGUIMIENTO' | 'NEGOCIO' | 'CENTRAL_SOS' | 'ADMIN';
@@ -34,8 +42,20 @@ export default function App() {
   const [assistantSignal, setAssistantSignal] = useState(0);
   const [sosSignal, setSosSignal] = useState(0);
   const [rtdbMode, setRtdbMode] = useState(() => isFirebaseRtdbMode());
+  const [soundEnabled, setSoundEnabled] = useState(() => isNotificationSoundEnabled());
 
   useEffect(() => subscribeFirebaseRtdbMode(setRtdbMode), []);
+  useEffect(() => subscribeNotificationSoundToggle(setSoundEnabled), []);
+
+  useEffect(() => {
+    const onUnlock = () => unlockNotificationAudio();
+    window.addEventListener('pointerdown', onUnlock, { once: true });
+    window.addEventListener('keydown', onUnlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', onUnlock);
+      window.removeEventListener('keydown', onUnlock);
+    };
+  }, []);
 
   useEffect(() => {
     const onQuota = () => setGmpQuotaExceeded(true);
@@ -216,14 +236,29 @@ export default function App() {
             </button>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setDarkMode((v) => !v)}
-          className="min-h-[36px] px-3 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#072638] text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5] transition-colors"
-        >
-          {darkMode ? <Sun className="w-3.5 h-3.5 text-[#F5C400]" /> : <Moon className="w-3.5 h-3.5 text-[#1565F5]" />}
-          <span>{darkMode ? 'Modo Claro' : 'Modo Oscuro'}</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setNotificationSoundEnabled(!soundEnabled)}
+            title={soundEnabled ? 'Silenciar sonidos de notificación' : 'Activar sonidos de notificación'}
+            className="min-h-[36px] px-2.5 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#072638] text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5] transition-colors"
+          >
+            {soundEnabled ? (
+              <Volume2 className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            ) : (
+              <VolumeX className="w-3.5 h-3.5 text-slate-400" />
+            )}
+            <span className="hidden sm:inline">{soundEnabled ? 'Sonido' : 'Silencio'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setDarkMode((v) => !v)}
+            className="min-h-[36px] px-3 rounded-xl border border-[#D8E2EC] dark:border-white/15 bg-white dark:bg-[#072638] text-[#0B2538] dark:text-slate-200 flex items-center gap-1.5 hover:border-[#1565F5] transition-colors"
+          >
+            {darkMode ? <Sun className="w-3.5 h-3.5 text-[#F5C400]" /> : <Moon className="w-3.5 h-3.5 text-[#1565F5]" />}
+            <span>{darkMode ? 'Modo Claro' : 'Modo Oscuro'}</span>
+          </button>
+        </div>
       </div>
 
       {rtdbMode && (

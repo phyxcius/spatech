@@ -121,6 +121,14 @@ interface RtdbNegocio {
   tipo_negocio?: string;
   modalidades_venta?: string;
   panel_ia?: AiBusinessPanelSchema | null;
+  mp_public_key?: string | null;
+  mp_yape_configurado?: boolean;
+  yape_numero?: string | null;
+  plin_numero?: string | null;
+  banco_nombre?: string | null;
+  banco_titular?: string | null;
+  banco_cuenta?: string | null;
+  banco_cci?: string | null;
   estado_regla?: EstadoRegla;
   motivo_estado?: string | null;
   pin_salt: string;
@@ -1296,10 +1304,53 @@ export async function handleFirebaseRtdbRequest<T>(
 
   if (cleanPath === '/api/public/directorio') {
     return {
-      negocios: toArray(snap.negocios).map(({ pin_hash: _ph, pin_salt: _ps, ...pub }) => pub),
+      negocios: toArray(snap.negocios).map(({ pin_hash: _ph, pin_salt: _ps, ...pub }) => ({
+        ...pub,
+        mp_public_key: pub.mp_public_key || '',
+        mp_yape_configurado: Boolean(pub.mp_yape_configurado),
+        yape_numero: pub.yape_numero || pub.telefono || '',
+        plin_numero: pub.plin_numero || pub.telefono || '',
+        banco_nombre: pub.banco_nombre || 'BCP / Interbank Cusco',
+        banco_titular: pub.banco_titular || pub.razon_social || pub.nombre,
+        banco_cuenta: pub.banco_cuenta || '194-28940123-0-91',
+        banco_cci: pub.banco_cci || '002-194-002894012391-18',
+      })),
       servicios: toArray(snap.servicios),
       unidades: toArray(snap.unidades),
     } as T;
+  }
+
+  const pagoConfigMatch = cleanPath.match(/^\/api\/public\/negocios\/([^/]+)\/pago-config$/);
+  if (pagoConfigMatch) {
+    const rawRef = decodeURIComponent(pagoConfigMatch[1]).trim();
+    if (!rawRef || rawRef.toUpperCase().includes('EMERGENCIA')) {
+      throw new Error('La pasarela de pagos no aplica para emergencias SOS.');
+    }
+    const negocios = toArray(snap.negocios);
+    const numId = /^\d+$/.test(rawRef) ? Number(rawRef) : -1;
+    const biz = negocios.find(
+      (n) => (n.id === numId || n.codigo === rawRef.toUpperCase()) && n.activo !== 0
+    );
+    if (!biz) throw new Error('Negocio no encontrado en Firebase RTDB.');
+    return {
+      negocio_id: biz.id,
+      codigo: biz.codigo,
+      nombre: biz.nombre,
+      mp_public_key: biz.mp_public_key || '',
+      mp_yape_configurado: Boolean(biz.mp_yape_configurado),
+      yape_numero: biz.yape_numero || biz.telefono || '',
+      plin_numero: biz.plin_numero || biz.telefono || '',
+      banco_nombre: biz.banco_nombre || 'BCP / Interbank Cusco',
+      banco_titular: biz.banco_titular || biz.razon_social || biz.nombre,
+      banco_cuenta: biz.banco_cuenta || '194-28940123-0-91',
+      banco_cci: biz.banco_cci || '002-194-002894012391-18',
+    } as T;
+  }
+
+  if (cleanPath === '/api/payments/yape' && method === 'POST') {
+    throw new Error(
+      'El cobro automático Yape con Access Token requiere el backend Node.js activo (POST /api/payments/yape).'
+    );
   }
 
   if (cleanPath === '/api/public/divisas') {
@@ -1566,6 +1617,16 @@ export async function handleFirebaseRtdbRequest<T>(
     const monto = unit.tarifa_base_centavos + Math.round(unit.tarifa_km_centavos * tripKm);
     const comPlat = Math.round(monto * 0.03);
 
+    const metodoTaxi = (payload.metodo_pago as MetodoPago) || 'Yape';
+    const pagoPhoneTaxi = typeof payload.pago_telefono === 'string' ? payload.pago_telefono.trim() : '';
+    const pagoOtpTaxi = typeof payload.pago_codigo_aprobacion === 'string' ? payload.pago_codigo_aprobacion.trim() : '';
+    if ((metodoTaxi === 'Yape' || metodoTaxi === 'Plin') && pagoPhoneTaxi && !/^9\d{8}$/.test(pagoPhoneTaxi)) {
+      throw new Error('El celular Yape/Plin debe tener 9 dígitos iniciando en 9');
+    }
+    if ((metodoTaxi === 'Yape' || metodoTaxi === 'Plin') && pagoOtpTaxi && !/^\d{6}$/.test(pagoOtpTaxi)) {
+      throw new Error('El código de aprobación Yape/Plin debe tener 6 dígitos');
+    }
+
     const pedido: RtdbPedido = {
       id: Date.now(),
       codigo,
@@ -1580,7 +1641,22 @@ export async function handleFirebaseRtdbRequest<T>(
       item_nombre: `${unit.modelo} · ${unit.conductor_nombre}`,
       transcripcion: `Taxi VIP ${unit.modelo} (${unit.placa}) · ${payload.destino_texto || 'Centro Cusco'}`,
       monto_centavos: monto,
-      metodo_pago: (payload.metodo_pago as MetodoPago) || 'Yape',
+      metodo_pago: metodoTaxi,
+      pago_gateway:
+        metodoTaxi === 'Yape'
+          ? 'YAPE_PASARELA'
+          : metodoTaxi === 'Plin'
+          ? 'PLIN_CODIGO'
+          : metodoTaxi === 'Tarjeta'
+          ? 'TARJETA_TRANSFERENCIA'
+          : 'EFECTIVO',
+      pago_referencia: pagoOtpTaxi ? `${metodoTaxi.toUpperCase()}-${pagoPhoneTaxi.slice(-4) || '0000'}-OK` : null,
+      pago_estado:
+        metodoTaxi === 'Tarjeta'
+          ? 'TRANSFERENCIA_CONFIRMADA'
+          : pagoOtpTaxi
+          ? 'CODIGO_AUTORIZADO'
+          : 'PENDIENTE',
       estado: 'PENDIENTE_CONFIRMACION',
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
@@ -1643,6 +1719,16 @@ export async function handleFirebaseRtdbRequest<T>(
     const hashed = await hashPinBrowser(pin, `ord-${codigo}`);
     const comPlat = Math.round(srv.precio_centavos * 0.03);
 
+    const metodoPed = (payload.metodo_pago as MetodoPago) || 'Yape';
+    const pagoPhonePed = typeof payload.pago_telefono === 'string' ? payload.pago_telefono.trim() : '';
+    const pagoOtpPed = typeof payload.pago_codigo_aprobacion === 'string' ? payload.pago_codigo_aprobacion.trim() : '';
+    if ((metodoPed === 'Yape' || metodoPed === 'Plin') && pagoPhonePed && !/^9\d{8}$/.test(pagoPhonePed)) {
+      throw new Error('El celular Yape/Plin debe tener 9 dígitos iniciando en 9');
+    }
+    if ((metodoPed === 'Yape' || metodoPed === 'Plin') && pagoOtpPed && !/^\d{6}$/.test(pagoOtpPed)) {
+      throw new Error('El código de aprobación Yape/Plin debe tener 6 dígitos');
+    }
+
     const pedido: RtdbPedido = {
       id: Date.now(),
       codigo,
@@ -1657,7 +1743,22 @@ export async function handleFirebaseRtdbRequest<T>(
       item_nombre: srv.nombre,
       transcripcion: String(payload.transcripcion || srv.nombre),
       monto_centavos: srv.precio_centavos,
-      metodo_pago: (payload.metodo_pago as MetodoPago) || 'Yape',
+      metodo_pago: metodoPed,
+      pago_gateway:
+        metodoPed === 'Yape'
+          ? 'YAPE_PASARELA'
+          : metodoPed === 'Plin'
+          ? 'PLIN_CODIGO'
+          : metodoPed === 'Tarjeta'
+          ? 'TARJETA_TRANSFERENCIA'
+          : 'EFECTIVO',
+      pago_referencia: pagoOtpPed ? `${metodoPed.toUpperCase()}-${pagoPhonePed.slice(-4) || '0000'}-OK` : null,
+      pago_estado:
+        metodoPed === 'Tarjeta'
+          ? 'TRANSFERENCIA_CONFIRMADA'
+          : pagoOtpPed
+          ? 'CODIGO_AUTORIZADO'
+          : 'PENDIENTE',
       estado: 'PENDIENTE_CONFIRMACION',
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Huésped'),
@@ -1708,6 +1809,15 @@ export async function handleFirebaseRtdbRequest<T>(
     const comPlat = Math.round(monto * 0.03);
     const marketNombre = String(payload.market_nombre || 'Minimarket Cusco');
     const resumen = String(payload.items_resumen || payload.item_resumen || 'Canasta de productos');
+    const metodoMkt = (payload.metodo_pago as MetodoPago) || 'Yape';
+    const pagoPhoneMkt = typeof payload.pago_telefono === 'string' ? payload.pago_telefono.trim() : '';
+    const pagoOtpMkt = typeof payload.pago_codigo_aprobacion === 'string' ? payload.pago_codigo_aprobacion.trim() : '';
+    if ((metodoMkt === 'Yape' || metodoMkt === 'Plin') && pagoPhoneMkt && !/^9\d{8}$/.test(pagoPhoneMkt)) {
+      throw new Error('El celular Yape/Plin debe tener 9 dígitos iniciando en 9');
+    }
+    if ((metodoMkt === 'Yape' || metodoMkt === 'Plin') && pagoOtpMkt && !/^\d{6}$/.test(pagoOtpMkt)) {
+      throw new Error('El código de aprobación Yape/Plin debe tener 6 dígitos');
+    }
 
     const pedido: RtdbPedido = {
       id: Date.now(),
@@ -1723,7 +1833,22 @@ export async function handleFirebaseRtdbRequest<T>(
       item_nombre: `${marketNombre} · ${resumen.slice(0, 70)}`,
       transcripcion: `[${payload.tipo_entrega === 'DELIVERY' ? 'DELIVERY' : 'RESERVA EN TIENDA'}] ${marketNombre}: ${resumen}`,
       monto_centavos: monto,
-      metodo_pago: (payload.metodo_pago as MetodoPago) || 'Yape',
+      metodo_pago: metodoMkt,
+      pago_gateway:
+        metodoMkt === 'Yape'
+          ? 'YAPE_PASARELA'
+          : metodoMkt === 'Plin'
+          ? 'PLIN_CODIGO'
+          : metodoMkt === 'Tarjeta'
+          ? 'TARJETA_TRANSFERENCIA'
+          : 'EFECTIVO',
+      pago_referencia: pagoOtpMkt ? `${metodoMkt.toUpperCase()}-${pagoPhoneMkt.slice(-4) || '0000'}-OK` : null,
+      pago_estado:
+        metodoMkt === 'Tarjeta'
+          ? 'TRANSFERENCIA_CONFIRMADA'
+          : pagoOtpMkt
+          ? 'CODIGO_AUTORIZADO'
+          : 'PENDIENTE',
       estado: 'PENDIENTE_CONFIRMACION',
       created_at: new Date().toISOString(),
       cliente_nombre: String(payload.cliente_nombre || 'Cliente Verificado'),
@@ -1894,6 +2019,14 @@ export async function handleFirebaseRtdbRequest<T>(
         ? payload.modalidades_venta.join(',')
         : String(payload.modalidades_venta || 'Unidad,Servicio'),
       panel_ia: nextPanelIa,
+      mp_public_key: typeof payload.mp_public_key === 'string' ? payload.mp_public_key.trim() : null,
+      mp_yape_configurado: false,
+      yape_numero: typeof payload.yape_numero === 'string' && payload.yape_numero.trim() ? payload.yape_numero.trim() : telefono,
+      plin_numero: typeof payload.plin_numero === 'string' && payload.plin_numero.trim() ? payload.plin_numero.trim() : telefono,
+      banco_nombre: typeof payload.banco_nombre === 'string' ? payload.banco_nombre.trim() || null : null,
+      banco_titular: typeof payload.banco_titular === 'string' ? payload.banco_titular.trim() || null : null,
+      banco_cuenta: typeof payload.banco_cuenta === 'string' ? payload.banco_cuenta.trim() || null : null,
+      banco_cci: typeof payload.banco_cci === 'string' ? payload.banco_cci.trim() || null : null,
       estado_regla: 'ACTIVO',
       motivo_estado: null,
       pin_salt: hashed.salt,
@@ -2014,6 +2147,15 @@ export async function handleFirebaseRtdbRequest<T>(
           tipo_negocio: biz.tipo_negocio || 'Comercio Multirubro',
           modalidades_venta: biz.modalidades_venta || 'Unidad,Servicio',
           panel_ia: biz.panel_ia || null,
+          mp_public_key: biz.mp_public_key || '',
+          mp_yape_configurado: Boolean(biz.mp_yape_configurado),
+          mp_access_token_masked: '',
+          yape_numero: biz.yape_numero || biz.telefono || '',
+          plin_numero: biz.plin_numero || biz.telefono || '',
+          banco_nombre: biz.banco_nombre || '',
+          banco_titular: biz.banco_titular || '',
+          banco_cuenta: biz.banco_cuenta || '',
+          banco_cci: biz.banco_cci || '',
           estado_regla: biz.estado_regla || 'ACTIVO',
           motivo_estado: biz.motivo_estado || null,
           saldo: biz.saldo,
@@ -2065,6 +2207,13 @@ export async function handleFirebaseRtdbRequest<T>(
           ? payload.modalidades_venta.join(',')
           : payload.modalidades_venta || biz.modalidades_venta || 'Unidad,Servicio',
         ...(payload.panel_ia && typeof payload.panel_ia === 'object' ? { panel_ia: payload.panel_ia } : {}),
+        ...(typeof payload.mp_public_key === 'string' ? { mp_public_key: payload.mp_public_key.trim() || null } : {}),
+        ...(typeof payload.yape_numero === 'string' ? { yape_numero: payload.yape_numero.trim() || null } : {}),
+        ...(typeof payload.plin_numero === 'string' ? { plin_numero: payload.plin_numero.trim() || null } : {}),
+        ...(typeof payload.banco_nombre === 'string' ? { banco_nombre: payload.banco_nombre.trim() || null } : {}),
+        ...(typeof payload.banco_titular === 'string' ? { banco_titular: payload.banco_titular.trim() || null } : {}),
+        ...(typeof payload.banco_cuenta === 'string' ? { banco_cuenta: payload.banco_cuenta.trim() || null } : {}),
+        ...(typeof payload.banco_cci === 'string' ? { banco_cci: payload.banco_cci.trim() || null } : {}),
       };
       await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', updates);
       return { ok: true, negocio: { ...biz, ...updates } } as T;

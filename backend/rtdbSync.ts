@@ -235,7 +235,8 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
           `SELECT id, codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo,
                   saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h,
                   metodos_pago_aceptados, auto_aceptar_pedidos, alerta_voz_activa, tarifa_minima_centavos, radio_cobertura_km,
-                  tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, estado_regla, motivo_estado
+                  tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, estado_regla, motivo_estado,
+                  mp_public_key, mp_access_token, yape_numero, plin_numero, banco_nombre, banco_titular, banco_cuenta, banco_cci
            FROM negocios`
         )
         .all() as Array<Record<string, any>>;
@@ -285,7 +286,8 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
       const pedidos = db
         .prepare(
           `SELECT p.id, p.codigo, p.negocio_id, p.referido_negocio_id, p.categoria, p.unidad_id, p.item_nombre, p.transcripcion,
-                  p.monto_centavos, p.contraoferta_centavos, p.metodo_pago, p.estado, p.cliente_nombre, p.cliente_telefono,
+                  p.monto_centavos, p.contraoferta_centavos, p.metodo_pago, p.pago_gateway, p.pago_referencia, p.pago_estado,
+                  p.estado, p.cliente_nombre, p.cliente_telefono,
                   p.cliente_documento_tipo, p.cliente_documento_numero, p.cliente_documento_verificado,
                   p.cliente_direccion_fiscal, p.comprobante_tipo,
                   p.origen_texto, p.destino_texto, p.origen_lat, p.origen_lng, p.destino_lat, p.destino_lng,
@@ -361,8 +363,10 @@ export async function syncSnapshotToFirebaseRtdb(db: DatabaseSync): Promise<void
         const pinHash =
           prev?.pin_hash ||
           sha256Hex(`${salt}:${defaultDemoPins[n.codigo] || crypto.randomInt(1000, 9999)}`);
+        const { mp_access_token, ...safeNegocio } = n;
         negociosMap[n.codigo] = {
-          ...n,
+          ...safeNegocio,
+          mp_yape_configurado: Boolean(mp_access_token && String(mp_access_token).trim()),
           pin_salt: salt,
           pin_hash: pinHash,
         };

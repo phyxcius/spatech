@@ -1,5 +1,8 @@
 export type NotificationTone = 'info' | 'success' | 'warning' | 'emergency' | 'ai';
 
+export type NotificationSoundKind = 'whatsapp' | 'indriver' | 'payment' | 'none';
+export type NotificationPlacement = 'top' | 'center' | 'both';
+
 export interface CenterNotificationPayload {
   id: string;
   title: string;
@@ -7,7 +10,10 @@ export interface CenterNotificationPayload {
   message?: string;
   detail?: string;
   badge?: string;
+  sender?: string;
   tone?: NotificationTone;
+  sound?: NotificationSoundKind;
+  placement?: NotificationPlacement;
   responseTimeMs?: number;
   responseMs?: number;
   meta?: string;

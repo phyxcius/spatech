@@ -1653,5 +1653,169 @@ test('15. Reglas del agente: taxi muestra solo taxis con destino correcto y farm
   }
 });
 
+test('16. Pasarela Yape (Mercado Pago Opción A), cuentas de transferencia, protección de Access Token y exclusión de emergencias', async () => {
+  const { server, req } = await startTestServer();
+  const originalFetch = globalThis.fetch;
+  try {
+    // 1) Negocio inicia sesión y configura sus credenciales Mercado Pago (Opción A) + cuentas de transferencia
+    const loginRe = await req('POST', '/api/negocio/login', { codigo: 'NEG-RE-01', pin: '5792' });
+    assert.equal(loginRe.status, 200);
+    const reId = loginRe.data.negocio.id;
+    const reToken = loginRe.data.token;
+
+    const secretToken = 'APP_USR-998877665544-secret-merchant-token-cusco';
+    const pubKey = 'APP_USR-11223344-public-key-cusco';
+    const cfgRes = await req(
+      'PUT',
+      `/api/negocio/${reId}/configuracion`,
+      {
+        mp_public_key: pubKey,
+        mp_access_token: secretToken,
+        yape_numero: '984330401',
+        plin_numero: '984330402',
+        banco_nombre: 'BCP Cusco',
+        banco_titular: 'Cicciolina & Brasa Andina SAC',
+        banco_cuenta: '285-99001122-0-45',
+        banco_cci: '002-285-009900112245-12',
+      },
+      reToken
+    );
+    assert.equal(cfgRes.status, 200);
+    assert.equal(cfgRes.data.negocio.mp_public_key, pubKey);
+    assert.equal(cfgRes.data.negocio.mp_yape_configurado, true);
+    assert.equal(cfgRes.data.negocio.mp_access_token, undefined);
+
+    // 2) Resumen de dueño devuelve solo máscara y nunca el Access Token real
+    const resRes = await req('GET', `/api/negocio/${reId}/resumen`, undefined, reToken);
+    assert.equal(resRes.status, 200);
+    assert.equal(resRes.data.negocio.mp_access_token, undefined);
+    assert.ok(String(resRes.data.negocio.mp_access_token_masked || '').includes('••••'));
+    assert.notEqual(resRes.data.negocio.mp_access_token_masked, secretToken);
+    assert.equal(resRes.data.negocio.banco_cuenta, '285-99001122-0-45');
+
+    // 3) Directorio público y /pago-config nunca exponen el Access Token
+    const dirRes = await req('GET', '/api/public/directorio');
+    assert.equal(dirRes.status, 200);
+    const rePublic = dirRes.data.negocios.find((n: any) => n.id === reId);
+    assert.ok(rePublic);
+    assert.equal(rePublic.mp_access_token, undefined);
+    assert.equal(rePublic.mp_public_key, pubKey);
+    assert.equal(rePublic.mp_yape_configurado, true);
+    const restDish = dirRes.data.servicios.find((s: any) => s.negocio_id === reId);
+    assert.ok(restDish);
+
+    const pagoCfgRes = await req('GET', `/api/public/negocios/${reId}/pago-config`);
+    assert.equal(pagoCfgRes.status, 200);
+    assert.equal(pagoCfgRes.data.mp_access_token, undefined);
+    assert.equal(pagoCfgRes.data.mp_public_key, pubKey);
+    assert.equal(pagoCfgRes.data.mp_yape_configurado, true);
+    assert.equal(pagoCfgRes.data.banco_nombre, 'BCP Cusco');
+    assert.equal(pagoCfgRes.data.banco_cci, '002-285-009900112245-12');
+
+    // 4) Emergencias SOS están excluidas de cualquier pasarela de pagos
+    const sosCfg = await req('GET', '/api/public/negocios/EMERGENCIA/pago-config');
+    assert.equal(sosCfg.status, 400);
+    const sosPay = await req('POST', '/api/payments/yape', {
+      token: 'yape_tok_123',
+      businessId: 'EMERGENCIA',
+      orderId: 'SOS-9999',
+    });
+    assert.equal(sosPay.status, 400);
+
+    // 5) Creación de orden con Yape valida celular de 9 dígitos y código de aprobación de 6 dígitos
+    const badYapeOrder = await req('POST', '/api/public/pedidos', {
+      cliente_nombre: 'Turista Prueba',
+      cliente_telefono: '+51984000111',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
+      negocio_id: reId,
+      servicio_id: restDish.id,
+      categoria: 'RESTAURANTE',
+      metodo_pago: 'Yape',
+      pago_telefono: '12345',
+      pago_codigo_aprobacion: '12',
+    });
+    assert.equal(badYapeOrder.status, 400);
+
+    const okYapeOrder = await req('POST', '/api/public/pedidos', {
+      cliente_nombre: 'Turista Prueba',
+      cliente_telefono: '+51984000111',
+      cliente_documento_tipo: 'DNI',
+      cliente_documento_numero: '44556677',
+      cliente_documento_verificado: true,
+      negocio_id: reId,
+      servicio_id: restDish.id,
+      categoria: 'RESTAURANTE',
+      metodo_pago: 'Yape',
+      pago_telefono: '987654321',
+      pago_codigo_aprobacion: '654321',
+    });
+    assert.equal(okYapeOrder.status, 201);
+    const orderCodigo = okYapeOrder.data.pedido.codigo;
+
+    // 6) Validaciones de /api/payments/yape (faltantes y negocio cruzado)
+    const missingPay = await req('POST', '/api/payments/yape', { businessId: reId });
+    assert.equal(missingPay.status, 400);
+
+    const crossBizPay = await req('POST', '/api/payments/yape', {
+      token: 'yape_tok_cross',
+      businessId: 'NEG-TX-01',
+      orderId: orderCodigo,
+    });
+    assert.equal(crossBizPay.status, 404);
+
+    // 7) Cobro Yape con Mercado Pago usa Access Token del negocio y monto calculado en servidor (ignora transaction_amount cliente)
+    let mpCapturedAuth = '';
+    let mpCapturedIdem = '';
+    let mpCapturedBody: any = null;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === 'https://api.mercadopago.com/v1/payments') {
+        const headers = new Headers(init?.headers);
+        mpCapturedAuth = headers.get('Authorization') || '';
+        mpCapturedIdem = headers.get('X-Idempotency-Key') || '';
+        mpCapturedBody = JSON.parse(String(init?.body || '{}'));
+        return new Response(
+          JSON.stringify({
+            id: 9876543210,
+            status: 'approved',
+            status_detail: 'accredited',
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const payRes = await req('POST', '/api/payments/yape', {
+      token: 'yape_sdk_token_cusco_01',
+      businessId: reId,
+      orderId: orderCodigo,
+      transaction_amount: 0.01,
+    });
+    assert.equal(payRes.status, 200);
+    assert.equal(payRes.data.status, 'approved');
+    assert.equal(payRes.data.paymentId, 9876543210);
+    assert.equal(payRes.data.amount, Number((restDish.precio_centavos / 100).toFixed(2)));
+
+    assert.equal(mpCapturedAuth, `Bearer ${secretToken}`);
+    assert.ok(mpCapturedIdem.length >= 16);
+    assert.equal(mpCapturedBody.payment_method_id, 'yape');
+    assert.equal(mpCapturedBody.transaction_amount, Number((restDish.precio_centavos / 100).toFixed(2)));
+    assert.equal(mpCapturedBody.token, 'yape_sdk_token_cusco_01');
+
+    // Verificar persistencia en la orden pública
+    const trackRes = await req('GET', `/api/public/pedidos/${orderCodigo}`);
+    assert.equal(trackRes.status, 200);
+    assert.equal(trackRes.data.pedido.pago_gateway, 'MERCADOPAGO_YAPE');
+    assert.equal(trackRes.data.pedido.pago_referencia, '9876543210');
+    assert.equal(trackRes.data.pedido.pago_estado, 'approved');
+  } finally {
+    globalThis.fetch = originalFetch;
+    server.close();
+  }
+});
+
 
 

@@ -21,6 +21,12 @@ import {
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import {
+  createMercadoPagoYapeToken,
+  isValidApprovalCode,
+  isValidPeruYapePhone,
+  VITE_MP_PUBLIC_KEY,
+} from '../lib/mercadopago.ts';
+import {
   formatSoles,
   type ConciergeOpcion,
   type MetodoPago,
@@ -28,6 +34,10 @@ import {
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
+import {
+  YapePlinTransferCheckoutBox,
+  type NegocioPagoInfo,
+} from './YapePlinTransferCheckoutBox.tsx';
 
 interface TaxiInDriveFlowProps {
   userLat: number;
@@ -185,6 +195,14 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
   const [clienteTelefono, setClienteTelefono] = useState(customerDoc?.whatsapp || '');
   const [showEditCustomerData, setShowEditCustomerData] = useState(false);
   const [promotorCodigo, setPromotorCodigo] = useState('');
+  const [pagoTelefono, setPagoTelefono] = useState('');
+  const [pagoCodigoAprobacion, setPagoCodigoAprobacion] = useState('');
+  const [transferConfirmed, setTransferConfirmed] = useState(false);
+  const [driverPagoConfig, setDriverPagoConfig] = useState<NegocioPagoInfo | null>(null);
+  const [pendingTaxiOrder, setPendingTaxiOrder] = useState<{
+    pedido: PedidoPublico;
+    cliente_pin: string;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [osrmRoute, setOsrmRoute] = useState<{ km: number; etaMin: number } | null>(null);
@@ -219,6 +237,25 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
     customerDoc?.nombre,
     customerDoc?.whatsapp,
   ]);
+
+  useEffect(() => {
+    setPendingTaxiOrder(null);
+    setPagoCodigoAprobacion('');
+    setTransferConfirmed(false);
+    setErrorMsg(null);
+    const digits = clienteTelefono.replace(/\D/g, '');
+    const localNine = digits.length >= 9 ? digits.slice(-9) : '';
+    setPagoTelefono(/^9\d{8}$/.test(localNine) ? localNine : '');
+    if (!confirmDriver) {
+      setDriverPagoConfig(null);
+      return;
+    }
+    apiFetch<NegocioPagoInfo>(
+      `/api/public/negocios/${confirmDriver.driver.negocio_id}/pago-config`
+    )
+      .then((cfg) => setDriverPagoConfig(cfg))
+      .catch(() => setDriverPagoConfig(null));
+  }, [confirmDriver?.driver.negocio_id, confirmDriver?.driver.unidad_id]);
 
   useEffect(() => {
     if (!gpsLive) {
@@ -461,42 +498,106 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
       setDocLookupLoading(false);
     }
 
+    const cleanPayPhone = pagoTelefono.replace(/\D/g, '').slice(0, 9);
+    const cleanPayCode = pagoCodigoAprobacion.replace(/\D/g, '').slice(0, 6);
+    if (metodoPago === 'Yape' || metodoPago === 'Plin') {
+      if (!isValidPeruYapePhone(cleanPayPhone)) {
+        setErrorMsg(`Ingresa tu celular ${metodoPago} de 9 dígitos (empezando en 9).`);
+        return;
+      }
+      if (!isValidApprovalCode(cleanPayCode)) {
+        setErrorMsg(`Ingresa el código de aprobación ${metodoPago} de 6 dígitos.`);
+        return;
+      }
+    } else if (metodoPago === 'Tarjeta' && !transferConfirmed) {
+      setErrorMsg('Confirma los datos de transferencia bancaria para aprobar tu viaje.');
+      return;
+    }
+
     setSubmitting(true);
     const t0 = performance.now();
     try {
-      const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
-        '/api/public/taxi/pedir',
-        {
-          method: 'POST',
-          body: {
-            unidad_id: confirmDriver.driver.unidad_id,
-            metodo_pago: metodoPago,
-            cliente_nombre: activeNombre || clienteNombre,
-            cliente_telefono: clienteTelefono,
-            cliente_documento_tipo: activeVerif?.tipo || docTipo,
-            cliente_documento_numero: activeVerif?.numero || cleanDoc,
-            cliente_documento_verificado: Boolean(activeVerif && (activeVerif.valid || activeVerif.validado)),
-            origen_texto: gpsLive ? 'Mi ubicación GPS Cusco' : 'Plaza de Armas, Cusco',
-            destino_texto: `${destinoText} (Oferta acordada ${formatSoles(confirmDriver.finalCentavos)})`,
-            origen_lat: userLat,
-            origen_lng: userLng,
-            destino_lat: destCoords.lat,
-            destino_lng: destCoords.lng,
-            promotor_codigo: promotorCodigo || undefined,
-          },
+      let res = pendingTaxiOrder;
+      if (!res) {
+        res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
+          '/api/public/taxi/pedir',
+          {
+            method: 'POST',
+            body: {
+              unidad_id: confirmDriver.driver.unidad_id,
+              metodo_pago: metodoPago,
+              pago_telefono: metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayPhone : undefined,
+              pago_codigo_aprobacion:
+                metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayCode : undefined,
+              cliente_nombre: activeNombre || clienteNombre,
+              cliente_telefono: clienteTelefono,
+              cliente_documento_tipo: activeVerif?.tipo || docTipo,
+              cliente_documento_numero: activeVerif?.numero || cleanDoc,
+              cliente_documento_verificado: Boolean(activeVerif && (activeVerif.valid || activeVerif.validado)),
+              origen_texto: gpsLive ? 'Mi ubicación GPS Cusco' : 'Plaza de Armas, Cusco',
+              destino_texto: `${destinoText} (Oferta acordada ${formatSoles(confirmDriver.finalCentavos)})`,
+              origen_lat: userLat,
+              origen_lng: userLng,
+              destino_lat: destCoords.lat,
+              destino_lng: destCoords.lng,
+              promotor_codigo: promotorCodigo || undefined,
+            },
+          }
+        );
+        setPendingTaxiOrder(res);
+      }
+
+      if (metodoPago === 'Yape' && driverPagoConfig?.mp_yape_configurado) {
+        const pubKey = (driverPagoConfig.mp_public_key || VITE_MP_PUBLIC_KEY || '').trim();
+        if (pubKey) {
+          const yapeToken = await createMercadoPagoYapeToken(pubKey, cleanPayPhone, cleanPayCode);
+          const payRes = await apiFetch<{
+            paymentId?: string | number;
+            status: string;
+            statusDetail?: string;
+          }>('/api/payments/yape', {
+            method: 'POST',
+            body: {
+              token: yapeToken,
+              businessId: res.pedido.negocio_id,
+              orderId: res.pedido.id,
+            },
+          });
+          if (payRes.status !== 'approved') {
+            setErrorMsg(
+              `Cobro Yape "${payRes.status}"${
+                payRes.statusDetail ? ` (${payRes.statusDetail})` : ''
+              }. Verifica el código de 6 dígitos e intenta de nuevo.`
+            );
+            return;
+          }
+          res = {
+            ...res,
+            pedido: {
+              ...res.pedido,
+              pago_gateway: 'MERCADOPAGO_YAPE',
+              pago_referencia: payRes.paymentId ? String(payRes.paymentId) : cleanPayCode,
+              pago_estado: 'approved',
+            },
+          };
         }
-      );
+      }
+
       const latency = Math.round(performance.now() - t0);
       emitCenterNotification({
+        sender: confirmDriver.driver.negocio_nombre,
         title: `Taxi Confirmado · ${res.pedido.codigo}`,
-        message: `${confirmDriver.driver.conductor_nombre} (${confirmDriver.driver.placa}) en camino rumbo a ${destinoText}. PIN de abordaje: ${res.cliente_pin}`,
+        message: `${confirmDriver.driver.conductor_nombre} (${confirmDriver.driver.placa}) en camino rumbo a ${destinoText}. Pago: ${metodoPago}. PIN: ${res.cliente_pin}`,
         badge: 'TAXI VERIFICADO',
         tone: 'success',
+        placement: 'top',
+        sound: metodoPago === 'Efectivo' ? 'whatsapp' : 'payment',
         responseTimeMs: latency,
         speakText: speakEnabled
           ? `Tu taxi ${res.pedido.codigo} con ${confirmDriver.driver.conductor_nombre} fue asignado. Tu PIN de abordaje es ${res.cliente_pin}.`
           : undefined,
       });
+      setPendingTaxiOrder(null);
       setConfirmDriver(null);
       onOrderCreated(res.pedido, res.cliente_pin);
     } catch (err) {
@@ -665,8 +766,8 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                {(['Yape', 'Plin', 'Efectivo'] as MetodoPago[]).map((m) => (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(['Yape', 'Plin', 'Efectivo', 'Tarjeta'] as MetodoPago[]).map((m) => (
                   <button
                     key={m}
                     type="button"
@@ -1117,6 +1218,44 @@ export const TaxiInDriveFlow: React.FC<TaxiInDriveFlowProps> = ({
                   </div>
                 </>
               )}
+
+              <div className="space-y-2.5">
+                <label className="block text-xs font-semibold text-[#6A717E] dark:text-[#98A0AD]">
+                  Método de pago del traslado
+                </label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['Yape', 'Plin', 'Efectivo', 'Tarjeta'] as MetodoPago[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => {
+                        setMetodoPago(m);
+                        setErrorMsg(null);
+                      }}
+                      className={`min-h-[40px] rounded-xl text-xs font-bold border ${
+                        metodoPago === m
+                          ? 'bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] border-transparent'
+                          : 'border-black/15 dark:border-white/15'
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <YapePlinTransferCheckoutBox
+                  metodoPago={metodoPago}
+                  amountCentavos={confirmDriver.finalCentavos}
+                  negocioNombre={confirmDriver.driver.negocio_nombre}
+                  negocioPagoConfig={driverPagoConfig}
+                  phone={pagoTelefono}
+                  onPhoneChange={setPagoTelefono}
+                  approvalCode={pagoCodigoAprobacion}
+                  onApprovalCodeChange={setPagoCodigoAprobacion}
+                  transferConfirmed={transferConfirmed}
+                  onTransferConfirmedChange={setTransferConfirmed}
+                  compact
+                />
+              </div>
 
               <div className="flex gap-2.5 pt-2">
                 <button

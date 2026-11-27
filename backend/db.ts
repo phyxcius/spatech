@@ -352,6 +352,14 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['panel_ia_json', 'TEXT'],
     ['estado_regla', "TEXT NOT NULL DEFAULT 'ACTIVO'"],
     ['motivo_estado', 'TEXT'],
+    ['mp_public_key', 'TEXT'],
+    ['mp_access_token', 'TEXT'],
+    ['yape_numero', 'TEXT'],
+    ['plin_numero', 'TEXT'],
+    ['banco_nombre', 'TEXT'],
+    ['banco_titular', 'TEXT'],
+    ['banco_cuenta', 'TEXT'],
+    ['banco_cci', 'TEXT'],
   ]);
 
   ensureCols('servicios_catalogo', [
@@ -377,6 +385,9 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['pin_validado', 'INTEGER NOT NULL DEFAULT 0'],
     ['pin_validado_at', 'TEXT'],
     ['viaje_etapa', 'TEXT'],
+    ['pago_gateway', 'TEXT'],
+    ['pago_referencia', 'TEXT'],
+    ['pago_estado', 'TEXT'],
   ]);
 
   ensureCols('alertas_emergencias', [

@@ -32,6 +32,7 @@ import {
 import { apiFetch, ApiError, playLuxuryChime, speakSpanish } from '../lib/api.ts';
 import { haversineKm } from '../lib/cuscoMarkets.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
+import { playInDriveNotificationSound } from '../lib/notificationSounds.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
@@ -98,6 +99,15 @@ interface ResumenData {
     tipo_negocio?: string;
     modalidades_venta?: string[];
     panel_ia?: AiBusinessPanelSchema | null;
+    mp_public_key?: string;
+    mp_yape_configurado?: boolean;
+    mp_access_token_masked?: string;
+    yape_numero?: string;
+    plin_numero?: string;
+    banco_nombre?: string;
+    banco_titular?: string;
+    banco_cuenta?: string;
+    banco_cci?: string;
     saldo: number;
     saldo_retenido: number;
     saldo_libre: number;
@@ -473,13 +483,17 @@ export const BusinessPanel: React.FC = () => {
         const ms = Math.max(1, Math.round(performance.now() - t0));
         for (const newest of pendingItems) {
           if (!seenPendingIdsRef.current.has(newest.id)) {
-            if (soundEnabled) playLuxuryChime();
+            if (soundEnabled) playInDriveNotificationSound();
             const docLabel =
               newest.cliente_documento_numero && newest.cliente_documento_tipo
                 ? ` · ${newest.cliente_documento_tipo} ${newest.cliente_documento_numero}`
                 : '';
             emitCenterNotification({
               id: `biz-ord-${newest.id}-${newest.estado}`,
+              sender:
+                activeTaxi && session.rubro === 'TRANSPORTE'
+                  ? 'Radar inDrive La Chuspa'
+                  : resRes.negocio.nombre,
               title:
                 activeTaxi && session.rubro === 'TRANSPORTE'
                   ? `Próximo Pasajero Cerca · ${newest.codigo}`
@@ -487,6 +501,8 @@ export const BusinessPanel: React.FC = () => {
               subtitle: `${newest.item_nombre} · ${formatSoles(newest.monto_centavos)}`,
               detail: `Cliente: ${newest.cliente_nombre}${docLabel}`,
               tone: 'ai',
+              placement: 'top',
+              sound: 'indriver',
               responseMs: ms,
               speakText:
                 soundEnabled && resRes?.negocio?.alerta_voz_activa !== false
@@ -987,6 +1003,8 @@ export const BusinessPanel: React.FC = () => {
         subtitle: `${pedido.destino_texto || 'Destino B'} · ${formatSoles(pedido.monto_centavos)}`,
         detail: `Pasajero: ${pedido.cliente_nombre}. Pulsa Finalizar Viaje para completar.`,
         tone: 'ai',
+        placement: 'center',
+        sound: 'indriver',
       });
       await loadWorkspace(true);
     } catch (err) {
@@ -2195,6 +2213,12 @@ export const BusinessPanel: React.FC = () => {
                                 <span className="px-2.5 py-0.5 rounded-lg bg-[#B6F02B] text-[#0B0E14] font-bold">
                                   {p.metodo_pago}
                                 </span>
+                                {p.pago_estado && (
+                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-bold">
+                                    {p.pago_estado}
+                                    {p.pago_referencia ? ` #${p.pago_referencia}` : ''}
+                                  </span>
+                                )}
                                 {p.cliente_documento_numero && (
                                   <span className="inline-flex items-center gap-1 font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
                                     <BadgeCheck className="w-3.5 h-3.5" />
@@ -2339,6 +2363,8 @@ export const BusinessPanel: React.FC = () => {
                       <div>
                         <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
                           {p.codigo} · {p.metodo_pago}
+                          {p.pago_estado ? ` · ${p.pago_estado}` : ''}
+                          {p.pago_referencia ? ` (#${p.pago_referencia})` : ''}
                         </p>
                         <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
                         <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
@@ -2725,6 +2751,12 @@ export const BusinessPanel: React.FC = () => {
                       {p.cliente_documento_numero && (
                         <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
                           <BadgeCheck className="w-3.5 h-3.5" /> {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
+                        </p>
+                      )}
+                      {p.pago_estado && (
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-[#742284] dark:text-[#E9B8F5] font-semibold">
+                          Pago: {p.pago_estado}
+                          {p.pago_referencia ? ` · Op. #${p.pago_referencia}` : ''}
                         </p>
                       )}
                     </div>

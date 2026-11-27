@@ -24,11 +24,22 @@ import {
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
 import {
+  createMercadoPagoYapeToken,
+  isValidApprovalCode,
+  isValidPeruYapePhone,
+  VITE_MP_PUBLIC_KEY,
+} from '../lib/mercadopago.ts';
+import {
+  type DirectorioNegocio,
   type MetodoPago,
   type PedidoPublico,
   type SharedCustomerDoc,
 } from '../types.ts';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
+import {
+  YapePlinTransferCheckoutBox,
+  type NegocioPagoInfo,
+} from './YapePlinTransferCheckoutBox.tsx';
 
 interface MarketComparatorFlowProps {
   userLat: number;
@@ -102,6 +113,14 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
   const [submittingCheckout, setSubmittingCheckout] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
+  const [pagoTelefono, setPagoTelefono] = useState('');
+  const [pagoCodigoAprobacion, setPagoCodigoAprobacion] = useState('');
+  const [transferConfirmed, setTransferConfirmed] = useState(false);
+  const [marketPagoConfig, setMarketPagoConfig] = useState<NegocioPagoInfo | null>(null);
+  const [pendingMarketOrder, setPendingMarketOrder] = useState<{
+    pedido: PedidoPublico;
+    cliente_pin: string;
+  } | null>(null);
   const [orderReceipt, setOrderReceipt] = useState<{
     codigo: string;
     pin: string;
@@ -144,6 +163,43 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
     customerDoc?.nombre,
     customerDoc?.whatsapp,
   ]);
+
+  useEffect(() => {
+    setPendingMarketOrder(null);
+    setPagoCodigoAprobacion('');
+    setTransferConfirmed(false);
+    setCheckoutError(null);
+    const digits = clienteTelefono.replace(/\D/g, '');
+    const localNine = digits.length >= 9 ? digits.slice(-9) : '';
+    setPagoTelefono(/^9\d{8}$/.test(localNine) ? localNine : '');
+    if (!checkoutTarget) {
+      setMarketPagoConfig(null);
+      return;
+    }
+    apiFetch<{ negocios?: DirectorioNegocio[] }>('/api/public/directorio')
+      .then((res) => {
+        const list = Array.isArray(res?.negocios) ? res.negocios : [];
+        const match =
+          list.find((n) =>
+            n.nombre.toLowerCase().includes(checkoutTarget.result.market.nombre.toLowerCase().slice(0, 8))
+          ) ||
+          list.find((n) => n.rubro !== 'TRANSPORTE' && String(n.rubro) !== 'EMERGENCIA') ||
+          list[0];
+        if (match) {
+          setMarketPagoConfig({
+            mp_public_key: match.mp_public_key,
+            mp_yape_configurado: match.mp_yape_configurado,
+            yape_numero: match.yape_numero || '',
+            plin_numero: match.plin_numero || '',
+            banco_nombre: match.banco_nombre,
+            banco_titular: match.banco_titular,
+            banco_cuenta: match.banco_cuenta,
+            banco_cci: match.banco_cci,
+          });
+        }
+      })
+      .catch(() => {});
+  }, [checkoutTarget?.result.market.id, checkoutTarget?.mode]);
 
   const comparisons = useMemo(() => {
     const list = computeMarketComparisons(requestedItems, userLat, userLng, !onlyOpen);
@@ -283,6 +339,22 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
       setDocLookupLoading(false);
     }
 
+    const cleanPayPhone = pagoTelefono.replace(/\D/g, '').slice(0, 9);
+    const cleanPayCode = pagoCodigoAprobacion.replace(/\D/g, '').slice(0, 6);
+    if (metodoPago === 'Yape' || metodoPago === 'Plin') {
+      if (!isValidPeruYapePhone(cleanPayPhone)) {
+        setCheckoutError(`Ingresa tu celular ${metodoPago} de 9 dígitos (empezando en 9).`);
+        return;
+      }
+      if (!isValidApprovalCode(cleanPayCode)) {
+        setCheckoutError(`Ingresa el código de aprobación ${metodoPago} de 6 dígitos.`);
+        return;
+      }
+    } else if (metodoPago === 'Tarjeta' && !transferConfirmed) {
+      setCheckoutError('Confirma los datos de transferencia bancaria del comercio para aprobar la compra.');
+      return;
+    }
+
     const t0 = performance.now();
     setSubmittingCheckout(true);
     const itemsMatched = checkoutTarget.result.items.filter((i) => i.matched);
@@ -292,26 +364,76 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
       .join(', ');
 
     try {
-      const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
-        '/api/public/market-pedidos',
-        {
-          method: 'POST',
-          body: {
-            market_nombre: checkoutTarget.result.market.nombre,
-            market_zona: checkoutTarget.result.market.direccion,
-            items_resumen: resumen || 'Canasta de productos',
-            monto_centavos: checkoutTarget.result.totalCentavos,
-            metodo_pago: metodoPago,
-            cliente_nombre: activeNombre || clienteNombre,
-            cliente_telefono: clienteTelefono,
-            cliente_documento_tipo: activeVerif?.tipo || docTipo,
-            cliente_documento_numero: activeVerif?.numero || cleanDoc,
-            cliente_documento_verificado: true,
-            cliente_direccion_fiscal: activeDireccion || undefined,
-            tipo_entrega: checkoutTarget.mode === 'COMPRA' ? 'DELIVERY' : 'RESERVA',
-          },
+      let res = pendingMarketOrder;
+      if (!res) {
+        res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
+          '/api/public/market-pedidos',
+          {
+            method: 'POST',
+            body: {
+              market_nombre: checkoutTarget.result.market.nombre,
+              market_zona: checkoutTarget.result.market.direccion,
+              items_resumen: resumen || 'Canasta de productos',
+              monto_centavos: checkoutTarget.result.totalCentavos,
+              metodo_pago: metodoPago,
+              pago_telefono: metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayPhone : undefined,
+              pago_codigo_aprobacion:
+                metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayCode : undefined,
+              cliente_nombre: activeNombre || clienteNombre,
+              cliente_telefono: clienteTelefono,
+              cliente_documento_tipo: activeVerif?.tipo || docTipo,
+              cliente_documento_numero: activeVerif?.numero || cleanDoc,
+              cliente_documento_verificado: true,
+              cliente_direccion_fiscal: activeDireccion || undefined,
+              tipo_entrega: checkoutTarget.mode === 'COMPRA' ? 'DELIVERY' : 'RESERVA',
+            },
+          }
+        );
+        setPendingMarketOrder(res);
+      }
+
+      if (metodoPago === 'Yape') {
+        const pagoCfg =
+          marketPagoConfig ||
+          (await apiFetch<NegocioPagoInfo>(
+            `/api/public/negocios/${res.pedido.negocio_id}/pago-config`
+          ).catch(() => null));
+        if (pagoCfg?.mp_yape_configurado) {
+          const pubKey = (pagoCfg.mp_public_key || VITE_MP_PUBLIC_KEY || '').trim();
+          if (pubKey) {
+            const yapeToken = await createMercadoPagoYapeToken(pubKey, cleanPayPhone, cleanPayCode);
+            const payRes = await apiFetch<{
+              paymentId?: string | number;
+              status: string;
+              statusDetail?: string;
+            }>('/api/payments/yape', {
+              method: 'POST',
+              body: {
+                token: yapeToken,
+                businessId: res.pedido.negocio_id,
+                orderId: res.pedido.id,
+              },
+            });
+            if (payRes.status !== 'approved') {
+              setCheckoutError(
+                `Pago Yape "${payRes.status}"${
+                  payRes.statusDetail ? ` (${payRes.statusDetail})` : ''
+                }. Verifica tu código de 6 dígitos e intenta de nuevo.`
+              );
+              return;
+            }
+            res = {
+              ...res,
+              pedido: {
+                ...res.pedido,
+                pago_gateway: 'MERCADOPAGO_YAPE',
+                pago_referencia: payRes.paymentId ? String(payRes.paymentId) : cleanPayCode,
+                pago_estado: 'approved',
+              },
+            };
+          }
         }
-      );
+      }
 
       const ms = Math.max(1, Math.round(performance.now() - t0));
       const receipt = {
@@ -325,13 +447,17 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
         documentoResumen: `${docVerificado?.tipo || docTipo} ${docVerificado?.numero || cleanDoc}`,
       };
       setOrderReceipt(receipt);
+      setPendingMarketOrder(null);
       setCheckoutTarget(null);
       emitCenterNotification({
         id: `market-order-${receipt.codigo}`,
+        sender: receipt.marketName,
         title: `${checkoutTarget.mode === 'COMPRA' ? 'Compra Confirmada' : 'Reserva Confirmada'} · ${receipt.codigo}`,
         subtitle: `${receipt.marketName} · ${fmtSoles(receipt.totalCentavos)} · PIN ${receipt.pin}`,
-        detail: `Sincronizado con panel multinegocio (${receipt.documentoResumen}).`,
+        detail: `Sincronizado con panel multinegocio (${metodoPago} · ${receipt.documentoResumen}).`,
         tone: 'success',
+        placement: 'top',
+        sound: metodoPago === 'Efectivo' ? 'whatsapp' : 'payment',
         responseMs: ms,
         speakText: speakEnabled
           ? `${
@@ -958,12 +1084,15 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
             )}
 
             <div className="space-y-2.5">
-              <div className="grid grid-cols-3 gap-2">
-                {(['Yape', 'Plin', 'Efectivo'] as MetodoPago[]).map((m) => (
+              <div className="grid grid-cols-4 gap-2">
+                {(['Yape', 'Plin', 'Efectivo', 'Tarjeta'] as MetodoPago[]).map((m) => (
                   <button
                     key={m}
                     type="button"
-                    onClick={() => setMetodoPago(m)}
+                    onClick={() => {
+                      setMetodoPago(m);
+                      setCheckoutError(null);
+                    }}
                     className={`min-h-[40px] rounded-xl text-xs font-bold border ${
                       metodoPago === m
                         ? 'bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] border-transparent'
@@ -974,6 +1103,19 @@ export const MarketComparatorFlow: React.FC<MarketComparatorFlowProps> = ({
                   </button>
                 ))}
               </div>
+              <YapePlinTransferCheckoutBox
+                metodoPago={metodoPago}
+                amountCentavos={checkoutTarget.result.totalCentavos}
+                negocioNombre={checkoutTarget.result.market.nombre}
+                negocioPagoConfig={marketPagoConfig}
+                phone={pagoTelefono}
+                onPhoneChange={setPagoTelefono}
+                approvalCode={pagoCodigoAprobacion}
+                onApprovalCodeChange={setPagoCodigoAprobacion}
+                transferConfirmed={transferConfirmed}
+                onTransferConfirmedChange={setTransferConfirmed}
+                compact
+              />
             </div>
 
             <div className="flex gap-2.5 pt-2">

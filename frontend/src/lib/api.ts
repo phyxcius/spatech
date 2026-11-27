@@ -2,6 +2,7 @@ import {
   handleFirebaseRtdbRequest,
   isFirebaseRtdbMode,
 } from './firebaseRtdb.ts';
+import { playWhatsAppNotificationSound } from './notificationSounds.ts';
 
 export class ApiError extends Error {
   status: number;
@@ -100,31 +101,7 @@ export async function apiFetch<T>(
 }
 
 export function playLuxuryChime(): void {
-  try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const notes = [587.33, 880]; // D5 -> A5 refined two-tone chime
-    notes.forEach((freq, idx) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      const start = ctx.currentTime + idx * 0.12;
-      gain.gain.setValueAtTime(0.001, start);
-      gain.gain.exponentialRampToValueAtTime(0.08, start + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.32);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(start);
-      osc.stop(start + 0.35);
-    });
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      navigator.vibrate([100, 50, 100]);
-    }
-  } catch {
-    // Audio playback blocked before interaction
-  }
+  playWhatsAppNotificationSound();
 }
 
 let cachedVoices: SpeechSynthesisVoice[] = [];

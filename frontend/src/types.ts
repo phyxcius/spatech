@@ -138,6 +138,14 @@ export interface DirectorioNegocio {
   panel_ia?: AiBusinessPanelSchema | null;
   estado_regla?: EstadoRegla;
   motivo_estado?: string | null;
+  mp_public_key?: string | null;
+  mp_yape_configurado?: boolean;
+  yape_numero?: string | null;
+  plin_numero?: string | null;
+  banco_nombre?: string | null;
+  banco_titular?: string | null;
+  banco_cuenta?: string | null;
+  banco_cci?: string | null;
 }
 
 export interface ServicioCatalogo {
@@ -256,6 +264,9 @@ export interface PedidoPublico {
   pin_validado?: number;
   pin_validado_at?: string | null;
   viaje_etapa?: 'HACIA_PASAJERO' | 'EN_RUTA_DESTINO' | 'LLEGADO_DESTINO' | 'FINALIZADO' | null;
+  pago_gateway?: string | null;
+  pago_referencia?: string | null;
+  pago_estado?: string | null;
   created_at: string;
 }
 
@@ -314,6 +325,9 @@ export interface PedidoNegocio {
   prestador_nombre?: string;
   referidor_nombre?: string;
   pin_prestador?: string;
+  pago_gateway?: string | null;
+  pago_referencia?: string | null;
+  pago_estado?: string | null;
   created_at: string;
 }
 

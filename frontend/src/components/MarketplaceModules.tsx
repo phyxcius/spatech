@@ -27,12 +27,15 @@ import {
   ZoomIn,
 } from 'lucide-react';
 import { apiFetch, speakSpanish } from '../lib/api.ts';
+import { isValidApprovalCode, isValidPeruYapePhone } from '../lib/mercadopago.ts';
+import { emitCenterNotification } from '../lib/notifications.ts';
 import {
   formatPeruLookupError,
   isValidForeignDoc,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
-import type { SharedCustomerDoc } from '../types.ts';
+import type { MetodoPago, SharedCustomerDoc } from '../types.ts';
+import { YapePlinTransferCheckoutBox } from './YapePlinTransferCheckoutBox.tsx';
 
 interface MarketplaceModuleProps {
   customerDoc?: SharedCustomerDoc | null;
@@ -338,16 +341,25 @@ export const BodegaMinimarketModule: React.FC<MarketplaceModuleProps> = ({
   } | null>(null);
   const [localDoc, setLocalDoc] = useState<SharedCustomerDoc | null>(customerDoc ?? null);
   const [clienteNombre, setClienteNombre] = useState(customerDoc?.nombre || '');
-  const [clienteTel, setClienteTel] = useState('');
+  const [clienteTel, setClienteTel] = useState(customerDoc?.whatsapp || '');
+  const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
+  const [pagoTelefono, setPagoTelefono] = useState('');
+  const [pagoCodigoAprobacion, setPagoCodigoAprobacion] = useState('');
+  const [transferConfirmed, setTransferConfirmed] = useState(false);
   const [docError, setDocError] = useState<string | null>(null);
 
   useEffect(() => {
     if (customerDoc?.verificado) {
       setLocalDoc(customerDoc);
       if (customerDoc.nombre) setClienteNombre(customerDoc.nombre);
+      if (customerDoc.whatsapp) {
+        setClienteTel(customerDoc.whatsapp);
+        const d = customerDoc.whatsapp.replace(/\D/g, '').slice(-9);
+        if (/^9\d{8}$/.test(d) && !pagoTelefono) setPagoTelefono(d);
+      }
       setDocError(null);
     }
-  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.nombre]);
+  }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.nombre, customerDoc?.whatsapp]);
 
   const activeDoc = customerDoc?.verificado ? customerDoc : localDoc;
   const isDocValid = Boolean(activeDoc?.verificado);
@@ -407,6 +419,22 @@ export const BodegaMinimarketModule: React.FC<MarketplaceModuleProps> = ({
       setDocError('Es obligatorio validar el DNI o RUC del titular para confirmar la reserva.');
       return;
     }
+    const cleanPayPhone = pagoTelefono.replace(/\D/g, '').slice(0, 9);
+    const cleanPayCode = pagoCodigoAprobacion.replace(/\D/g, '').slice(0, 6);
+    if (metodoPago === 'Yape' || metodoPago === 'Plin') {
+      if (!isValidPeruYapePhone(cleanPayPhone)) {
+        setDocError(`Ingresa tu celular ${metodoPago} de 9 dígitos (empezando en 9).`);
+        return;
+      }
+      if (!isValidApprovalCode(cleanPayCode)) {
+        setDocError(`Ingresa el código de aprobación ${metodoPago} de 6 dígitos.`);
+        return;
+      }
+    } else if (metodoPago === 'Tarjeta' && !transferConfirmed) {
+      setDocError('Confirma los datos de transferencia bancaria del comercio para aprobar la compra.');
+      return;
+    }
+
     setDocError(null);
     const pin = String(Math.floor(1000 + Math.random() * 9000));
     const codigo = `BOD-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -415,6 +443,16 @@ export const BodegaMinimarketModule: React.FC<MarketplaceModuleProps> = ({
       pin,
       totalCentavos: subtotalCentavos,
       itemsCount: totalItems,
+    });
+    emitCenterNotification({
+      id: `bodega-${codigo}`,
+      sender: 'Bodega & Minimarket El Sol',
+      title: `Canasta Confirmada · ${codigo}`,
+      subtitle: `${totalItems} artículos · ${fmtSoles(subtotalCentavos)} · ${metodoPago}`,
+      detail: `Tu PIN de entrega en Bodega El Sol es ${pin}.`,
+      tone: 'success',
+      placement: 'top',
+      sound: metodoPago === 'Efectivo' ? 'whatsapp' : 'payment',
     });
   }
 
@@ -821,6 +859,47 @@ export const BodegaMinimarketModule: React.FC<MarketplaceModuleProps> = ({
                     onChange={(e) => setClienteTel(e.target.value)}
                     placeholder="WhatsApp (+51...)"
                     className="min-h-[42px] px-3.5 rounded-xl border border-white/15 bg-[#07090E] text-xs text-white"
+                  />
+                </div>
+                <div className="space-y-2.5">
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(['Yape', 'Plin', 'Efectivo', 'Tarjeta'] as MetodoPago[]).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => {
+                          setMetodoPago(m);
+                          setDocError(null);
+                        }}
+                        className={`min-h-[38px] rounded-xl text-xs font-bold border ${
+                          metodoPago === m
+                            ? 'bg-[#D4AF37] text-[#0B0E14] border-transparent'
+                            : 'border-white/15 text-slate-300'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  <YapePlinTransferCheckoutBox
+                    metodoPago={metodoPago}
+                    amountCentavos={subtotalCentavos}
+                    negocioNombre="Bodega & Minimarket El Sol"
+                    negocioPagoConfig={{
+                      yape_numero: '984620118',
+                      plin_numero: '984620118',
+                      banco_nombre: 'BCP Cusco',
+                      banco_titular: 'Carmen Quispe Condori',
+                      banco_cuenta: '285-99401231-0-88',
+                      banco_cci: '002-285-009940123188-41',
+                    }}
+                    phone={pagoTelefono}
+                    onPhoneChange={setPagoTelefono}
+                    approvalCode={pagoCodigoAprobacion}
+                    onApprovalCodeChange={setPagoCodigoAprobacion}
+                    transferConfirmed={transferConfirmed}
+                    onTransferConfirmedChange={setTransferConfirmed}
+                    compact
                   />
                 </div>
                 <button

@@ -101,6 +101,7 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
         const ms = Math.max(1, Math.round(performance.now() - t0));
         emitCenterNotification({
           id: `track-${res.pedido.codigo}-${res.pedido.estado}`,
+          sender: res.pedido.negocio_nombre || 'La Chuspa WhatsApp',
           title: `Actualización · ${res.pedido.codigo}`,
           subtitle: `${ESTADO_LABELS[res.pedido.estado]} · ${res.pedido.negocio_nombre}`,
           detail:
@@ -113,6 +114,8 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
               : res.pedido.estado === 'ENTREGADO_PAGADO'
               ? 'success'
               : 'info',
+          placement: 'top',
+          sound: 'whatsapp',
           responseMs: ms,
           speakText: `Tu pedido ${res.pedido.codigo} pasó a ${ESTADO_LABELS[res.pedido.estado]}.`,
         });
@@ -244,6 +247,12 @@ export const OrderTracking: React.FC<OrderTrackingProps> = ({ initialCodigo, cli
                       <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-[#F4F1EA]">
                         {formatSoles(pedido.monto_centavos)}
                       </span>
+                      {pedido.pago_estado && (
+                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                          Pago: {pedido.pago_estado}
+                          {pedido.pago_referencia ? ` · #${pedido.pago_referencia}` : ''}
+                        </span>
+                      )}
                     </p>
                     {pedido.cliente_documento_numero && (
                       <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-mono-tabular font-semibold text-emerald-700 dark:text-emerald-300">

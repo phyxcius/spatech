@@ -80,6 +80,29 @@ function maskSecretPreview(raw: string): string {
   return `${clean.slice(0, 6)}••••••${clean.slice(-4)}`;
 }
 
+function sanitizeNegocioForOwner(negocio: NegocioRow) {
+  const { mp_access_token, panel_ia_json, ...rest } = negocio;
+  const rawToken = (mp_access_token || '').trim();
+  return {
+    ...rest,
+    en_linea: negocio.en_linea === 1,
+    abierto_24h: negocio.abierto_24h === 1,
+    auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
+    alerta_voz_activa: negocio.alerta_voz_activa === 1,
+    panel_ia: safeParseJson(panel_ia_json),
+    mp_public_key: (negocio.mp_public_key || '').trim(),
+    mp_yape_configurado: Boolean(rawToken),
+    mp_access_token_masked: maskSecretPreview(rawToken),
+    yape_numero: negocio.yape_numero || '',
+    plin_numero: negocio.plin_numero || '',
+    banco_nombre: negocio.banco_nombre || '',
+    banco_titular: negocio.banco_titular || '',
+    banco_cuenta: negocio.banco_cuenta || '',
+    banco_cci: negocio.banco_cci || '',
+    saldo_libre: negocio.saldo - negocio.saldo_retenido,
+  };
+}
+
 function isValidDni(raw: string): boolean {
   return /^\d{8}$/.test(raw.trim());
 }
@@ -824,7 +847,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
                horario_apertura, horario_cierre, abierto_24h, metodos_pago_aceptados,
                tarifa_minima_centavos, radio_cobertura_km,
                tipo_persona, documento_tipo, documento_numero, razon_social,
-               tipo_negocio, modalidades_venta, panel_ia_json, estado_regla, motivo_estado
+               tipo_negocio, modalidades_venta, panel_ia_json, estado_regla, motivo_estado,
+               mp_public_key,
+               CASE WHEN mp_access_token IS NOT NULL AND TRIM(mp_access_token) != '' THEN 1 ELSE 0 END AS mp_yape_configurado,
+               yape_numero, plin_numero, banco_nombre, banco_titular, banco_cuenta, banco_cci
         FROM negocios
         WHERE activo = 1
         ORDER BY rubro ASC, calificacion DESC
@@ -832,6 +858,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       .all() as Array<Record<string, unknown>>;
     const negocios = rawNegocios.map((n) => ({
       ...n,
+      mp_yape_configurado: Boolean(n.mp_yape_configurado),
       panel_ia: safeParseJson(n.panel_ia_json),
     }));
     const rawServicios = db
@@ -859,6 +886,46 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       `)
       .all();
     res.json({ negocios, servicios, unidades });
+  });
+
+  app.get('/api/public/negocios/:businessId/pago-config', publicLimiter, (req, res, next) => {
+    try {
+      const rawRef = String(req.params.businessId || '').trim();
+      if (!rawRef || rawRef.toUpperCase().includes('EMERGENCIA')) {
+        throw new HttpError(400, 'La pasarela de pagos no aplica para emergencias SOS.');
+      }
+      const numericId = /^\d+$/.test(rawRef) ? Number(rawRef) : -1;
+      const negocio = db
+        .prepare(
+          `SELECT id, codigo, nombre, razon_social, rubro, telefono, metodos_pago_aceptados,
+                  mp_public_key, mp_access_token, yape_numero, plin_numero,
+                  banco_nombre, banco_titular, banco_cuenta, banco_cci
+           FROM negocios WHERE (id = ? OR codigo = ?) AND activo = 1`
+        )
+        .get(numericId, rawRef.toUpperCase()) as unknown as NegocioRow | undefined;
+      if (!negocio) {
+        throw new HttpError(404, 'Negocio no encontrado o inactivo');
+      }
+      const fallbackPub = (process.env.MP_PUBLIC_KEY_FALLBACK || '').trim();
+      const fallbackAcc = (process.env.MP_ACCESS_TOKEN_FALLBACK || '').trim();
+      const pubKey = (negocio.mp_public_key || fallbackPub || '').trim();
+      const hasToken = Boolean((negocio.mp_access_token || fallbackAcc || '').trim());
+      res.json({
+        negocio_id: negocio.id,
+        codigo: negocio.codigo,
+        nombre: negocio.nombre,
+        mp_public_key: pubKey,
+        mp_yape_configurado: hasToken,
+        yape_numero: negocio.yape_numero || negocio.telefono || '',
+        plin_numero: negocio.plin_numero || negocio.telefono || '',
+        banco_nombre: negocio.banco_nombre || 'BCP / Interbank Cusco',
+        banco_titular: negocio.banco_titular || negocio.razon_social || negocio.nombre,
+        banco_cuenta: negocio.banco_cuenta || '194-28940123-0-91',
+        banco_cci: negocio.banco_cci || '002-194-002894012391-18',
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   app.post('/api/public/ai/generar-panel-rubro', publicLimiter, async (req, res, next) => {
@@ -989,6 +1056,29 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const pin = generateOrderPin();
       const { hash, salt } = hashPin(pin);
       const codigo = generateCode('PED-CUSCO');
+      const pagoPhone = typeof req.body?.pago_telefono === 'string' ? req.body.pago_telefono.trim() : '';
+      const pagoOtp = typeof req.body?.pago_codigo_aprobacion === 'string' ? req.body.pago_codigo_aprobacion.trim() : '';
+      if ((metodo_pago === 'Yape' || metodo_pago === 'Plin') && pagoPhone && !/^9\d{8}$/.test(pagoPhone)) {
+        throw new HttpError(400, 'El celular Yape/Plin debe tener 9 dígitos iniciando en 9');
+      }
+      if ((metodo_pago === 'Yape' || metodo_pago === 'Plin') && pagoOtp && !/^\d{6}$/.test(pagoOtp)) {
+        throw new HttpError(400, 'El código de aprobación Yape/Plin debe tener 6 dígitos');
+      }
+      const pagoGateway =
+        metodo_pago === 'Yape'
+          ? 'YAPE_PASARELA'
+          : metodo_pago === 'Plin'
+            ? 'PLIN_CODIGO'
+            : metodo_pago === 'Tarjeta'
+              ? 'TARJETA_TRANSFERENCIA'
+              : 'EFECTIVO';
+      const pagoEstado =
+        metodo_pago === 'Tarjeta'
+          ? 'TRANSFERENCIA_CONFIRMADA'
+          : pagoOtp
+            ? 'CODIGO_AUTORIZADO'
+            : 'PENDIENTE';
+      const pagoRef = pagoOtp ? `${metodo_pago.toUpperCase()}-${pagoPhone.slice(-4) || '0000'}-OK` : null;
 
       const insertRes = db
         .prepare(`
@@ -998,9 +1088,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             metodo_pago, estado, cliente_nombre, cliente_telefono,
             cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
             cliente_direccion_fiscal, comprobante_tipo,
+            pago_gateway, pago_referencia, pago_estado,
             eta_min, fecha_hora_reserva, pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+2 hours'))
+          VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+2 hours'))
         `)
         .run(
           codigo,
@@ -1019,6 +1110,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           docVerif,
           docDireccionFiscal,
           comprobanteTipo,
+          pagoGateway,
+          pagoRef,
+          pagoEstado,
           item.duracion_min,
           typeof fecha_hora_reserva === 'string' ? fecha_hora_reserva.trim() : null,
           hash,
@@ -1105,6 +1199,29 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         typeof rawResumen === 'string' && rawResumen.trim()
           ? rawResumen.trim().slice(0, 320)
           : `Canasta Market ${market_nombre.trim()}`;
+      const pagoPhone = typeof req.body?.pago_telefono === 'string' ? req.body.pago_telefono.trim() : '';
+      const pagoOtp = typeof req.body?.pago_codigo_aprobacion === 'string' ? req.body.pago_codigo_aprobacion.trim() : '';
+      if ((metodo_pago === 'Yape' || metodo_pago === 'Plin') && pagoPhone && !/^9\d{8}$/.test(pagoPhone)) {
+        throw new HttpError(400, 'El celular Yape/Plin debe tener 9 dígitos iniciando en 9');
+      }
+      if ((metodo_pago === 'Yape' || metodo_pago === 'Plin') && pagoOtp && !/^\d{6}$/.test(pagoOtp)) {
+        throw new HttpError(400, 'El código de aprobación Yape/Plin debe tener 6 dígitos');
+      }
+      const pagoGateway =
+        metodo_pago === 'Yape'
+          ? 'YAPE_PASARELA'
+          : metodo_pago === 'Plin'
+            ? 'PLIN_CODIGO'
+            : metodo_pago === 'Tarjeta'
+              ? 'TARJETA_TRANSFERENCIA'
+              : 'EFECTIVO';
+      const pagoEstado =
+        metodo_pago === 'Tarjeta'
+          ? 'TRANSFERENCIA_CONFIRMADA'
+          : pagoOtp
+            ? 'CODIGO_AUTORIZADO'
+            : 'PENDIENTE';
+      const pagoRef = pagoOtp ? `${metodo_pago.toUpperCase()}-${pagoPhone.slice(-4) || '0000'}-OK` : null;
 
       const insertRes = db
         .prepare(`
@@ -1114,9 +1231,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             metodo_pago, estado, cliente_nombre, cliente_telefono,
             cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
             cliente_direccion_fiscal, comprobante_tipo,
+            pago_gateway, pago_referencia, pago_estado,
             destino_texto, eta_min, pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, 20, ?, ?, NULL, datetime('now', '+2 hours'))
+          VALUES (?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 20, ?, ?, NULL, datetime('now', '+2 hours'))
         `)
         .run(
           codigo,
@@ -1135,6 +1253,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           docVerif,
           docDireccionFiscal,
           comprobanteTipo,
+          pagoGateway,
+          pagoRef,
+          pagoEstado,
           String(market_zona || 'Cusco'),
           hash,
           salt
@@ -1269,6 +1390,29 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
 
       const { docTipo, docNum, docVerif, docDireccionFiscal } =
         parseClienteDocumentoInput(req.body || {}, { allowInvoice: false });
+      const pagoPhone = typeof req.body?.pago_telefono === 'string' ? req.body.pago_telefono.trim() : '';
+      const pagoOtp = typeof req.body?.pago_codigo_aprobacion === 'string' ? req.body.pago_codigo_aprobacion.trim() : '';
+      if ((metodo_pago === 'Yape' || metodo_pago === 'Plin') && pagoPhone && !/^9\d{8}$/.test(pagoPhone)) {
+        throw new HttpError(400, 'El celular Yape/Plin debe tener 9 dígitos iniciando en 9');
+      }
+      if ((metodo_pago === 'Yape' || metodo_pago === 'Plin') && pagoOtp && !/^\d{6}$/.test(pagoOtp)) {
+        throw new HttpError(400, 'El código de aprobación Yape/Plin debe tener 6 dígitos');
+      }
+      const pagoGateway =
+        metodo_pago === 'Yape'
+          ? 'YAPE_PASARELA'
+          : metodo_pago === 'Plin'
+            ? 'PLIN_CODIGO'
+            : metodo_pago === 'Tarjeta'
+              ? 'TARJETA_TRANSFERENCIA'
+              : 'EFECTIVO';
+      const pagoEstado =
+        metodo_pago === 'Tarjeta'
+          ? 'TRANSFERENCIA_CONFIRMADA'
+          : pagoOtp
+            ? 'CODIGO_AUTORIZADO'
+            : 'PENDIENTE';
+      const pagoRef = pagoOtp ? `${metodo_pago.toUpperCase()}-${pagoPhone.slice(-4) || '0000'}-OK` : null;
 
       const insertRes = db
         .prepare(`
@@ -1278,11 +1422,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             metodo_pago, estado, cliente_nombre, cliente_telefono,
             cliente_documento_tipo, cliente_documento_numero, cliente_documento_verificado,
             cliente_direccion_fiscal, comprobante_tipo,
+            pago_gateway, pago_referencia, pago_estado,
             origen_texto, destino_texto, origen_lat, origen_lng, destino_lat, destino_lng,
             conductor_lat, conductor_lng, distancia_km, eta_min,
             pin_hash, pin_salt, pin_cifrado, expires_at
           )
-          VALUES (?, ?, NULL, ?, 'TRANSPORTE', NULL, ?, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+45 minutes'))
+          VALUES (?, ?, NULL, ?, 'TRANSPORTE', NULL, ?, ?, ?, ?, ?, 'PENDIENTE_CONFIRMACION', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now', '+45 minutes'))
         `)
         .run(
           codigo,
@@ -1299,6 +1444,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           docNum,
           docVerif,
           docDireccionFiscal,
+          pagoGateway,
+          pagoRef,
+          pagoEstado,
           origenClean,
           destinoClean,
           oLat,
@@ -1338,6 +1486,155 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       });
     } catch (err) {
       next(err);
+    }
+  });
+
+  // Pasarela de pagos Yape (Mercado Pago SDK v2 - Opción A: Access Token por negocio, excluye emergencias)
+  app.post('/api/payments/yape', publicLimiter, async (req, res) => {
+    try {
+      const { token, businessId, orderId, payerEmail } = req.body || {};
+
+      if (!token || !businessId || !orderId) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Faltan datos obligatorios (token, businessId, orderId).',
+        });
+        return;
+      }
+
+      const rawBiz = String(businessId).trim();
+      const rawOrder = String(orderId).trim();
+
+      if (
+        rawBiz.toUpperCase().includes('EMERGENCIA') ||
+        rawOrder.toUpperCase().startsWith('EMG-') ||
+        rawOrder.toUpperCase().startsWith('SOS-')
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'La pasarela de pagos Yape no aplica para alertas de emergencia SOS.',
+        });
+        return;
+      }
+
+      const bizNumId = /^\d+$/.test(rawBiz) ? Number(rawBiz) : -1;
+      const negocio = db
+        .prepare('SELECT * FROM negocios WHERE (id = ? OR codigo = ?) AND activo = 1')
+        .get(bizNumId, rawBiz.toUpperCase()) as unknown as NegocioRow | undefined;
+
+      if (!negocio) {
+        res.status(404).json({
+          status: 'error',
+          message: 'Negocio no encontrado o inactivo.',
+        });
+        return;
+      }
+
+      const ordNumId = /^\d+$/.test(rawOrder) ? Number(rawOrder) : -1;
+      const order = db
+        .prepare('SELECT * FROM pedidos_ordenes WHERE (id = ? OR codigo = ?) AND negocio_id = ?')
+        .get(ordNumId, rawOrder.toUpperCase(), negocio.id) as unknown as PedidoRow | undefined;
+
+      if (!order) {
+        res.status(404).json({
+          status: 'error',
+          message: 'Orden no encontrada para el negocio indicado.',
+        });
+        return;
+      }
+
+      const mpAccessToken = (
+        negocio.mp_access_token ||
+        process.env.MP_ACCESS_TOKEN_FALLBACK ||
+        ''
+      ).trim();
+
+      if (!mpAccessToken) {
+        res.status(400).json({
+          status: 'error',
+          message: 'El negocio aún no tiene configurado su Access Token de Mercado Pago.',
+        });
+        return;
+      }
+
+      // Monto calculado estrictamente en el servidor desde la orden guardada en BD
+      const amount = Number((Number(order.monto_centavos || 0) / 100).toFixed(2));
+      if (!Number.isFinite(amount) || amount <= 0) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Monto de la orden inválido.',
+        });
+        return;
+      }
+
+      const idempotencyKey = crypto.randomUUID();
+      const description = `Pedido ${order.codigo} - ${negocio.nombre} (La Chuspa)`.slice(0, 200);
+      const emailClean =
+        typeof payerEmail === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payerEmail.trim())
+          ? payerEmail.trim()
+          : 'comprador@lachuspaanuncios.com';
+
+      const mpResponse = await fetch('https://api.mercadopago.com/v1/payments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${mpAccessToken}`,
+          'X-Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({
+          transaction_amount: amount,
+          token: String(token).trim(),
+          description,
+          payment_method_id: 'yape',
+          payer: {
+            email: emailClean,
+          },
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      const paymentData = (await mpResponse.json().catch(() => ({}))) as Record<string, any>;
+
+      if (!mpResponse.ok) {
+        db.prepare(
+          "UPDATE pedidos_ordenes SET pago_gateway = 'MERCADOPAGO_YAPE', pago_estado = 'rejected', updated_at = datetime('now') WHERE id = ?"
+        ).run(order.id);
+        res.status(mpResponse.status).json({
+          status: 'error',
+          message: paymentData.message || 'Error al crear el pago en Mercado Pago',
+          details: paymentData,
+        });
+        return;
+      }
+
+      const mpStatus = String(paymentData.status || 'pending');
+      const mpId = paymentData.id !== undefined ? String(paymentData.id) : '';
+      db.prepare(
+        "UPDATE pedidos_ordenes SET pago_gateway = 'MERCADOPAGO_YAPE', pago_referencia = ?, pago_estado = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(mpId, mpStatus, order.id);
+
+      if (mpStatus === 'approved') {
+        logWhatsAppNotification(
+          db,
+          order.cliente_telefono,
+          'pago_yape_aprobado',
+          order.codigo,
+          `Pago Yape aprobado por S/ ${amount.toFixed(2)} en ${negocio.nombre}. Operación #${mpId}.`
+        );
+      }
+
+      res.status(200).json({
+        paymentId: paymentData.id,
+        status: mpStatus,
+        statusDetail: paymentData.status_detail,
+        amount,
+      });
+    } catch (err) {
+      console.error('Error en /api/payments/yape:', err);
+      res.status(500).json({
+        status: 'error',
+        message: 'Error interno del servidor al procesar Yape.',
+      });
     }
   });
 
@@ -2029,6 +2326,14 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         panel_ia,
         panel_ia_json,
         catalogo_inicial,
+        mp_public_key,
+        mp_access_token,
+        yape_numero,
+        plin_numero,
+        banco_nombre,
+        banco_titular,
+        banco_cuenta,
+        banco_cci,
       } = req.body || {};
       if (!RUBROS.includes(rubro)) throw new HttpError(400, 'Rubro inválido');
       if (typeof nombre !== 'string' || nombre.trim().length < 2) {
@@ -2081,6 +2386,39 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             : null;
       const nextPanelJson = rawPanelObj ? JSON.stringify(rawPanelObj) : null;
 
+      const nextMpPublic =
+        typeof mp_public_key === 'string' && mp_public_key.trim()
+          ? mp_public_key.trim().slice(0, 180)
+          : null;
+      const nextMpAccess =
+        typeof mp_access_token === 'string' && mp_access_token.trim()
+          ? mp_access_token.trim().slice(0, 260)
+          : null;
+      const nextYapeNum =
+        typeof yape_numero === 'string' && yape_numero.trim()
+          ? yape_numero.trim().slice(0, 24)
+          : telefono.trim();
+      const nextPlinNum =
+        typeof plin_numero === 'string' && plin_numero.trim()
+          ? plin_numero.trim().slice(0, 24)
+          : telefono.trim();
+      const nextBancoNombre =
+        typeof banco_nombre === 'string' && banco_nombre.trim()
+          ? banco_nombre.trim().slice(0, 80)
+          : null;
+      const nextBancoTitular =
+        typeof banco_titular === 'string' && banco_titular.trim()
+          ? banco_titular.trim().slice(0, 120)
+          : null;
+      const nextBancoCuenta =
+        typeof banco_cuenta === 'string' && banco_cuenta.trim()
+          ? banco_cuenta.trim().slice(0, 60)
+          : null;
+      const nextBancoCci =
+        typeof banco_cci === 'string' && banco_cci.trim()
+          ? banco_cci.trim().slice(0, 60)
+          : null;
+
       const codigo = generateCode(`NEG-${rubro.slice(0, 2)}`);
       const { hash, salt } = hashPin(cleanPin);
 
@@ -2088,9 +2426,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         .prepare(`
           INSERT INTO negocios (
             codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido,
-            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, panel_ia_json, estado_regla
+            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, panel_ia_json, estado_regla,
+            mp_public_key, mp_access_token, yape_numero, plin_numero, banco_nombre, banco_titular, banco_cuenta, banco_cci
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO')
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO', ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           codigo,
@@ -2109,7 +2448,15 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           typeof razon_social === 'string' && razon_social.trim() ? razon_social.trim().slice(0, 140) : null,
           nextTipoNegocio,
           nextModalidades,
-          nextPanelJson
+          nextPanelJson,
+          nextMpPublic,
+          nextMpAccess,
+          nextYapeNum,
+          nextPlinNum,
+          nextBancoNombre,
+          nextBancoTitular,
+          nextBancoCuenta,
+          nextBancoCci
         );
       const id = Number(insertRes.lastInsertRowid);
       db.prepare('INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)').run(
@@ -2168,15 +2515,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
 
       res.status(201).json({
         token,
-        negocio: {
-          ...negocio,
-          en_linea: negocio.en_linea === 1,
-          abierto_24h: negocio.abierto_24h === 1,
-          auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
-          alerta_voz_activa: negocio.alerta_voz_activa === 1,
-          panel_ia: safeParseJson(negocio.panel_ia_json),
-          saldo_libre: negocio.saldo - negocio.saldo_retenido,
-        },
+        negocio: sanitizeNegocioForOwner(negocio),
       });
     } catch (err) {
       next(err);
@@ -2322,15 +2661,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         .get(negocio.rubro);
 
       res.json({
-        negocio: {
-          ...negocio,
-          en_linea: negocio.en_linea === 1,
-          abierto_24h: negocio.abierto_24h === 1,
-          auto_aceptar_pedidos: negocio.auto_aceptar_pedidos === 1,
-          alerta_voz_activa: negocio.alerta_voz_activa === 1,
-          panel_ia: safeParseJson(negocio.panel_ia_json),
-          saldo_libre: negocio.saldo - negocio.saldo_retenido,
-        },
+        negocio: sanitizeNegocioForOwner(negocio),
         regla_comision: regla,
         facturacion_apisperu_activa:
           negocio.rubro === 'TRANSPORTE'
@@ -2390,6 +2721,15 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         modalidades_venta,
         panel_ia,
         panel_ia_json,
+        mp_public_key,
+        mp_access_token,
+        clear_mp_access_token,
+        yape_numero,
+        plin_numero,
+        banco_nombre,
+        banco_titular,
+        banco_cuenta,
+        banco_cci,
       } = req.body || {};
 
       const nextNombre =
@@ -2486,13 +2826,49 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nextPanelJson = panel_ia_json;
       }
 
+      const nextMpPublic =
+        mp_public_key !== undefined
+          ? String(mp_public_key || '').trim().slice(0, 180) || null
+          : current.mp_public_key ?? null;
+      const nextMpAccess = clear_mp_access_token
+        ? null
+        : typeof mp_access_token === 'string' && mp_access_token.trim()
+          ? mp_access_token.trim().slice(0, 260)
+          : current.mp_access_token ?? null;
+      const nextYapeNum =
+        yape_numero !== undefined
+          ? String(yape_numero || '').trim().slice(0, 24) || null
+          : current.yape_numero ?? null;
+      const nextPlinNum =
+        plin_numero !== undefined
+          ? String(plin_numero || '').trim().slice(0, 24) || null
+          : current.plin_numero ?? null;
+      const nextBancoNombre =
+        banco_nombre !== undefined
+          ? String(banco_nombre || '').trim().slice(0, 80) || null
+          : current.banco_nombre ?? null;
+      const nextBancoTitular =
+        banco_titular !== undefined
+          ? String(banco_titular || '').trim().slice(0, 120) || null
+          : current.banco_titular ?? null;
+      const nextBancoCuenta =
+        banco_cuenta !== undefined
+          ? String(banco_cuenta || '').trim().slice(0, 60) || null
+          : current.banco_cuenta ?? null;
+      const nextBancoCci =
+        banco_cci !== undefined
+          ? String(banco_cci || '').trim().slice(0, 60) || null
+          : current.banco_cci ?? null;
+
       db.prepare(`
         UPDATE negocios
         SET nombre = ?, telefono = ?, descripcion = ?, zona = ?, lat = ?, lng = ?, en_linea = ?,
             horario_apertura = ?, horario_cierre = ?, abierto_24h = ?, metodos_pago_aceptados = ?,
             auto_aceptar_pedidos = ?, alerta_voz_activa = ?, tarifa_minima_centavos = ?, radio_cobertura_km = ?,
             tipo_persona = ?, documento_tipo = ?, documento_numero = ?, razon_social = ?,
-            tipo_negocio = ?, modalidades_venta = ?, panel_ia_json = ?
+            tipo_negocio = ?, modalidades_venta = ?, panel_ia_json = ?,
+            mp_public_key = ?, mp_access_token = ?, yape_numero = ?, plin_numero = ?,
+            banco_nombre = ?, banco_titular = ?, banco_cuenta = ?, banco_cci = ?
         WHERE id = ?
       `).run(
         nextNombre,
@@ -2517,21 +2893,21 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nextTipoNegocio,
         nextModalidades,
         nextPanelJson,
+        nextMpPublic,
+        nextMpAccess,
+        nextYapeNum,
+        nextPlinNum,
+        nextBancoNombre,
+        nextBancoTitular,
+        nextBancoCuenta,
+        nextBancoCci,
         negocioId
       );
 
       const updated = db.prepare('SELECT * FROM negocios WHERE id = ?').get(negocioId) as unknown as NegocioRow;
       res.json({
         ok: true,
-        negocio: {
-          ...updated,
-          en_linea: updated.en_linea === 1,
-          abierto_24h: updated.abierto_24h === 1,
-          auto_aceptar_pedidos: updated.auto_aceptar_pedidos === 1,
-          alerta_voz_activa: updated.alerta_voz_activa === 1,
-          panel_ia: safeParseJson(updated.panel_ia_json),
-          saldo_libre: updated.saldo - updated.saldo_retenido,
-        },
+        negocio: sanitizeNegocioForOwner(updated),
       });
     } catch (err) {
       next(err);

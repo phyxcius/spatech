@@ -1,9 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import {
   BadgeCheck,
+  Building2,
   CarFront,
   CheckCircle2,
   Clock,
+  CreditCard,
+  Eye,
+  EyeOff,
   FileCheck2,
   KeyRound,
   MapPin,
@@ -58,6 +62,15 @@ export interface BusinessConfigResumen {
     tipo_negocio?: string;
     modalidades_venta?: string[];
     panel_ia?: AiBusinessPanelSchema | null;
+    mp_public_key?: string;
+    mp_yape_configurado?: boolean;
+    mp_access_token_masked?: string;
+    yape_numero?: string;
+    plin_numero?: string;
+    banco_nombre?: string;
+    banco_titular?: string;
+    banco_cuenta?: string;
+    banco_cci?: string;
   };
   servicios: Array<{
     id: number;
@@ -144,6 +157,16 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
       : ['Unidad']
   );
   const [panelIa, setPanelIa] = useState<AiBusinessPanelSchema | null>(n.panel_ia || null);
+  const [mpPublicKey, setMpPublicKey] = useState(n.mp_public_key || '');
+  const [mpAccessTokenInput, setMpAccessTokenInput] = useState('');
+  const [showAccessToken, setShowAccessToken] = useState(false);
+  const [clearMpAccessToken, setClearMpAccessToken] = useState(false);
+  const [yapeNumero, setYapeNumero] = useState(n.yape_numero || '');
+  const [plinNumero, setPlinNumero] = useState(n.plin_numero || '');
+  const [bancoNombre, setBancoNombre] = useState(n.banco_nombre || '');
+  const [bancoTitular, setBancoTitular] = useState(n.banco_titular || '');
+  const [bancoCuenta, setBancoCuenta] = useState(n.banco_cuenta || '');
+  const [bancoCci, setBancoCci] = useState(n.banco_cci || '');
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docVerified, setDocVerified] = useState<PeruDocumentLookupResult | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
@@ -196,6 +219,15 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
         : ['Unidad']
     );
     setPanelIa(n.panel_ia || null);
+    setMpPublicKey(n.mp_public_key || '');
+    setMpAccessTokenInput('');
+    setClearMpAccessToken(false);
+    setYapeNumero(n.yape_numero || '');
+    setPlinNumero(n.plin_numero || '');
+    setBancoNombre(n.banco_nombre || '');
+    setBancoTitular(n.banco_titular || '');
+    setBancoCuenta(n.banco_cuenta || '');
+    setBancoCci(n.banco_cci || '');
   }, [n.id, n.nombre, n.zona, n.en_linea, n.horario_apertura, n.horario_cierre]);
 
   function togglePago(p: MetodoPago) {
@@ -287,9 +319,23 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
           tipo_negocio: tipoNegocio,
           modalidades_venta: modalidadesVenta,
           panel_ia: panelIa || undefined,
+          mp_public_key: mpPublicKey.trim(),
+          ...(clearMpAccessToken
+            ? { mp_access_token: '' }
+            : mpAccessTokenInput.trim()
+            ? { mp_access_token: mpAccessTokenInput.trim() }
+            : {}),
+          yape_numero: yapeNumero.trim(),
+          plin_numero: plinNumero.trim(),
+          banco_nombre: bancoNombre.trim(),
+          banco_titular: bancoTitular.trim(),
+          banco_cuenta: bancoCuenta.trim(),
+          banco_cci: bancoCci.trim(),
         },
         token,
       });
+      setMpAccessTokenInput('');
+      setClearMpAccessToken(false);
       onFeedback({ type: 'ok', text: 'Configuración del panel guardada y sincronizada en vivo.' });
       await onRefresh();
     } catch (err) {
@@ -862,6 +908,150 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                 <span>Auto-confirmar si tengo saldo libre</span>
               </label>
+            </div>
+          </div>
+
+          {/* Pasarela Yape (Mercado Pago Opción A) y Datos de Transferencia Bancaria */}
+          <div className="rounded-2xl border border-[#742284]/25 bg-[#742284]/[0.04] dark:bg-[#742284]/10 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-bold flex items-center gap-1.5 text-[#742284] dark:text-[#E9B8F5]">
+                <CreditCard className="w-4 h-4" />
+                Pasarela Yape (Mercado Pago) y Cuentas de Transferencia
+              </span>
+              {n.mp_yape_configurado && !clearMpAccessToken ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                  <ShieldCheck className="w-3 h-3" /> Cobro Yape MP Activo ({n.mp_access_token_masked || 'APP_USR...'})
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold text-[#6A717E] dark:text-[#98A0AD]">
+                  Opcional · Validación local por código 6 dígitos activa
+                </span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Mercado Pago Public Key (Frontend)
+                </label>
+                <input
+                  type="text"
+                  value={mpPublicKey}
+                  onChange={(e) => setMpPublicKey(e.target.value)}
+                  placeholder="APP_USR-xxxxxxxx-xxxx-xxxx"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                    Mercado Pago Access Token (Solo Servidor)
+                  </label>
+                  {n.mp_yape_configurado && !clearMpAccessToken && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setClearMpAccessToken(true);
+                        setMpAccessTokenInput('');
+                      }}
+                      className="text-[10px] font-bold text-[#C81E5B] hover:underline"
+                    >
+                      Limpiar token
+                    </button>
+                  )}
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    type={showAccessToken ? 'text' : 'password'}
+                    autoComplete="new-password"
+                    value={mpAccessTokenInput}
+                    onChange={(e) => {
+                      setMpAccessTokenInput(e.target.value);
+                      if (e.target.value) setClearMpAccessToken(false);
+                    }}
+                    placeholder={
+                      clearMpAccessToken
+                        ? 'Se eliminará al guardar'
+                        : n.mp_access_token_masked || 'APP_USR-xxxxxxxx-xxxx (se oculta al guardar)'
+                    }
+                    className="w-full min-h-[40px] pl-3 pr-9 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowAccessToken((v) => !v)}
+                    aria-label="Mostrar u ocultar token"
+                    className="absolute right-2.5 text-[#6A717E] hover:text-[#14171F] dark:hover:text-white"
+                  >
+                    {showAccessToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Celular Yape receptor (9 dígitos)
+                </label>
+                <input
+                  type="tel"
+                  maxLength={15}
+                  value={yapeNumero}
+                  onChange={(e) => setYapeNumero(e.target.value)}
+                  placeholder="984123456"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
+                  Celular Plin receptor (9 dígitos)
+                </label>
+                <input
+                  type="tel"
+                  maxLength={15}
+                  value={plinNumero}
+                  onChange={(e) => setPlinNumero(e.target.value)}
+                  placeholder="984123456"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                />
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-black/10 dark:border-white/10 space-y-2.5">
+              <p className="text-[11px] font-bold flex items-center gap-1.5 text-[#1E40AF] dark:text-[#60A5FA]">
+                <Building2 className="w-3.5 h-3.5" />
+                Cuenta Bancaria para Pagos con Tarjeta / Transferencia
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input
+                  type="text"
+                  value={bancoNombre}
+                  onChange={(e) => setBancoNombre(e.target.value)}
+                  placeholder="Banco (Ej: BCP / Interbank / BBVA)"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
+                />
+                <input
+                  type="text"
+                  value={bancoTitular}
+                  onChange={(e) => setBancoTitular(e.target.value)}
+                  placeholder="Titular / Razón Social de la cuenta"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
+                />
+                <input
+                  type="text"
+                  value={bancoCuenta}
+                  onChange={(e) => setBancoCuenta(e.target.value)}
+                  placeholder="N° de Cuenta / Tarjeta (Ej: 194-...)"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                />
+                <input
+                  type="text"
+                  value={bancoCci}
+                  onChange={(e) => setBancoCci(e.target.value)}
+                  placeholder="CCI Interbancario (20 dígitos)"
+                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs font-mono-tabular"
+                />
+              </div>
             </div>
           </div>
 

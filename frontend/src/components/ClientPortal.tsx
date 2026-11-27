@@ -58,8 +58,18 @@ import {
   CampoDirectoModule,
   OficiosModule,
 } from './MarketplaceModules.tsx';
+import {
+  createMercadoPagoYapeToken,
+  isValidApprovalCode,
+  isValidPeruYapePhone,
+  VITE_MP_PUBLIC_KEY,
+} from '../lib/mercadopago.ts';
 import { IncaSolarDiscButton } from './RealisticHumanoidWidget.tsx';
 import { TaxiInDriveFlow } from './TaxiInDriveFlow.tsx';
+import {
+  YapePlinTransferCheckoutBox,
+  type NegocioPagoInfo,
+} from './YapePlinTransferCheckoutBox.tsx';
 
 interface ClientPortalProps {
   customerDoc?: SharedCustomerDoc | null;
@@ -187,6 +197,14 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [docLookupLoading, setDocLookupLoading] = useState(false);
   const [docLookupError, setDocLookupError] = useState<string | null>(null);
   const [metodoPago, setMetodoPago] = useState<MetodoPago>('Yape');
+  const [pagoTelefono, setPagoTelefono] = useState('');
+  const [pagoCodigoAprobacion, setPagoCodigoAprobacion] = useState('');
+  const [transferConfirmed, setTransferConfirmed] = useState(false);
+  const [selectedPagoConfig, setSelectedPagoConfig] = useState<NegocioPagoInfo | null>(null);
+  const [pendingPaymentOrder, setPendingPaymentOrder] = useState<{
+    pedido: PedidoPublico;
+    cliente_pin: string;
+  } | null>(null);
   const [promotorCodigo, setPromotorCodigo] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
@@ -295,6 +313,37 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     customerDoc?.whatsapp,
     customerDoc?.gpsVerificado,
   ]);
+
+  useEffect(() => {
+    setPendingPaymentOrder(null);
+    setPagoCodigoAprobacion('');
+    setTransferConfirmed(false);
+    const digits = clienteTelefono.replace(/\D/g, '');
+    const localNine = digits.length >= 9 ? digits.slice(-9) : '';
+    setPagoTelefono(/^9\d{8}$/.test(localNine) ? localNine : '');
+    if (!selectedOption) {
+      setSelectedPagoConfig(null);
+      return;
+    }
+    const fromDir = directorio.find((n) => n.id === selectedOption.negocio_id);
+    if (fromDir) {
+      setSelectedPagoConfig({
+        mp_public_key: fromDir.mp_public_key,
+        mp_yape_configurado: fromDir.mp_yape_configurado,
+        yape_numero: fromDir.yape_numero || '',
+        plin_numero: fromDir.plin_numero || '',
+        banco_nombre: fromDir.banco_nombre,
+        banco_titular: fromDir.banco_titular,
+        banco_cuenta: fromDir.banco_cuenta,
+        banco_cci: fromDir.banco_cci,
+      });
+    }
+    if (selectedOption.negocio_id > 0 && String(selectedOption.categoria) !== 'EMERGENCIA') {
+      apiFetch<NegocioPagoInfo>(`/api/public/negocios/${selectedOption.negocio_id}/pago-config`)
+        .then((cfg) => setSelectedPagoConfig(cfg))
+        .catch(() => {});
+    }
+  }, [selectedOption?.negocio_id, selectedOption?.servicio_id, selectedOption?.unidad_id]);
 
   function handleSharedDocSynced(synced: SharedCustomerDoc) {
     setDocTipo(synced.tipo);
@@ -795,90 +844,160 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       return;
     }
 
+    const cleanPayPhone = pagoTelefono.replace(/\D/g, '').slice(0, 9);
+    const cleanPayCode = pagoCodigoAprobacion.replace(/\D/g, '').slice(0, 6);
+    if (metodoPago === 'Yape' || metodoPago === 'Plin') {
+      if (!isValidPeruYapePhone(cleanPayPhone)) {
+        setSheetError(`Ingresa tu celular ${metodoPago} de 9 dígitos (empezando en 9).`);
+        return;
+      }
+      if (!isValidApprovalCode(cleanPayCode)) {
+        setSheetError(`Ingresa el código de aprobación ${metodoPago} de 6 dígitos.`);
+        return;
+      }
+    } else if (metodoPago === 'Tarjeta' && !transferConfirmed) {
+      setSheetError('Confirma los datos de transferencia bancaria del comercio para aprobar la compra.');
+      return;
+    }
+
     const finalNombre = (clienteNombre || activeDoc.nombre_completo || '').trim();
     const finalDirFiscal = (clienteDireccionFiscal || activeDoc.direccion || '').trim();
 
     setSubmittingOrder(true);
     const t0 = performance.now();
     try {
-      if (selectedOption.tipo === 'TAXI' && selectedOption.unidad_id) {
-        const resolvedDest = resolveCuscoDestination(
-          destino || 'Plaza de Armas Cusco',
-          coords.lat,
-          coords.lng
-        );
-        const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
-          '/api/public/taxi/pedir',
-          {
-            method: 'POST',
-            body: {
-              unidad_id: selectedOption.unidad_id,
-              metodo_pago: metodoPago,
-              cliente_nombre: finalNombre,
-              cliente_telefono: clienteTelefono,
-              cliente_documento_tipo: activeDoc.tipo,
-              cliente_documento_numero: activeDoc.numero,
-              cliente_documento_verificado: true,
-              origen_texto: gpsStatus === 'live' ? 'Mi ubicación GPS' : 'Plaza de Armas, Cusco',
-              destino_texto: destino || 'Aeropuerto Velasco Astete',
-              origen_lat: coords.lat,
-              origen_lng: coords.lng,
-              destino_lat: resolvedDest.lat,
-              destino_lng: resolvedDest.lng,
-              promotor_codigo: promotorCodigo || undefined,
-            },
-          }
-        );
-        const ms = Math.max(1, Math.round(performance.now() - t0));
-        setSelectedOption(null);
-        emitCenterNotification({
-          id: `order-confirm-${res.pedido.codigo}`,
-          title: `Taxi Confirmado · ${res.pedido.codigo}`,
-          subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
-          detail: `Conductor en ruta. Pasajero verificado: ${finalNombre} (${activeDoc.tipo} ${activeDoc.numero}).`,
-          tone: 'success',
-          responseMs: ms,
-          speakText: speakReplies
-            ? `Taxi confirmado. Código ${res.pedido.codigo}. Tu PIN es ${res.cliente_pin.split('').join(' ')}.`
-            : undefined,
-        });
-        onOrderCreated(res.pedido, res.cliente_pin);
-      } else if (selectedOption.servicio_id) {
-        const res = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
-          '/api/public/pedidos',
-          {
-            method: 'POST',
-            body: {
-              negocio_id: selectedOption.negocio_id,
-              servicio_id: selectedOption.servicio_id,
-              categoria: selectedOption.categoria,
-              metodo_pago: metodoPago,
-              cliente_nombre: finalNombre,
-              cliente_telefono: clienteTelefono,
-              cliente_documento_tipo: activeDoc.tipo,
-              cliente_documento_numero: activeDoc.numero,
-              cliente_documento_verificado: true,
-              cliente_direccion_fiscal: finalDirFiscal || undefined,
-              transcripcion: query || selectedOption.titulo,
-              promotor_codigo: promotorCodigo || undefined,
-            },
-          }
-        );
-        const ms = Math.max(1, Math.round(performance.now() - t0));
-        setSelectedOption(null);
-        emitCenterNotification({
-          id: `order-confirm-${res.pedido.codigo}`,
-          title: `Pedido Enviado · ${res.pedido.codigo}`,
-          subtitle: `${selectedOption.negocio_nombre} · PIN ${res.cliente_pin}`,
-          detail: `${selectedOption.titulo} enviado al panel del negocio (${activeDoc.tipo} ${activeDoc.numero} · ${activeDoc.tipo === 'RUC' ? 'Factura' : 'Boleta'}).`,
-          tone: 'success',
-          responseMs: ms,
-          speakText: speakReplies
-            ? `Pedido confirmado en ${selectedOption.negocio_nombre}. Tu PIN de entrega es ${res.cliente_pin.split('').join(' ')}.`
-            : undefined,
-        });
-        onOrderCreated(res.pedido, res.cliente_pin);
+      let orderResult = pendingPaymentOrder;
+      const isTaxi = Boolean(selectedOption.tipo === 'TAXI' && selectedOption.unidad_id);
+
+      if (!orderResult) {
+        if (isTaxi && selectedOption.unidad_id) {
+          const resolvedDest = resolveCuscoDestination(
+            destino || 'Plaza de Armas Cusco',
+            coords.lat,
+            coords.lng
+          );
+          orderResult = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
+            '/api/public/taxi/pedir',
+            {
+              method: 'POST',
+              body: {
+                unidad_id: selectedOption.unidad_id,
+                metodo_pago: metodoPago,
+                pago_telefono: metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayPhone : undefined,
+                pago_codigo_aprobacion:
+                  metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayCode : undefined,
+                cliente_nombre: finalNombre,
+                cliente_telefono: clienteTelefono,
+                cliente_documento_tipo: activeDoc.tipo,
+                cliente_documento_numero: activeDoc.numero,
+                cliente_documento_verificado: true,
+                origen_texto: gpsStatus === 'live' ? 'Mi ubicación GPS' : 'Plaza de Armas, Cusco',
+                destino_texto: destino || 'Aeropuerto Velasco Astete',
+                origen_lat: coords.lat,
+                origen_lng: coords.lng,
+                destino_lat: resolvedDest.lat,
+                destino_lng: resolvedDest.lng,
+                promotor_codigo: promotorCodigo || undefined,
+              },
+            }
+          );
+        } else if (selectedOption.servicio_id) {
+          orderResult = await apiFetch<{ pedido: PedidoPublico; cliente_pin: string }>(
+            '/api/public/pedidos',
+            {
+              method: 'POST',
+              body: {
+                negocio_id: selectedOption.negocio_id,
+                servicio_id: selectedOption.servicio_id,
+                categoria: selectedOption.categoria,
+                metodo_pago: metodoPago,
+                pago_telefono: metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayPhone : undefined,
+                pago_codigo_aprobacion:
+                  metodoPago === 'Yape' || metodoPago === 'Plin' ? cleanPayCode : undefined,
+                cliente_nombre: finalNombre,
+                cliente_telefono: clienteTelefono,
+                cliente_documento_tipo: activeDoc.tipo,
+                cliente_documento_numero: activeDoc.numero,
+                cliente_documento_verificado: true,
+                cliente_direccion_fiscal: finalDirFiscal || undefined,
+                transcripcion: query || selectedOption.titulo,
+                promotor_codigo: promotorCodigo || undefined,
+              },
+            }
+          );
+        }
       }
+
+      if (!orderResult) return;
+      setPendingPaymentOrder(orderResult);
+
+      if (metodoPago === 'Yape' && selectedPagoConfig?.mp_yape_configurado) {
+        const pubKey = (selectedPagoConfig.mp_public_key || VITE_MP_PUBLIC_KEY || '').trim();
+        if (pubKey) {
+          const yapeToken = await createMercadoPagoYapeToken(pubKey, cleanPayPhone, cleanPayCode);
+          const payRes = await apiFetch<{
+            paymentId?: string | number;
+            status: string;
+            statusDetail?: string;
+            amount: number;
+          }>('/api/payments/yape', {
+            method: 'POST',
+            body: {
+              token: yapeToken,
+              businessId: orderResult.pedido.negocio_id,
+              orderId: orderResult.pedido.id,
+            },
+          });
+          if (payRes.status !== 'approved') {
+            setSheetError(
+              `El cobro Yape en Mercado Pago devolvió "${payRes.status}"${
+                payRes.statusDetail ? ` (${payRes.statusDetail})` : ''
+              }. Ingresa un nuevo código de aprobación de 6 dígitos para reintentar.`
+            );
+            return;
+          }
+          orderResult = {
+            ...orderResult,
+            pedido: {
+              ...orderResult.pedido,
+              pago_gateway: 'MERCADOPAGO_YAPE',
+              pago_referencia: payRes.paymentId ? String(payRes.paymentId) : cleanPayCode,
+              pago_estado: 'approved',
+            },
+          };
+        }
+      }
+
+      const ms = Math.max(1, Math.round(performance.now() - t0));
+      setPendingPaymentOrder(null);
+      setSelectedOption(null);
+
+      const isPaidMethod = metodoPago === 'Yape' || metodoPago === 'Plin' || metodoPago === 'Tarjeta';
+      emitCenterNotification({
+        id: `order-confirm-${orderResult.pedido.codigo}`,
+        sender: selectedOption.negocio_nombre,
+        title: isTaxi
+          ? `Taxi Confirmado · ${orderResult.pedido.codigo}`
+          : `Pedido Enviado · ${orderResult.pedido.codigo}`,
+        subtitle: `${selectedOption.negocio_nombre} · PIN ${orderResult.cliente_pin}${
+          orderResult.pedido.pago_referencia ? ` · Op. #${orderResult.pedido.pago_referencia}` : ''
+        }`,
+        detail: isTaxi
+          ? `Conductor en ruta (${metodoPago}). Pasajero verificado: ${finalNombre} (${activeDoc.tipo} ${activeDoc.numero}).`
+          : `${selectedOption.titulo} enviado al panel del negocio (${metodoPago} · ${
+              activeDoc.tipo === 'RUC' ? 'Factura' : 'Boleta'
+            }).`,
+        tone: 'success',
+        placement: 'top',
+        sound: isPaidMethod ? 'payment' : 'whatsapp',
+        responseMs: ms,
+        speakText: speakReplies
+          ? isTaxi
+            ? `Taxi confirmado. Código ${orderResult.pedido.codigo}. Tu PIN es ${orderResult.cliente_pin.split('').join(' ')}.`
+            : `Pedido confirmado en ${selectedOption.negocio_nombre}. Tu PIN de entrega es ${orderResult.cliente_pin.split('').join(' ')}.`
+          : undefined,
+      });
+      onOrderCreated(orderResult.pedido, orderResult.cliente_pin);
     } catch (err) {
       setSheetError(err instanceof Error ? err.message : 'Error al confirmar el pedido');
     } finally {
@@ -2704,7 +2823,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 </>
               )}
 
-              <div>
+              <div className="space-y-2.5">
                 <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1.5">
                   Método de pago al concretar
                 </label>
@@ -2713,7 +2832,10 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     <button
                       key={m}
                       type="button"
-                      onClick={() => setMetodoPago(m)}
+                      onClick={() => {
+                        setMetodoPago(m);
+                        setSheetError(null);
+                      }}
                       className={`min-h-[44px] rounded-xl text-xs font-medium border transition-colors ${
                         metodoPago === m
                           ? 'bg-[#14213D] text-white border-[#14213D] dark:bg-[#D4AF37] dark:text-[#0B0E14] dark:border-[#D4AF37]'
@@ -2724,6 +2846,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     </button>
                   ))}
                 </div>
+                <YapePlinTransferCheckoutBox
+                  metodoPago={metodoPago}
+                  amountCentavos={selectedOption.precio_centavos}
+                  negocioNombre={selectedOption.negocio_nombre}
+                  negocioPagoConfig={selectedPagoConfig}
+                  phone={pagoTelefono}
+                  onPhoneChange={setPagoTelefono}
+                  approvalCode={pagoCodigoAprobacion}
+                  onApprovalCodeChange={setPagoCodigoAprobacion}
+                  transferConfirmed={transferConfirmed}
+                  onTransferConfirmedChange={setTransferConfirmed}
+                  compact
+                />
               </div>
 
               <div>
