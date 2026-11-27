@@ -1,10 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  BarChart3,
   BadgeCheck,
   Bell,
+  Calendar,
   CarFront,
   Check,
   CheckCircle2,
+  ClipboardList,
+  Compass,
   Crosshair,
   FileCheck2,
   Flag,
@@ -14,8 +18,10 @@ import {
   ListChecks,
   LogOut,
   MapPin,
+  MessageCircle,
   Navigation,
   Pencil,
+  Phone,
   Plus,
   Power,
   Printer,
@@ -342,6 +348,11 @@ export const BusinessPanel: React.FC = () => {
   const [customCounterSoles, setCustomCounterSoles] = useState('');
   const [driverGpsSending, setDriverGpsSending] = useState(false);
   const [sunatSendingId, setSunatSendingId] = useState<number | null>(null);
+  const [movFilterMode, setMovFilterMode] = useState<'HOY' | 'MES' | 'HISTORICO'>('HOY');
+  const [movSelectedDate, setMovSelectedDate] = useState<string>(() =>
+    new Date().toISOString().slice(0, 10)
+  );
+  const pinSectionRef = useRef<HTMLDivElement | null>(null);
 
   async function refreshDirectorio() {
     try {
@@ -1795,141 +1806,227 @@ export const BusinessPanel: React.FC = () => {
   }
 
   return (
-    <div className={`space-y-6 ${session.rubro === 'TRANSPORTE' ? 'pb-36 md:pb-24' : 'pb-24 md:pb-12'}`}>
-      {/* Cabecera financiera del negocio con color temático único por rubro / IA */}
-      <section
-        style={panelIa ? { borderColor: `${panelIa.tema_color.primaryHex}66` } : undefined}
-        className={`rounded-3xl border p-6 space-y-5 shadow-2xl chuspa-google-border ${roleTheme.cardBg}`}
-      >
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <p
-              style={panelIa ? { color: panelIa.tema_color.primaryHex } : undefined}
-              className={`text-xs uppercase tracking-[0.16em] font-bold ${roleTheme.accentText}`}
-            >
-              {panelIa?.badge_panel || roleTheme.badge} · {session.codigo}
-            </p>
-            <h1 className="font-display text-3xl font-semibold mt-0.5">{session.nombre}</h1>
-            {panelIa && (
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-0.5">
-                {panelIa.rubro_titulo} — {panelIa.subtitulo_panel}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {resumen && (
+    <div className={`space-y-5 ${session.rubro === 'TRANSPORTE' ? 'pb-36 md:pb-24' : 'pb-24 md:pb-12'}`}>
+      {/* Cabecera del Conductor (TRANSPORTE estilo Púrpura + Barra GPS) vs Otros Negocios */}
+      {session.rubro === 'TRANSPORTE' ? (
+        <section className="rounded-3xl overflow-hidden shadow-xl border border-purple-800/30">
+          <div className="bg-gradient-to-r from-[#4C1D95] via-[#6B21A8] to-[#581C87] text-white px-4 py-3.5 sm:px-6 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-2xl bg-[#7C3AED] border border-white/25 flex items-center justify-center text-xl shadow-md shrink-0">
+                🚕
+              </div>
+              <div className="min-w-0">
+                <h1 className="font-display text-lg sm:text-xl font-bold truncate leading-tight">
+                  {activeTaxiUnit?.conductor_nombre || session.nombre}
+                </h1>
+                <button
+                  type="button"
+                  onClick={() => void handleToggleDriverAvailability()}
+                  className="mt-0.5 inline-flex items-center gap-1.5 text-[11px] font-semibold text-purple-100 hover:text-white"
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      activeTaxiUnit?.estado === 'DISPONIBLE' || resumen?.negocio.en_linea
+                        ? 'bg-[#22C55E]'
+                        : 'bg-rose-400'
+                    }`}
+                  />
+                  <span className="truncate">
+                    {activeTaxiUnit?.estado === 'DISPONIBLE' || resumen?.negocio.en_linea
+                      ? `En Servicio · GPS Cusco Activo${activeTaxiUnit ? ` (${activeTaxiUnit.placa})` : ''}`
+                      : 'Pausado · Toca para activarte'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {resumen && (
+                <button
+                  type="button"
+                  onClick={() => setRecargaOpen(true)}
+                  title="Saldo libre / Recargar"
+                  className="min-h-[38px] px-2.5 sm:px-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-xs font-mono-tabular font-bold flex items-center gap-1.5"
+                >
+                  <Wallet className="w-3.5 h-3.5 text-[#FACC15]" />
+                  <span>{formatSoles(resumen.negocio.saldo_libre)}</span>
+                </button>
+              )}
               <button
                 type="button"
-                onClick={handleToggleOnline}
-                className={`min-h-[44px] px-3.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 ${
-                  resumen.negocio.en_linea
-                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                    : 'border-rose-500/40 bg-rose-500/15 text-rose-500'
+                onClick={() => setSoundEnabled((v) => !v)}
+                aria-label={soundEnabled ? 'Silenciar alertas' : 'Activar alertas'}
+                className="min-h-[38px] min-w-[38px] rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 flex items-center justify-center"
+              >
+                <Bell className={`w-4 h-4 ${soundEnabled ? 'text-[#FACC15]' : 'text-white/50'}`} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setSession(null)}
+                className="min-h-[38px] px-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-xs font-bold flex items-center gap-1.5"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Salir</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-[#064E3B] text-white px-4 py-2 sm:px-6 flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full bg-[#22C55E] shrink-0" />
+              <div className="min-w-0 leading-tight">
+                <p className="font-bold truncate">GPS Satelital Conectado</p>
+                <p className="text-[10px] text-emerald-200 truncate">
+                  Transmitiendo en vivo · {nuevos.length} solicitud(es) · {enCurso.length} en ruta
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={!activeTaxiUnit || driverGpsSending}
+              onClick={() => void handleSendDriverGps()}
+              className="min-h-[32px] px-3 rounded-lg bg-[#059669] hover:bg-[#10B981] border border-emerald-400/40 text-white text-[11px] font-bold flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3 h-3 ${driverGpsSending ? 'animate-spin' : ''}`} />
+              <span>{driverGpsSending ? 'Calibrando...' : 'Calibrar'}</span>
+            </button>
+          </div>
+        </section>
+      ) : (
+        <section
+          style={panelIa ? { borderColor: `${panelIa.tema_color.primaryHex}66` } : undefined}
+          className={`rounded-3xl border p-6 space-y-5 shadow-2xl chuspa-google-border ${roleTheme.cardBg}`}
+        >
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <p
+                style={panelIa ? { color: panelIa.tema_color.primaryHex } : undefined}
+                className={`text-xs uppercase tracking-[0.16em] font-bold ${roleTheme.accentText}`}
+              >
+                {panelIa?.badge_panel || roleTheme.badge} · {session.codigo}
+              </p>
+              <h1 className="font-display text-3xl font-semibold mt-0.5">{session.nombre}</h1>
+              {panelIa && (
+                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-0.5">
+                  {panelIa.rubro_titulo} — {panelIa.subtitulo_panel}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {resumen && (
+                <button
+                  type="button"
+                  onClick={handleToggleOnline}
+                  className={`min-h-[44px] px-3.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 ${
+                    resumen.negocio.en_linea
+                      ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                      : 'border-rose-500/40 bg-rose-500/15 text-rose-500'
+                  }`}
+                >
+                  <Power className="w-3.5 h-3.5" />
+                  <span>{resumen.negocio.en_linea ? 'En Línea ●' : 'Pausado'}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setSoundEnabled((v) => !v)}
+                className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5"
+              >
+                <Bell className={`w-3.5 h-3.5 ${soundEnabled ? 'text-[#D4AF37]' : 'text-[#8A8F99]'}`} />
+                <span>{soundEnabled ? 'Voz & Timbre' : 'Silenciado'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleUpdateWorkspaceGps()}
+                disabled={driverGpsSending}
+                className="min-h-[44px] px-3.5 rounded-xl border border-[#2563EB]/30 bg-[#2563EB]/10 text-[#1E40AF] dark:text-[#06B6D4] text-xs font-semibold flex items-center gap-1.5"
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                <span>{driverGpsSending ? 'Ubicando...' : 'GPS Celular'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => loadWorkspace(false)}
+                className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Actualizar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecargaOpen(true)}
+                className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold flex items-center gap-1.5 ${roleTheme.primaryBtn}`}
+              >
+                <Wallet className="w-3.5 h-3.5" />
+                <span>Recargar Saldo</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSession(null)}
+                className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5 text-[#C81E5B]"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Salir</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Strip financiero 3 columnas */}
+          {resumen && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-black/8 dark:border-white/8">
+              <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
+                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Saldo Total</p>
+                <p className="font-mono-tabular text-2xl font-semibold mt-1">
+                  {formatSoles(resumen.negocio.saldo)}
+                </p>
+              </div>
+              <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
+                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Retenido en Curso</p>
+                <p className="font-mono-tabular text-2xl font-semibold mt-1 text-[#D97706]">
+                  {formatSoles(resumen.negocio.saldo_retenido)}
+                </p>
+              </div>
+              <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
+                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                  Disponible Libre (Comisión {resumen.regla_comision.porcentaje_plataforma}%)
+                </p>
+                <p className="font-mono-tabular text-2xl font-semibold mt-1 text-[#1FA855]">
+                  {formatSoles(resumen.negocio.saldo_libre)}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Pestañas */}
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { id: 'NUEVOS', label: `Nuevos (${nuevos.length})` },
+                { id: 'EN_CURSO', label: `En curso (${enCurso.length})` },
+                { id: 'HISTORIAL', label: `Historial (${historial.length})` },
+                { id: 'REFERIDOS', label: `Reservas Referidas (${referidosPorMi.length})` },
+                { id: 'RUTAS_SOS', label: 'Ruta Colectivo & Despacho' },
+                { id: 'CONFIGURACION', label: 'Configurar Mi Panel' },
+                { id: 'GESTION', label: 'Catálogo y Movimientos' },
+              ] as Array<{ id: BizTab; label: string }>
+            ).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors flex items-center gap-1.5 ${
+                  tab === t.id
+                    ? roleTheme.activeTab
+                    : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#A3A9B5]'
                 }`}
               >
-                <Power className="w-3.5 h-3.5" />
-                <span>{resumen.negocio.en_linea ? 'En Línea ●' : 'Pausado'}</span>
+                {t.id === 'CONFIGURACION' && <Settings className="w-3.5 h-3.5" />}
+                <span>{t.label}</span>
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setSoundEnabled((v) => !v)}
-              className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5"
-            >
-              <Bell className={`w-3.5 h-3.5 ${soundEnabled ? 'text-[#D4AF37]' : 'text-[#8A8F99]'}`} />
-              <span>{soundEnabled ? 'Voz & Timbre' : 'Silenciado'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleUpdateWorkspaceGps()}
-              disabled={driverGpsSending}
-              className="min-h-[44px] px-3.5 rounded-xl border border-[#2563EB]/30 bg-[#2563EB]/10 text-[#1E40AF] dark:text-[#06B6D4] text-xs font-semibold flex items-center gap-1.5"
-            >
-              <Crosshair className="w-3.5 h-3.5" />
-              <span>{driverGpsSending ? 'Ubicando...' : 'GPS Celular'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => loadWorkspace(false)}
-              className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span>Actualizar</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setRecargaOpen(true)}
-              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold flex items-center gap-1.5 ${roleTheme.primaryBtn}`}
-            >
-              <Wallet className="w-3.5 h-3.5" />
-              <span>Recargar Saldo</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setSession(null)}
-              className="min-h-[44px] px-3.5 rounded-xl border border-black/10 dark:border-white/10 text-xs flex items-center gap-1.5 text-[#C81E5B]"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Salir</span>
-            </button>
+            ))}
           </div>
-        </div>
-
-        {/* Strip financiero 3 columnas */}
-        {resumen && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-black/8 dark:border-white/8">
-            <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Saldo Total</p>
-              <p className="font-mono-tabular text-2xl font-semibold mt-1">
-                {formatSoles(resumen.negocio.saldo)}
-              </p>
-            </div>
-            <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Retenido en Curso</p>
-              <p className="font-mono-tabular text-2xl font-semibold mt-1 text-[#D97706]">
-                {formatSoles(resumen.negocio.saldo_retenido)}
-              </p>
-            </div>
-            <div className={`p-4 rounded-2xl border ${roleTheme.tileBg}`}>
-              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                Disponible Libre (Comisión {resumen.regla_comision.porcentaje_plataforma}%)
-              </p>
-              <p className="font-mono-tabular text-2xl font-semibold mt-1 text-[#1FA855]">
-                {formatSoles(resumen.negocio.saldo_libre)}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Pestañas */}
-        <div className="flex flex-wrap gap-2">
-          {(
-            [
-              { id: 'NUEVOS', label: `Nuevos (${nuevos.length})` },
-              { id: 'EN_CURSO', label: `En curso (${enCurso.length})` },
-              { id: 'HISTORIAL', label: `Historial (${historial.length})` },
-              { id: 'REFERIDOS', label: `Reservas Referidas (${referidosPorMi.length})` },
-              { id: 'RUTAS_SOS', label: 'Ruta Colectivo & Despacho' },
-              { id: 'CONFIGURACION', label: 'Configurar Mi Panel' },
-              { id: 'GESTION', label: 'Catálogo y Movimientos' },
-            ] as Array<{ id: BizTab; label: string }>
-          ).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`min-h-[44px] px-4 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors flex items-center gap-1.5 ${
-                tab === t.id
-                  ? roleTheme.activeTab
-                  : 'border-black/10 dark:border-white/10 text-[#555B66] dark:text-[#A3A9B5]'
-              }`}
-            >
-              {t.id === 'CONFIGURACION' && <Settings className="w-3.5 h-3.5" />}
-              <span>{t.label}</span>
-            </button>
-          ))}
-        </div>
-      </section>
+        </section>
+      )}
 
       {actionMsg && (
         <div
@@ -1943,353 +2040,267 @@ export const BusinessPanel: React.FC = () => {
         </div>
       )}
 
-      {/* TAB NUEVOS (para TRANSPORTE incluye Modo Conductor estilo inDrive) */}
+      {/* TAB NUEVOS (TRANSPORTE: Panel Operativo Púrpura + Solicitudes y Viajes Asignados) */}
       {tab === 'NUEVOS' && session.rubro === 'TRANSPORTE' && (() => {
         const activeUnit =
           resumen?.unidades.find((u) => u.id === activeUnitId) || resumen?.unidades[0];
         const isDriverAvailable = activeUnit ? activeUnit.estado === 'DISPONIBLE' : Boolean(resumen?.negocio.en_linea);
-        const completedTrips = historial.filter((h) => h.estado === 'ENTREGADO_PAGADO');
-        const grossEarnings = completedTrips.reduce((sum, h) => sum + h.monto_centavos, 0);
 
         return (
           <div className="space-y-4">
-            {/* Barra superior Modo Conductor estilo inDrive */}
-            <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <CarFront className="w-5 h-5 text-[#16A34A]" />
-                  <div>
-                    <h2 className="font-display text-xl font-semibold leading-tight">
-                      Modo Conductor · En Vivo
-                    </h2>
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                      {activeUnit
-                        ? `${activeUnit.conductor_nombre} · ${activeUnit.placa} (${activeUnit.modelo})`
-                        : 'Sin unidades registradas aún'}
-                    </p>
-                  </div>
+            {/* Tarjeta Principal Púrpura estilo PANEL OPERATIVO */}
+            <div className="rounded-3xl bg-gradient-to-br from-[#581C87] via-[#6B21A8] to-[#7C3AED] text-white p-5 sm:p-6 shadow-xl space-y-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[#FACC15]">
+                    Panel Operativo
+                  </p>
+                  <h2 className="font-display text-2xl font-bold mt-0.5">
+                    {enCurso.length > 0 ? 'Mis Viajes Asignados' : 'Solicitudes Disponibles'}
+                  </h2>
+                  <p className="text-xs text-purple-100 mt-0.5">
+                    Tienes {enCurso.length} carrera(s) activa(s) y {nuevos.length} solicitud(es) esperando respuesta.
+                  </p>
                 </div>
-                {resumen && resumen.unidades.length > 1 && (
-                  <select
-                    value={activeUnit?.id ?? ''}
-                    onChange={(e) => setActiveUnitId(Number(e.target.value))}
-                    className="min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs font-semibold"
-                  >
-                    {resumen.unidades.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.conductor_nombre} · {u.placa}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2.5">
-                {/* Toggle Disponible / Ocupado */}
                 <button
                   type="button"
                   onClick={() => void handleToggleDriverAvailability()}
-                  className="min-h-[44px] p-1 rounded-full bg-[#EFECE6] dark:bg-[#0B0E14] border border-black/10 dark:border-white/10 inline-flex items-center gap-1"
-                  aria-label="Cambiar disponibilidad del conductor"
+                  className="p-1 rounded-full bg-black/25 border border-white/20 inline-flex items-center gap-1 shrink-0"
                 >
                   <span
-                    className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors ${
-                      !isDriverAvailable
-                        ? 'bg-[#DC2626] text-white shadow'
-                        : 'text-[#6A717E] dark:text-[#98A0AD]'
+                    className={`px-3 py-1 rounded-full text-[11px] font-bold ${
+                      !isDriverAvailable ? 'bg-[#EF4444] text-white' : 'text-purple-200'
                     }`}
                   >
                     Ocupado
                   </span>
                   <span
-                    className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors ${
-                      isDriverAvailable
-                        ? 'bg-[#16A34A] text-white shadow'
-                        : 'text-[#6A717E] dark:text-[#98A0AD]'
+                    className={`px-3 py-1 rounded-full text-[11px] font-bold ${
+                      isDriverAvailable ? 'bg-[#22C55E] text-white' : 'text-purple-200'
                     }`}
                   >
                     Disponible
                   </span>
                 </button>
+              </div>
 
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                {resumen && resumen.unidades.length > 1 && (
+                  <select
+                    value={activeUnit?.id ?? ''}
+                    onChange={(e) => setActiveUnitId(Number(e.target.value))}
+                    className="min-h-[36px] px-3 rounded-xl bg-white/15 border border-white/25 text-white text-xs font-semibold"
+                  >
+                    {resumen.unidades.map((u) => (
+                      <option key={u.id} value={u.id} className="text-[#0B0E14]">
+                        {u.conductor_nombre} · {u.placa}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <button
                   type="button"
-                  disabled={!activeUnit || driverGpsSending}
-                  onClick={() => void handleSendDriverGps()}
-                  className="min-h-[44px] px-4 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap"
+                  onClick={() => setTab('CONFIGURACION')}
+                  className="min-h-[34px] px-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-[11px] font-bold inline-flex items-center gap-1.5"
                 >
-                  <Crosshair className="w-3.5 h-3.5" />
-                  <span>{driverGpsSending ? 'Enviando GPS...' : 'Enviar Mi GPS'}</span>
+                  <Settings className="w-3.5 h-3.5" />
+                  <span>Mi Taxi</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('RUTAS_SOS')}
+                  className="min-h-[34px] px-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-[11px] font-bold inline-flex items-center gap-1.5"
+                >
+                  <Route className="w-3.5 h-3.5" />
+                  <span>Colectivo &amp; SOS</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('REFERIDOS')}
+                  className="min-h-[34px] px-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-[11px] font-bold inline-flex items-center gap-1.5"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Referidos ({referidosPorMi.length})</span>
                 </button>
               </div>
             </div>
 
-            {/* Sub-pestañas inDrive: Solicitudes de viaje | Desempeño */}
-            <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-white dark:bg-[#121620] border border-black/10 dark:border-white/10 max-w-md">
-              <button
-                type="button"
-                onClick={() => setDriverSubTab('SOLICITUDES')}
-                className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
-                  driverSubTab === 'SOLICITUDES'
-                    ? 'bg-[#14213D] text-white dark:bg-[#B6F02B] dark:text-[#0B0E14]'
-                    : 'text-[#6A717E] dark:text-[#98A0AD]'
-                }`}
-              >
-                <ListChecks className="w-4 h-4" />
-                <span>Solicitudes de viaje ({nuevos.length})</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setDriverSubTab('DESEMPENO')}
-                className={`min-h-[42px] rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
-                  driverSubTab === 'DESEMPENO'
-                    ? 'bg-[#14213D] text-white dark:bg-[#B6F02B] dark:text-[#0B0E14]'
-                    : 'text-[#6A717E] dark:text-[#98A0AD]'
-                }`}
-              >
-                <Gauge className="w-4 h-4" />
-                <span>Desempeño</span>
-              </button>
-            </div>
-
-            {driverSubTab === 'SOLICITUDES' ? (
-              <div className="space-y-4">
-                {(() => {
-                  const drvLat = activeUnit?.lat ?? resumen?.negocio.lat ?? -13.5174;
-                  const drvLng = activeUnit?.lng ?? resumen?.negocio.lng ?? -71.9765;
-                  const driverPins: GeoMapPin[] = nuevos.map((p, idx) => {
-                    const angle = (idx * 72 * Math.PI) / 180;
-                    const pLat = p.origen_lat ?? drvLat + Math.sin(angle) * 0.0045;
-                    const pLng = p.origen_lng ?? drvLng + Math.cos(angle) * 0.0045;
-                    return {
-                      id: `ride-${p.id}`,
-                      lat: pLat,
-                      lng: pLng,
-                      priceText: formatSoles(p.monto_centavos),
-                      sublabel: p.cliente_nombre,
-                      detailTitle: `${p.origen_texto || 'Pasajero'} → ${p.destino_texto || 'Cusco'}`,
-                      tier: p.monto_centavos >= 2000 ? 'cheapest' : 'mid',
-                      kind: 'DRIVER',
-                      isOpen: true,
-                    };
-                  });
-                  return (
-                    <div className="space-y-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-                        <p className="text-xs font-semibold text-[#14213D] dark:text-[#E5C158]">
-                          Mapa de solicitudes en vivo ({nuevos.length}) · Pulsa un precio en el mapa para responder
-                        </p>
-                        <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                          {activeUnit ? `Unidad ${activeUnit.placa}` : 'Tu unidad'}
-                        </span>
-                      </div>
-                      <CuscoGeoMap
-                        mode="TAXI"
-                        userLat={drvLat}
-                        userLng={drvLng}
-                        originLabel={activeUnit ? `${activeUnit.conductor_nombre} (${activeUnit.placa})` : 'Tu ubicación actual'}
-                        pins={driverPins}
-                        selectedPinId={selectedRideOrder ? `ride-${selectedRideOrder.id}` : null}
-                        onSelectPin={(pinId) => {
-                          const found = nuevos.find((p) => `ride-${p.id}` === pinId);
-                          if (found) {
-                            setSelectedRideOrder(found);
-                            setCustomCounterOpen(false);
-                          }
-                        }}
-                        onRequestPinAction={(pinId) => {
-                          const found = nuevos.find((p) => `ride-${p.id}` === pinId);
-                          if (found) {
-                            setSelectedRideOrder(found);
-                            setCustomCounterOpen(false);
-                          }
-                        }}
-                        gpsLive={driverGpsSending}
-                        heightClass="h-[300px] sm:h-[360px]"
-                      />
-                    </div>
-                  );
-                })()}
-
-                {activeTaxiTrip && (
-                  <div
-                    className={`rounded-2xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
-                      canNotifyNextRide
-                        ? 'border-[#84CC16]/50 bg-[#84CC16]/15'
-                        : 'border-emerald-500/40 bg-emerald-500/10'
-                    }`}
-                  >
-                    <div className="text-xs space-y-0.5">
-                      <p className="font-bold text-emerald-700 dark:text-emerald-300">
-                        {canNotifyNextRide
-                          ? `¡Estás a ${activeTaxiRemEta} min (${activeTaxiRemKm.toFixed(1)} km) de finalizar tu ruta!`
-                          : activeTaxiTrip.pin_validado === 1
-                            ? `Viaje en ruta hacia Destino B · Faltan ${activeTaxiRemEta} min (${activeTaxiRemKm.toFixed(1)} km)`
-                            : 'Traslado aceptado · En camino a recoger al pasajero (Punto A)'}
+            {/* Tarjeta de Viaje Asignado Activo (estilo Rosa S/ 55.00 + Abrir Ruta) */}
+            {enCurso.map((p) => {
+              const pinDone = p.pin_validado === 1;
+              const arrived = p.viaje_etapa === 'LLEGADO_DESTINO';
+              return (
+                <article
+                  key={`assigned-${p.id}`}
+                  className="rounded-3xl border-2 border-[#7C3AED] bg-white dark:bg-[#121620] p-4 sm:p-5 shadow-md space-y-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <p className="text-sm font-bold text-[#14171F] dark:text-white flex items-center gap-1.5">
+                        <MapPin className="w-4 h-4 text-[#7C3AED] shrink-0" />
+                        <span className="truncate">{p.cliente_nombre}</span>
                       </p>
-                      <p className="text-[#555B66] dark:text-[#A3A9B5]">
-                        {canNotifyNextRide
-                          ? `Alertas de próximo pasajero ACTIVADAS (${nuevos.length} solicitudes esperando). Acepta tu siguiente carrera al concluir.`
-                          : 'Modo enfoque activo: las notificaciones sonoras de nuevos pedidos se activarán automáticamente cuando estés a ≤ 3 min (1 km) de terminar.'}
+                      <p className="text-xs text-[#555B66] dark:text-[#CBD5E1] truncate">
+                        🚕 {p.item_nombre} · {p.codigo}
+                      </p>
+                      <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] truncate">
+                        📍 {p.destino_texto || 'Destino en Cusco'}
                       </p>
                     </div>
+                    <p className="font-mono-tabular text-xl font-extrabold text-[#16A34A] shrink-0">
+                      {formatSoles(p.monto_centavos)}
+                    </p>
+                  </div>
+
+                  {activeTaxiTrip?.id === p.id && (
+                    <p className="text-[11px] text-[#555B66] dark:text-[#98A0AD]">
+                      {canNotifyNextRide
+                        ? `Estás a ${activeTaxiRemEta} min (${activeTaxiRemKm.toFixed(1)} km) de llegar: alertas de nuevos viajes ACTIVADAS.`
+                        : pinDone
+                          ? `En ruta al Destino B (${activeTaxiRemEta} min restantes).`
+                          : 'Dirígete al Punto A para recoger al pasajero y validar su PIN.'}
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-black/8 dark:border-white/8">
+                    <span className="px-3 py-1 rounded-full bg-purple-100 dark:bg-purple-900/40 text-[#5B21B6] dark:text-purple-200 text-xs font-bold">
+                      {arrived
+                        ? '🏁 Llegó a Destino'
+                        : pinDone
+                          ? '🚕 Pasajero a Bordo'
+                          : '🚕 En Camino'}
+                    </span>
                     <button
                       type="button"
                       onClick={() => setTab('EN_CURSO')}
-                      className="min-h-[40px] px-4 rounded-xl bg-emerald-600 text-white text-xs font-bold whitespace-nowrap"
+                      className="min-h-[40px] px-4 rounded-full bg-[#6D28D9] hover:bg-[#5B21B6] text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-md"
                     >
-                      Ir a En Curso ({enCurso.length})
+                      <span>Abrir Ruta</span>
+                      <Send className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                )}
+                </article>
+              );
+            })}
 
-                {nuevos.length === 0 ? (
-                  <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center space-y-2">
-                    <p className="text-sm font-medium">
-                      Sin solicitudes de viaje pendientes en este momento.
-                    </p>
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                      Mantén tu estado en Disponible y envía tu GPS para que los pasajeros te ubiquen en el mapa de Cusco.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-black/10 dark:divide-white/10 rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] overflow-hidden">
-                    {nuevos.map((p) => {
-                      const kmStr = (p.distancia_km ?? 2.8).toFixed(1).replace('.', ',');
-                      const etaStr = `${p.eta_min ?? 6} min.`;
-                      return (
-                        <article
-                          key={p.id}
-                          onClick={() => {
-                            setSelectedRideOrder(p);
-                            setCustomCounterOpen(false);
-                          }}
-                          className="p-4 sm:p-5 hover:bg-[#F8F7F4] dark:hover:bg-[#161B28] transition-colors cursor-pointer flex items-start gap-3.5"
-                        >
-                          {/* Columna izquierda pasajero */}
-                          <div className="w-16 shrink-0 flex flex-col items-center text-center gap-1">
-                            <div className="w-11 h-11 rounded-full bg-[#EFECE6] dark:bg-[#1E2534] border border-black/10 dark:border-white/10 flex items-center justify-center font-display font-bold text-base">
-                              {p.cliente_nombre.slice(0, 1).toUpperCase()}
-                            </div>
-                            <p className="text-[11px] font-semibold leading-tight truncate w-full">
-                              {p.cliente_nombre}
-                            </p>
-                            <p className="text-[10px] font-mono-tabular text-[#9A7B2C] dark:text-[#E5C158] flex items-center gap-0.5">
-                              <Star className="w-3 h-3 fill-amber-400 text-amber-400" /> 4.9
-                            </p>
-                            <p className="text-[10px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                              {etaStr}
-                            </p>
-                          </div>
-
-                          {/* Detalle tarifa, puntos A -> B y pasajero verificado */}
-                          <div className="flex-1 min-w-0 space-y-1.5">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex flex-wrap items-baseline gap-2">
-                                <span className="text-xs font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                                  ~{kmStr} km
-                                </span>
-                                <span className="font-mono-tabular text-xl font-extrabold">
-                                  {formatSoles(p.monto_centavos)}
-                                </span>
-                                <span className="text-xs font-semibold text-purple-600 dark:text-purple-400">
-                                  {p.contraoferta_centavos ? 'Contraoferta enviada' : 'Precio justo'}
-                                </span>
-                              </div>
-                              <span className="text-[11px] font-mono-tabular text-[#6A717E] dark:text-[#98A0AD]">
-                                {p.codigo}
-                              </span>
-                            </div>
-
-                            <p className="text-sm font-semibold leading-snug">
-                              A: {p.origen_texto || 'Ubicación GPS del pasajero'}
-                            </p>
-                            <p className="text-xs sm:text-sm text-[#555B66] dark:text-[#A3A9B5] leading-snug">
-                              B: {p.destino_texto || 'Destino en Cusco'}
-                            </p>
-
-                            <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5">
-                              <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                <span className="px-2.5 py-0.5 rounded-lg bg-[#B6F02B] text-[#0B0E14] font-bold">
-                                  {p.metodo_pago}
-                                </span>
-                                {p.pago_estado && (
-                                  <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-bold">
-                                    {p.pago_estado}
-                                    {p.pago_referencia ? ` #${p.pago_referencia}` : ''}
-                                  </span>
-                                )}
-                                {p.cliente_documento_numero && (
-                                  <span className="inline-flex items-center gap-1 font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
-                                    <BadgeCheck className="w-3.5 h-3.5" />
-                                    {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero} (Pasajero · Sin factura)
-                                  </span>
-                                )}
-                              </div>
-                              <div
-                                className="flex items-center gap-2"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedRideOrder(p);
-                                    setCustomCounterOpen(false);
-                                  }}
-                                  className="min-h-[38px] px-3 rounded-xl border border-black/15 dark:border-white/15 text-xs font-semibold inline-flex items-center gap-1"
-                                >
-                                  <MapPin className="w-3.5 h-3.5 text-[#2563EB]" />
-                                  <span>Ver mapa</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void handleAccept(p.id)}
-                                  className="min-h-[38px] px-3.5 rounded-xl bg-[#16A34A] text-white text-xs font-bold inline-flex items-center gap-1"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                  <span>Aceptar</span>
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
+            {/* Solicitudes Entrantes estilo inDrive + Radar en Mapa */}
+            {nuevos.length === 0 ? (
+              <div className="rounded-3xl border border-purple-200 dark:border-white/10 bg-white dark:bg-[#121620] p-8 text-center space-y-2">
+                <p className="text-sm font-semibold text-[#14171F] dark:text-white">
+                  Sin solicitudes nuevas esperando en este momento.
+                </p>
+                <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                  Mantén el servicio en Disponible y pulsa «Calibrar» arriba para actualizar tu GPS en vivo.
+                </p>
               </div>
             ) : (
-              <div className="rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-6 space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <h3 className="font-display text-2xl font-semibold">Desempeño del Conductor</h3>
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                      Resumen operativo en tiempo real · Identidad de pasajeros verificada sin facturación electrónica
-                    </p>
-                  </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-1">
+                  <p className="text-xs font-bold uppercase tracking-wider text-[#5B21B6] dark:text-purple-300">
+                    Solicitudes de pasajeros ({nuevos.length})
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setTab('EN_CURSO')}
+                    className="text-xs font-bold text-[#6D28D9] dark:text-purple-300 hover:underline inline-flex items-center gap-1"
+                  >
+                    <Compass className="w-3.5 h-3.5" />
+                    <span>Ver mapa radar</span>
+                  </button>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Viajes Completados</p>
-                    <p className="font-mono-tabular text-2xl font-bold mt-1">{completedTrips.length}</p>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Ingresos Generados</p>
-                    <p className="font-mono-tabular text-2xl font-bold mt-1 text-emerald-600 dark:text-emerald-400">
-                      {formatSoles(grossEarnings)}
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Calificación</p>
-                    <p className="font-mono-tabular text-2xl font-bold mt-1">
-                      {(activeUnit?.calificacion ?? 4.9).toFixed(2)} ★
-                    </p>
-                  </div>
-                  <div className="p-4 rounded-2xl bg-[#F8F7F4] dark:bg-[#0B0E14]">
-                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">Viajes Activos</p>
-                    <p className="font-mono-tabular text-2xl font-bold mt-1">{enCurso.length}</p>
-                  </div>
-                </div>
+
+                {nuevos.map((p) => {
+                  const kmStr = (p.distancia_km ?? 2.8).toFixed(1).replace('.', ',');
+                  const etaStr = `${p.eta_min ?? 6} min`;
+                  return (
+                    <article
+                      key={p.id}
+                      onClick={() => {
+                        setSelectedRideOrder(p);
+                        setCustomCounterOpen(false);
+                      }}
+                      className="rounded-3xl border-2 border-[#7C3AED]/70 bg-white dark:bg-[#121620] p-4 sm:p-5 shadow-md hover:border-[#6D28D9] transition-colors cursor-pointer space-y-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-11 h-11 rounded-full bg-[#6D28D9] text-white flex items-center justify-center font-display font-bold text-lg shrink-0">
+                            {p.cliente_nombre.slice(0, 1).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold truncate">{p.cliente_nombre}</p>
+                            <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
+                              ★ 4.9 · {etaStr} · ~{kmStr} km · {p.metodo_pago}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-mono-tabular text-xl font-extrabold text-[#16A34A]">
+                            {formatSoles(p.monto_centavos)}
+                          </p>
+                          <p className="text-[10px] font-semibold text-[#7C3AED]">
+                            {p.contraoferta_centavos ? 'Contraoferta' : 'Tarifa cliente'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-[#F8FAFC] dark:bg-[#0B0E14] border border-black/8 dark:border-white/10 p-3 space-y-1.5 text-xs">
+                        <p className="flex items-center gap-2 font-medium truncate">
+                          <span className="w-5 h-5 rounded-full bg-[#5B21B6] text-white text-[10px] font-extrabold inline-flex items-center justify-center shrink-0">
+                            A
+                          </span>
+                          <span className="truncate">{p.origen_texto || 'Ubicación GPS del pasajero'}</span>
+                        </p>
+                        <p className="flex items-center gap-2 text-[#555B66] dark:text-[#CBD5E1] truncate">
+                          <span className="w-5 h-5 rounded-full bg-[#16A34A] text-white text-[10px] font-extrabold inline-flex items-center justify-center shrink-0">
+                            B
+                          </span>
+                          <span className="truncate">{p.destino_texto || 'Destino en Cusco'}</span>
+                        </p>
+                      </div>
+
+                      <div
+                        className="flex flex-wrap items-center justify-between gap-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          {p.pago_estado && (
+                            <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-bold">
+                              {p.pago_estado}
+                              {p.pago_referencia ? ` #${p.pago_referencia}` : ''}
+                            </span>
+                          )}
+                          {p.cliente_documento_numero && (
+                            <span className="inline-flex items-center gap-1 font-mono-tabular text-emerald-700 dark:text-emerald-300 font-semibold">
+                              <BadgeCheck className="w-3.5 h-3.5" />
+                              {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 ml-auto">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedRideOrder(p);
+                              setCustomCounterOpen(false);
+                            }}
+                            className="min-h-[38px] px-3 rounded-full border border-purple-300 dark:border-white/20 text-[#5B21B6] dark:text-purple-200 text-xs font-bold inline-flex items-center gap-1"
+                          >
+                            <MapPin className="w-3.5 h-3.5" />
+                            <span>Ver Ruta</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleAccept(p.id)}
+                            className="min-h-[38px] px-4 rounded-full bg-[#6D28D9] hover:bg-[#5B21B6] text-white text-xs font-extrabold inline-flex items-center gap-1 shadow"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Aceptar</span>
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2420,13 +2431,86 @@ export const BusinessPanel: React.FC = () => {
         );
       })()}
 
-      {/* TAB EN CURSO */}
+      {/* TAB EN CURSO / NAVEGAR EN RUTA */}
       {tab === 'EN_CURSO' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {enCurso.length === 0 ? (
-            <div className="md:col-span-2 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center text-sm text-[#6A717E] dark:text-[#98A0AD]">
-              Sin servicios en curso.
-            </div>
+            session.rubro === 'TRANSPORTE' ? (
+              (() => {
+                const drvLat = activeTaxiUnit?.lat ?? resumen?.negocio.lat ?? -13.5174;
+                const drvLng = activeTaxiUnit?.lng ?? resumen?.negocio.lng ?? -71.9765;
+                const radarPins: GeoMapPin[] = nuevos.map((p, idx) => {
+                  const angle = (idx * 72 * Math.PI) / 180;
+                  return {
+                    id: `ride-${p.id}`,
+                    lat: p.origen_lat ?? drvLat + Math.sin(angle) * 0.0045,
+                    lng: p.origen_lng ?? drvLng + Math.cos(angle) * 0.0045,
+                    priceText: formatSoles(p.monto_centavos),
+                    sublabel: p.cliente_nombre,
+                    detailTitle: `${p.origen_texto || 'Pasajero'} → ${p.destino_texto || 'Cusco'}`,
+                    tier: p.monto_centavos >= 2000 ? 'cheapest' : 'mid',
+                    kind: 'DRIVER',
+                    isOpen: true,
+                  };
+                });
+                return (
+                  <div className="md:col-span-2 rounded-3xl overflow-hidden border border-purple-200 dark:border-white/15 bg-white dark:bg-[#121620] shadow-xl">
+                    <CuscoGeoMap
+                      mode="TAXI"
+                      driverNavStyle
+                      driverNavInfoText={`Radar en Vivo · ${nuevos.length} solicitudes`}
+                      driverNavStartLabel="Solicitudes"
+                      onDriverNavStart={() => setTab('NUEVOS')}
+                      userLat={drvLat}
+                      userLng={drvLng}
+                      originLabel={
+                        activeTaxiUnit
+                          ? `${activeTaxiUnit.conductor_nombre} (${activeTaxiUnit.placa})`
+                          : 'Mi Taxi GPS'
+                      }
+                      pins={radarPins}
+                      selectedPinId={selectedRideOrder ? `ride-${selectedRideOrder.id}` : null}
+                      onSelectPin={(pinId) => {
+                        const found = nuevos.find((p) => `ride-${p.id}` === pinId);
+                        if (found) {
+                          setSelectedRideOrder(found);
+                          setCustomCounterOpen(false);
+                        }
+                      }}
+                      onRequestPinAction={(pinId) => {
+                        const found = nuevos.find((p) => `ride-${p.id}` === pinId);
+                        if (found) {
+                          setSelectedRideOrder(found);
+                          setCustomCounterOpen(false);
+                        }
+                      }}
+                      onRequestGps={() => void handleSendDriverGps()}
+                      gpsLive={driverGpsSending}
+                      heightClass="h-[340px] sm:h-[420px]"
+                    />
+                    <div className="p-5 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-bold">Sin carrera activa asignada</p>
+                        <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
+                          Toca un pin en el mapa o revisa tus solicitudes para iniciar un recorrido.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setTab('NUEVOS')}
+                        className="min-h-[42px] px-4 rounded-full bg-[#6D28D9] text-white text-xs font-extrabold"
+                      >
+                        Ver Solicitudes ({nuevos.length})
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="md:col-span-2 rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-10 text-center text-sm text-[#6A717E] dark:text-[#98A0AD]">
+                Sin servicios en curso.
+              </div>
+            )
           ) : (
             enCurso.map((p) => {
               const isTaxiOrder = p.categoria === 'TRANSPORTE' || session.rubro === 'TRANSPORTE';
@@ -2460,169 +2544,155 @@ export const BusinessPanel: React.FC = () => {
                 const remDestKm = haversineKm(drvLat, drvLng, dLat, dLng);
                 const remDestEta = Math.max(0, Math.round(remDestKm * 3.1 + 1));
                 const nearFinish = pinValidated && (arrivedDest || remDestKm <= 1.0 || remDestEta <= 3);
+                const phoneDigits = (p.cliente_telefono || '').replace(/\D/g, '');
+                const waDigits = phoneDigits.startsWith('51')
+                  ? phoneDigits
+                  : phoneDigits.length === 9
+                    ? `51${phoneDigits}`
+                    : phoneDigits;
 
                 return (
                   <article
                     key={p.id}
-                    className="md:col-span-2 rounded-3xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] p-5 sm:p-6 chuspa-google-border"
+                    className="md:col-span-2 rounded-3xl overflow-hidden border border-purple-200 dark:border-white/15 bg-white dark:bg-[#121620] shadow-xl"
                   >
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-                      {/* Izquierda: Mapa de Ruta del Taxista */}
-                      <div className="lg:col-span-7 flex flex-col gap-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="space-y-0.5">
-                            <span
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[11px] font-bold uppercase tracking-wider ${
-                                arrivedDest
-                                  ? 'bg-emerald-500 text-white'
-                                  : pinValidated
-                                    ? 'bg-[#2563EB] text-white'
-                                    : 'bg-amber-400 text-[#0B0E14]'
-                              }`}
-                            >
-                              {arrivedDest ? (
-                                <>
-                                  <Flag className="w-3.5 h-3.5" />
-                                  <span>Llegada confirmada · Destino B</span>
-                                </>
-                              ) : pinValidated ? (
-                                <>
-                                  <Navigation className="w-3.5 h-3.5" />
-                                  <span>Etapa 2/2 · En ruta GPS al Destino B</span>
-                                </>
-                              ) : (
-                                <>
-                                  <KeyRound className="w-3.5 h-3.5" />
-                                  <span>Etapa 1/2 · Recoger en A y validar PIN</span>
-                                </>
-                              )}
-                            </span>
-                            <p className="text-xs text-[#6A717E] dark:text-[#98A0AD]">
-                              {pinValidated ? (
-                                <>
-                                  Restante al Destino B:{' '}
-                                  <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">
-                                    {remDestEta} min ({remDestKm.toFixed(2)} km)
-                                  </span>{' '}
-                                  ·{' '}
-                                  {nearFinish
-                                    ? 'Alertas de próximo viaje ACTIVAS'
-                                    : 'Alertas en espera hasta ≤ 3 min'}
-                                </>
-                              ) : (
-                                <>
-                                  Para recoger:{' '}
-                                  <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">
-                                    {pickupEta} min ({pickupKm.toFixed(1)} km)
-                                  </span>{' '}
-                                  · Viaje A → B:{' '}
-                                  <span className="font-mono-tabular font-semibold text-[#14171F] dark:text-white">
-                                    {tripEta} min ({tripKm.toFixed(1)} km)
-                                  </span>
-                                </>
-                              )}
+                    {/* Mapa limpio estilo Google Maps con HUD superior (tiempo/km, Iniciar, recentrar, Maps, Waze) */}
+                    <CuscoGeoMap
+                      mode="TAXI"
+                      driverNavStyle
+                      driverNavInfoText={
+                        pinValidated
+                          ? `${remDestEta} min (${remDestKm.toFixed(1)} km)`
+                          : `${pickupEta} min (${pickupKm.toFixed(1)} km)`
+                      }
+                      driverNavStartLabel={
+                        arrivedDest
+                          ? 'Finalizar'
+                          : pinValidated
+                            ? 'Avanzar'
+                            : 'Iniciar'
+                      }
+                      onDriverNavStart={() => {
+                        if (!pinValidated) {
+                          pinSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          return;
+                        }
+                        if (arrivedDest) {
+                          setArrivalModalOrder(p);
+                          return;
+                        }
+                        void handleStepDriverTowardDestination(p, 'STEP');
+                      }}
+                      userLat={oLat}
+                      userLng={oLng}
+                      originLabel={p.origen_texto || 'Recoger pasajero (A)'}
+                      destLat={dLat}
+                      destLng={dLng}
+                      destLabel={p.destino_texto || 'Destino (B)'}
+                      driverLat={drvLat}
+                      driverLng={drvLng}
+                      driverLabel={
+                        activeUnit
+                          ? `${activeUnit.conductor_nombre} (${activeUnit.placa})`
+                          : p.conductor_nombre
+                            ? `${p.conductor_nombre} (${p.placa || 'Taxi'})`
+                            : 'Mi Taxi GPS'
+                      }
+                      followDriver={pinValidated}
+                      activeLeg={pinValidated ? 'TO_DESTINATION' : 'TO_PICKUP'}
+                      gpsLive={Boolean(activeUnit?.lat && activeUnit?.lng) || pinValidated}
+                      onRequestGps={() => void handleSendDriverGps()}
+                      pins={[]}
+                      heightClass="h-[320px] sm:h-[380px]"
+                    />
+
+                    {/* Hoja blanca inferior estilo navegación del conductor */}
+                    <div className="p-4 sm:p-6 space-y-4">
+                      {/* Pasajero + Monto en verde + Método de pago */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-start gap-3 min-w-0">
+                          <div className="w-12 h-12 rounded-full bg-[#6D28D9] text-white flex items-center justify-center font-display font-bold text-xl shrink-0 shadow">
+                            {p.cliente_nombre.slice(0, 1).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 space-y-1">
+                            <h3 className="font-display text-lg sm:text-xl font-bold truncate">
+                              {p.cliente_nombre}
+                            </h3>
+                            <p className="text-xs px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/30 text-[#5B21B6] dark:text-purple-200 font-semibold inline-block max-w-full truncate">
+                              {p.item_nombre} · {p.codigo}
                             </p>
-                          </div>
-                          <button
-                            type="button"
-                            disabled={!activeUnit || driverGpsSending}
-                            onClick={() => void handleSendDriverGps()}
-                            className="min-h-[38px] px-3.5 rounded-xl bg-[#14213D] dark:bg-[#D4AF37] text-white dark:text-[#0B0E14] text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50"
-                          >
-                            <Crosshair className="w-3.5 h-3.5" />
-                            <span>{driverGpsSending ? 'Enviando GPS...' : 'Actualizar Mi GPS'}</span>
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                          <div className="rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] px-3 py-2 flex items-start gap-2">
-                            <span className="w-5 h-5 rounded-md bg-[#2563EB] text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                              A
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
-                                {pinValidated ? 'Pasajero abordó en' : 'Punto de recojo'}
+                            {p.cliente_documento_numero && (
+                              <p className="flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
+                                <BadgeCheck className="w-3.5 h-3.5 shrink-0" />
+                                <span>
+                                  {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero} (Sin factura)
+                                </span>
                               </p>
-                              <p className="font-semibold truncate">{p.origen_texto || 'Ubicación GPS del pasajero'}</p>
-                            </div>
-                          </div>
-                          <div className="rounded-xl border border-black/10 dark:border-white/10 bg-[#F8F7F4] dark:bg-[#0B0E14] px-3 py-2 flex items-start gap-2">
-                            <span className="w-5 h-5 rounded-md bg-[#16A34A] text-white text-[11px] font-bold flex items-center justify-center shrink-0 mt-0.5">
-                              B
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">Destino final</p>
-                              <p className="font-semibold truncate">{p.destino_texto || 'Destino en Cusco'}</p>
-                            </div>
+                            )}
                           </div>
                         </div>
-
-                        <CuscoGeoMap
-                          mode="TAXI"
-                          userLat={oLat}
-                          userLng={oLng}
-                          originLabel={p.origen_texto || 'Recoger pasajero (A)'}
-                          destLat={dLat}
-                          destLng={dLng}
-                          destLabel={p.destino_texto || 'Destino (B)'}
-                          driverLat={drvLat}
-                          driverLng={drvLng}
-                          driverLabel={
-                            activeUnit
-                              ? `${activeUnit.conductor_nombre} (${activeUnit.placa})`
-                              : p.conductor_nombre
-                                ? `${p.conductor_nombre} (${p.placa || 'Taxi'})`
-                                : 'Mi Taxi GPS'
-                          }
-                          followDriver={pinValidated}
-                          activeLeg={pinValidated ? 'TO_DESTINATION' : 'BOTH'}
-                          driverEtaBadge={
-                            pinValidated
-                              ? `${remDestEta} min\n${remDestKm.toFixed(1)} km`
-                              : `${pickupEta} min\n${pickupKm.toFixed(1)} km`
-                          }
-                          routeBadge={
-                            pinValidated
-                              ? `${remDestEta} min\n${remDestKm.toFixed(1)} km`
-                              : `${tripEta} min\n${tripKm.toFixed(1)} km`
-                          }
-                          gpsLive={Boolean(activeUnit?.lat && activeUnit?.lng) || pinValidated}
-                          onRequestGps={() => void handleSendDriverGps()}
-                          pins={[]}
-                          heightClass="h-[300px] sm:h-[360px]"
-                        />
+                        <div className="text-right shrink-0">
+                          <p className="font-mono-tabular text-2xl font-extrabold text-[#16A34A] leading-none">
+                            {formatSoles(p.monto_centavos)}
+                          </p>
+                          <span className="mt-1.5 inline-block px-2.5 py-0.5 rounded-full bg-[#F1F5F9] dark:bg-white/10 text-[10px] font-extrabold uppercase tracking-wider text-[#334155] dark:text-slate-200">
+                            {p.metodo_pago}
+                          </span>
+                        </div>
                       </div>
 
-                      {/* Derecha: Pasajero verificado + Validación PIN (Etapa 1) o Ruta Activa GPS (Etapa 2) */}
-                      <div className="lg:col-span-5 flex flex-col justify-between gap-4">
-                        <div className="space-y-2">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="font-mono-tabular text-xs text-[#9A7B2C] dark:text-[#E5C158]">
-                                {p.codigo} · Retención: {formatSoles(p.comision_retenida_centavos)}
-                              </p>
-                              <h3 className="font-display text-2xl font-semibold mt-1">{p.item_nombre}</h3>
-                              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] mt-1">
-                                Pasajero: {p.cliente_nombre} · {p.cliente_telefono}
-                              </p>
-                              {p.cliente_documento_numero && (
-                                <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400 font-semibold">
-                                  <BadgeCheck className="w-3.5 h-3.5" />
-                                  {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero} (Identidad verificada · Sin factura)
-                                </p>
-                              )}
-                            </div>
-                            <div className="text-right shrink-0">
-                              <p className="font-mono-tabular text-xl font-semibold">
-                                {formatSoles(p.monto_centavos)}
-                              </p>
-                              <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                                {p.metodo_pago}
-                              </p>
-                            </div>
+                      {/* Caja Partida A -> Destino B */}
+                      <div className="rounded-2xl border border-black/8 dark:border-white/10 bg-[#F8FAFC] dark:bg-[#0B0E14] p-3.5 space-y-2.5 text-xs">
+                        <div className="flex items-start gap-2.5">
+                          <span className="w-6 h-6 rounded-full bg-[#5B21B6] text-white text-[11px] font-extrabold flex items-center justify-center shrink-0 mt-0.5">
+                            A
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                              {pinValidated ? 'Partida (Pasajero a bordo)' : 'Partida / Recojo'}
+                            </p>
+                            <p className="text-sm font-semibold text-[#0F172A] dark:text-white leading-snug">
+                              {p.origen_texto || 'Ubicación GPS del pasajero'}
+                            </p>
                           </div>
                         </div>
+                        <div className="flex items-start gap-2.5 pt-2 border-t border-black/6 dark:border-white/6">
+                          <span className="w-6 h-6 rounded-full bg-[#16A34A] text-white text-[11px] font-extrabold flex items-center justify-center shrink-0 mt-0.5">
+                            B
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                              Entrega / Destino ({tripEta} min · {tripKm.toFixed(1)} km)
+                            </p>
+                            <p className="text-sm font-semibold text-[#0F172A] dark:text-white leading-snug">
+                              {p.destino_texto || 'Destino en Cusco'}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
 
+                      {/* Botones Llamar y WhatsApp */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <a
+                          href={phoneDigits ? `tel:${phoneDigits}` : '#'}
+                          className="min-h-[44px] rounded-2xl border border-black/12 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs font-bold text-[#1E293B] dark:text-white flex items-center justify-center gap-2 hover:bg-slate-50"
+                        >
+                          <Phone className="w-4 h-4 text-[#6D28D9]" />
+                          <span>Llamar</span>
+                        </a>
+                        <a
+                          href={waDigits ? `https://wa.me/${waDigits}` : '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="min-h-[44px] rounded-2xl border border-emerald-500/35 bg-emerald-50/70 dark:bg-emerald-950/30 text-xs font-bold text-[#15803D] dark:text-emerald-300 flex items-center justify-center gap-2 hover:bg-emerald-100/70"
+                        >
+                          <MessageCircle className="w-4 h-4" />
+                          <span>WhatsApp</span>
+                        </a>
+                      </div>
+
+                      {/* Paso 1: Validar PIN (no finaliza aún) -> Paso 2: Recorrido en tiempo real hasta Finalizar */}
+                      <div ref={pinSectionRef}>
                         {p.referido_negocio_id ? (
                           <div className="rounded-xl border border-[#D4AF37]/50 bg-[#D4AF37]/10 p-4 space-y-1">
                             <p className="text-xs font-semibold text-[#9A7B2C] dark:text-[#E5C158]">
@@ -2641,10 +2711,12 @@ export const BusinessPanel: React.FC = () => {
                           </p>
                         ) : !pinValidated ? (
                           <div className="space-y-2.5">
-                            <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-3.5 py-2.5 text-xs text-[#14171F] dark:text-[#F5F2EA]">
-                              <p className="font-bold">Paso 1 · Confirmar identidad del pasajero</p>
-                              <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5] mt-0.5">
-                                Al validar el PIN de 4 dígitos, confirmas que subió el pasajero y el mapa centrará tu GPS para iniciar el recorrido hacia el Destino B (aún no finaliza el viaje).
+                            <div className="rounded-xl border border-purple-500/30 bg-purple-50 dark:bg-purple-950/30 px-3.5 py-2.5 text-xs text-[#14171F] dark:text-[#F5F2EA]">
+                              <p className="font-bold text-[#5B21B6] dark:text-purple-200">
+                                Paso 1 · Validar PIN del pasajero al abordar
+                              </p>
+                              <p className="text-[11px] text-[#555B66] dark:text-[#CBD5E1] mt-0.5">
+                                Al validar el PIN de 4 dígitos el viaje NO finaliza aún: el mapa centrará tu GPS para iniciar la ruta hacia el Destino B.
                               </p>
                             </div>
                             <PinKeypadCard
@@ -2672,42 +2744,32 @@ export const BusinessPanel: React.FC = () => {
                             )}
                           </div>
                         ) : (
-                          <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/8 p-4 space-y-3.5">
+                          <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/8 p-4 space-y-3">
                             <div className="flex items-start justify-between gap-2">
                               <div>
                                 <p className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
                                   <CheckCircle2 className="w-4 h-4" />
                                   <span>PIN Verificado · Pasajero a bordo</span>
                                 </p>
-                                <p className="text-xs text-[#555B66] dark:text-[#A3A9B5] mt-1">
-                                  Sigue la ruta azul en tiempo real hasta llegar al Destino B.
+                                <p className="text-[11px] text-[#555B66] dark:text-[#A3A9B5] mt-0.5">
+                                  {nearFinish
+                                    ? 'Estás a ≤ 3 min de llegar: alertas de nuevos viajes ACTIVADAS.'
+                                    : 'En ruta hacia Destino B · alertas en pausa hasta los minutos finales.'}
                                 </p>
                               </div>
-                              <span className="px-2.5 py-1 rounded-lg bg-[#2563EB]/15 text-[#2563EB] dark:text-[#60A5FA] font-mono-tabular text-xs font-bold shrink-0">
+                              <span className="px-2.5 py-1 rounded-lg bg-purple-100 dark:bg-purple-900/40 text-[#5B21B6] dark:text-purple-200 font-mono-tabular text-xs font-bold shrink-0">
                                 {remDestEta} min · {remDestKm.toFixed(1)} km
                               </span>
                             </div>
 
-                            <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-[#0B0E14]/80 px-3 py-2 text-[11px] text-[#555B66] dark:text-[#CBD5E1]">
-                              {nearFinish ? (
-                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                                  ● Cerca del destino (≤ 3 min): ya puedes recibir alertas del siguiente pasajero en Pedidos.
-                                </span>
-                              ) : (
-                                <span>
-                                  ● En ruta: las alertas de otros pasajeros están silenciadas hasta que faltes ≤ 3 min para llegar.
-                                </span>
-                              )}
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                               <button
                                 type="button"
                                 disabled={driverGpsSending || arrivedDest}
                                 onClick={() => void handleStepDriverTowardDestination(p, 'STEP')}
-                                className="min-h-[42px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
+                                className="min-h-[44px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
                               >
-                                <Navigation className="w-3.5 h-3.5 text-[#2563EB]" />
+                                <Navigation className="w-3.5 h-3.5 text-[#6D28D9]" />
                                 <span>Avanzar GPS en ruta</span>
                               </button>
                               <button
@@ -2718,11 +2780,11 @@ export const BusinessPanel: React.FC = () => {
                                     ? setArrivalModalOrder(p)
                                     : void handleStepDriverTowardDestination(p, 'ARRIVE')
                                 }
-                                className="min-h-[42px] px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shadow-md"
+                                className="min-h-[44px] px-3 rounded-xl bg-gradient-to-r from-[#16A34A] to-[#059669] text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shadow-md"
                               >
                                 <Flag className="w-3.5 h-3.5" />
                                 <span>
-                                  {arrivedDest ? 'Abrir Tarjeta de Llegada' : '¡Ya llegué al Destino B!'}
+                                  {arrivedDest ? 'Finalizar Viaje' : '¡Ya llegué al Destino B!'}
                                 </span>
                               </button>
                             </div>
@@ -2811,44 +2873,211 @@ export const BusinessPanel: React.FC = () => {
         </div>
       )}
 
-      {/* TAB HISTORIAL */}
-      {tab === 'HISTORIAL' && (
-        <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] overflow-x-auto">
-          <table className="w-full text-left text-xs sm:text-sm">
-            <thead className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
-              <tr>
-                <th className="py-3.5 px-4 font-medium">Código</th>
-                <th className="py-3.5 px-4 font-medium">Cliente / Doc.</th>
-                <th className="py-3.5 px-4 font-medium">Servicio</th>
-                <th className="py-3.5 px-4 font-medium">Estado</th>
-                <th className="py-3.5 px-4 font-medium text-right">Monto</th>
-                <th className="py-3.5 px-4 font-medium text-right">Comisión</th>
-                {session.rubro !== 'TRANSPORTE' && (
+      {/* TAB HISTORIAL (TRANSPORTE: Mis Movimientos y Liquidación estilo Screenshot 170302) */}
+      {tab === 'HISTORIAL' &&
+        (session.rubro === 'TRANSPORTE' ? (
+          (() => {
+            const completedTrips = historial.filter((h) => h.estado === 'ENTREGADO_PAGADO');
+            const filteredTrips = completedTrips.filter((t) => {
+              const dt = (t.created_at || '').slice(0, 10);
+              if (movFilterMode === 'HOY') {
+                return !dt || dt === movSelectedDate;
+              }
+              if (movFilterMode === 'MES') {
+                return !dt || dt.slice(0, 7) === movSelectedDate.slice(0, 7);
+              }
+              return true;
+            });
+            const totalRecaudado = filteredTrips.reduce((s, t) => s + t.monto_centavos, 0);
+            const totalEfectivo = filteredTrips
+              .filter((t) => t.metodo_pago === 'Efectivo')
+              .reduce((s, t) => s + t.monto_centavos, 0);
+            const totalDigital = filteredTrips
+              .filter((t) => t.metodo_pago !== 'Efectivo')
+              .reduce((s, t) => s + t.monto_centavos, 0);
+
+            return (
+              <div className="space-y-4">
+                {/* Tarjeta Morada Control de Viajes & Caja + Imprimir */}
+                <div className="rounded-3xl bg-gradient-to-br from-[#4C1D95] via-[#581C87] to-[#312E81] text-white p-5 sm:p-6 shadow-xl flex flex-wrap items-center justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <span className="inline-block px-3 py-1 rounded-full bg-[#FACC15] text-[#0B0E14] text-[10px] font-extrabold uppercase tracking-wider">
+                      Control de Viajes &amp; Caja
+                    </span>
+                    <h2 className="font-display text-2xl sm:text-3xl font-bold leading-tight">
+                      Mis Movimientos y Liquidación
+                    </h2>
+                    <p className="text-xs text-purple-100">
+                      Conductor: {activeTaxiUnit?.conductor_nombre || session.nombre}
+                      {activeTaxiUnit ? ` · ${activeTaxiUnit.placa}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="min-h-[42px] px-4 rounded-xl bg-[#059669] hover:bg-[#10B981] text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-md"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Imprimir</span>
+                  </button>
+                </div>
+
+                {/* Filtro de Calendario */}
+                <div className="rounded-3xl border border-black/8 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 space-y-3 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-bold text-[#14171F] dark:text-white">
+                      <Calendar className="w-4 h-4 text-[#6D28D9]" />
+                      <span>Filtro de Calendario:</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      {(
+                        [
+                          { id: 'HOY', label: 'Hoy' },
+                          { id: 'MES', label: 'Mes' },
+                          { id: 'HISTORICO', label: 'Histórico' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setMovFilterMode(opt.id)}
+                          className={`min-h-[34px] px-3.5 rounded-xl text-xs font-bold transition-colors ${
+                            movFilterMode === opt.id
+                              ? 'bg-[#6D28D9] text-white shadow'
+                              : 'bg-[#F1F5F9] dark:bg-white/10 text-[#475569] dark:text-slate-300'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#64748B] mb-1">
+                      Seleccionar día específico:
+                    </label>
+                    <input
+                      type="date"
+                      value={movSelectedDate}
+                      onChange={(e) => setMovSelectedDate(e.target.value)}
+                      className="w-full min-h-[42px] px-3.5 rounded-xl border border-black/12 dark:border-white/15 bg-[#F8FAFC] dark:bg-[#0B0E14] text-sm font-mono-tabular font-semibold"
+                    />
+                  </div>
+                </div>
+
+                {/* Grid KPI 2x2 */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl border border-black/8 dark:border-white/10 bg-white dark:bg-[#121620] p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                      Viajes Completados
+                    </p>
+                    <p className="font-mono-tabular text-xl sm:text-2xl font-extrabold text-[#5B21B6] dark:text-purple-300 mt-1">
+                      🚕 {filteredTrips.length} viajes
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-black/8 dark:border-white/10 bg-white dark:bg-[#121620] p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                      Total Recaudado
+                    </p>
+                    <p className="font-mono-tabular text-xl sm:text-2xl font-extrabold text-[#16A34A] mt-1">
+                      {formatSoles(totalRecaudado)}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-black/8 dark:border-white/10 bg-white dark:bg-[#121620] p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                      Efectivo en Mano
+                    </p>
+                    <p className="font-mono-tabular text-xl sm:text-2xl font-extrabold text-[#14171F] dark:text-white mt-1">
+                      {formatSoles(totalEfectivo)}
+                    </p>
+                    <p className="text-[10px] text-[#64748B] mt-0.5">A entregar / caja</p>
+                  </div>
+                  <div className="rounded-2xl border border-black/8 dark:border-white/10 bg-white dark:bg-[#121620] p-4 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-[#64748B]">
+                      Yape / Plin / Tarjeta
+                    </p>
+                    <p className="font-mono-tabular text-xl sm:text-2xl font-extrabold text-[#6D28D9] dark:text-purple-300 mt-1">
+                      {formatSoles(totalDigital)}
+                    </p>
+                    <p className="text-[10px] text-[#64748B] mt-0.5">Cobro digital directo</p>
+                  </div>
+                </div>
+
+                {/* Detalle de Viajes Completados */}
+                <div className="rounded-3xl border border-black/8 dark:border-white/10 bg-white dark:bg-[#121620] p-4 sm:p-5 space-y-3 shadow-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-extrabold">
+                      Detalle de Viajes Completados ({filteredTrips.length})
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setTab('GESTION')}
+                      className="text-xs font-bold text-[#6D28D9] dark:text-purple-300 hover:underline"
+                    >
+                      Libro contable ({resumen?.movimientos.length || 0})
+                    </button>
+                  </div>
+                  {filteredTrips.length === 0 ? (
+                    <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] py-4 text-center">
+                      No hay carreras completadas para este filtro. Cambia a «Histórico» para ver todas.
+                    </p>
+                  ) : (
+                    <div className="divide-y divide-black/8 dark:divide-white/8">
+                      {filteredTrips.map((t) => (
+                        <div key={t.id} className="py-3 flex items-center justify-between gap-3 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-bold truncate">
+                              {t.cliente_nombre} · {t.destino_texto || t.item_nombre}
+                            </p>
+                            <p className="text-[11px] text-[#64748B]">
+                              {t.codigo} · {t.metodo_pago} · Comisión {formatSoles(t.comision_retenida_centavos)}
+                            </p>
+                          </div>
+                          <p className="font-mono-tabular text-sm font-extrabold text-[#16A34A] shrink-0">
+                            {formatSoles(t.monto_centavos)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()
+        ) : (
+          <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#121620] overflow-x-auto">
+            <table className="w-full text-left text-xs sm:text-sm">
+              <thead className="border-b border-black/10 dark:border-white/10 text-[#6A717E] dark:text-[#98A0AD]">
+                <tr>
+                  <th className="py-3.5 px-4 font-medium">Código</th>
+                  <th className="py-3.5 px-4 font-medium">Cliente / Doc.</th>
+                  <th className="py-3.5 px-4 font-medium">Servicio</th>
+                  <th className="py-3.5 px-4 font-medium">Estado</th>
+                  <th className="py-3.5 px-4 font-medium text-right">Monto</th>
+                  <th className="py-3.5 px-4 font-medium text-right">Comisión</th>
                   <th className="py-3.5 px-4 font-medium text-right">Comprobante SUNAT</th>
-                )}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-black/8 dark:divide-white/8">
-              {historial.map((p) => (
-                <tr key={p.id}>
-                  <td className="py-3 px-4 font-mono-tabular">{p.codigo}</td>
-                  <td className="py-3 px-4">
-                    <div className="font-medium">{p.cliente_nombre}</div>
-                    {p.cliente_documento_numero && (
-                      <div className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400">
-                        {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
-                      </div>
-                    )}
-                  </td>
-                  <td className="py-3 px-4">{p.item_nombre}</td>
-                  <td className="py-3 px-4">{ESTADO_LABELS[p.estado]}</td>
-                  <td className="py-3 px-4 font-mono-tabular text-right">
-                    {formatSoles(p.monto_centavos)}
-                  </td>
-                  <td className="py-3 px-4 font-mono-tabular text-right">
-                    {formatSoles(p.comision_retenida_centavos)}
-                  </td>
-                  {session.rubro !== 'TRANSPORTE' && (
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-black/8 dark:divide-white/8">
+                {historial.map((p) => (
+                  <tr key={p.id}>
+                    <td className="py-3 px-4 font-mono-tabular">{p.codigo}</td>
+                    <td className="py-3 px-4">
+                      <div className="font-medium">{p.cliente_nombre}</div>
+                      {p.cliente_documento_numero && (
+                        <div className="text-[11px] font-mono-tabular text-emerald-600 dark:text-emerald-400">
+                          {p.cliente_documento_tipo || 'DNI'}: {p.cliente_documento_numero}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-3 px-4">{p.item_nombre}</td>
+                    <td className="py-3 px-4">{ESTADO_LABELS[p.estado]}</td>
+                    <td className="py-3 px-4 font-mono-tabular text-right">
+                      {formatSoles(p.monto_centavos)}
+                    </td>
+                    <td className="py-3 px-4 font-mono-tabular text-right">
+                      {formatSoles(p.comision_retenida_centavos)}
+                    </td>
                     <td className="py-3 px-4 text-right">
                       {p.estado === 'ENTREGADO_PAGADO' ? (
                         <div className="inline-flex flex-wrap items-center justify-end gap-1.5">
@@ -2885,13 +3114,12 @@ export const BusinessPanel: React.FC = () => {
                         <span className="text-[11px] text-[#8A8F99]">—</span>
                       )}
                     </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
 
       {/* TAB RESERVAS REFERIDAS */}
       {tab === 'REFERIDOS' && (
@@ -3789,82 +4017,80 @@ export const BusinessPanel: React.FC = () => {
         />
       )}
 
-      {/* BARRA DE MENÚ INFERIOR PERSISTENTE PARA EL TAXISTA (ESTILO CLIENTE) */}
+      {/* MENÚ INFERIOR CON CENTER BUTTON PARA EL TAXISTA (Solicitudes | Navegar en Ruta | Mis Movimientos) */}
       {session.rubro === 'TRANSPORTE' && (
         <nav
-          aria-label="Menú inferior del taxista"
-          className="sticky bottom-[68px] md:bottom-3 z-30 mx-auto max-w-2xl rounded-2xl border border-black/10 dark:border-white/15 bg-white/95 dark:bg-[#0B0F17]/95 backdrop-blur-xl shadow-2xl chuspa-google-border px-2 py-1.5 grid grid-cols-5 gap-1"
+          aria-label="Menú inferior Center Button del taxista"
+          className="sticky bottom-[60px] md:bottom-3 z-30 mx-auto max-w-2xl rounded-2xl border border-purple-200/80 dark:border-purple-800/60 bg-white/95 dark:bg-[#0E0B1A]/95 backdrop-blur-xl shadow-2xl px-2 py-1.5 grid grid-cols-3 items-end gap-1"
         >
-          {(
-            [
-              {
-                id: 'NUEVOS' as BizTab,
-                label: 'Pedidos',
-                icon: ListChecks,
-                badge: nuevos.length > 0 ? nuevos.length : null,
-                pulse: canNotifyNextRide && nuevos.length > 0,
-              },
-              {
-                id: 'EN_CURSO' as BizTab,
-                label: 'En Curso',
-                icon: Navigation,
-                badge: enCurso.length > 0 ? enCurso.length : null,
-                pulse: enCurso.length > 0,
-              },
-              {
-                id: 'HISTORIAL' as BizTab,
-                label: 'Historial',
-                icon: History,
-                badge: null,
-                pulse: false,
-              },
-              {
-                id: 'RUTAS_SOS' as BizTab,
-                label: 'Colectivo',
-                icon: Route,
-                badge: null,
-                pulse: false,
-              },
-              {
-                id: 'CONFIGURACION' as BizTab,
-                label: 'Mi Taxi',
-                icon: CarFront,
-                badge: null,
-                pulse: false,
-              },
-            ]
-          ).map((item) => {
-            const Icon = item.icon;
-            const active = tab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                className={`relative min-h-[48px] rounded-xl flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold transition-all ${
-                  active
-                    ? 'bg-[#B6F02B] text-[#0B0E14] shadow-md'
-                    : 'text-[#555B66] dark:text-[#A3A9B5] hover:bg-black/5 dark:hover:bg-white/5'
-                }`}
-              >
-                <div className="relative">
-                  <Icon className="w-4 h-4" />
-                  {item.badge !== null && (
-                    <span
-                      className={`absolute -top-1.5 -right-2.5 min-w-[16px] h-[16px] px-1 rounded-full text-[9px] font-extrabold flex items-center justify-center ${
-                        item.pulse
-                          ? 'bg-[#16A34A] text-white'
-                          : 'bg-[#6A717E] text-white'
-                      }`}
-                    >
-                      {item.badge}
-                    </span>
-                  )}
-                </div>
-                <span className="truncate max-w-full px-0.5">{item.label}</span>
-              </button>
-            );
-          })}
+          {/* Botón Izquierdo: Solicitudes */}
+          <button
+            type="button"
+            onClick={() => setTab('NUEVOS')}
+            className={`relative min-h-[52px] rounded-xl flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-all ${
+              tab === 'NUEVOS'
+                ? 'bg-purple-50 dark:bg-purple-900/40 text-[#5B21B6] dark:text-purple-200'
+                : 'text-[#64748B] dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
+          >
+            <div className="relative">
+              <ClipboardList className="w-5 h-5" />
+              {nuevos.length + enCurso.length > 0 && (
+                <span
+                  className={`absolute -top-1.5 -right-2.5 min-w-[17px] h-[17px] px-1 rounded-full text-[9px] font-extrabold flex items-center justify-center ${
+                    canNotifyNextRide && nuevos.length > 0
+                      ? 'bg-[#16A34A] text-white'
+                      : 'bg-[#6D28D9] text-white'
+                  }`}
+                >
+                  {nuevos.length > 0 ? nuevos.length : enCurso.length}
+                </span>
+              )}
+            </div>
+            <span className="truncate max-w-full px-1">
+              Solicitudes ({nuevos.length > 0 ? nuevos.length : enCurso.length})
+            </span>
+          </button>
+
+          {/* CENTER BUTTON: Navegar en Ruta */}
+          <button
+            type="button"
+            onClick={() => setTab('EN_CURSO')}
+            className="relative flex flex-col items-center justify-center pb-0.5 group"
+          >
+            <span
+              className={`-mt-4 w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg border-2 transition-transform group-active:scale-95 ${
+                tab === 'EN_CURSO'
+                  ? 'bg-gradient-to-br from-[#6D28D9] to-[#4C1D95] text-white border-white shadow-purple-500/40 scale-105'
+                  : 'bg-white dark:bg-[#1E1635] text-[#6D28D9] dark:text-purple-200 border-purple-200 dark:border-purple-700'
+              }`}
+            >
+              <Compass className="w-5 h-5" />
+            </span>
+            <span
+              className={`mt-1 text-[11px] font-extrabold truncate max-w-full px-1 ${
+                tab === 'EN_CURSO'
+                  ? 'text-[#5B21B6] dark:text-purple-200'
+                  : 'text-[#475569] dark:text-slate-300'
+              }`}
+            >
+              Navegar en Ruta
+            </span>
+          </button>
+
+          {/* Botón Derecho: Mis Movimientos */}
+          <button
+            type="button"
+            onClick={() => setTab('HISTORIAL')}
+            className={`relative min-h-[52px] rounded-xl flex flex-col items-center justify-center gap-1 text-[11px] font-bold transition-all ${
+              tab === 'HISTORIAL'
+                ? 'bg-purple-50 dark:bg-purple-900/40 text-[#5B21B6] dark:text-purple-200'
+                : 'text-[#64748B] dark:text-slate-300 hover:bg-black/5 dark:hover:bg-white/5'
+            }`}
+          >
+            <BarChart3 className="w-5 h-5" />
+            <span className="truncate max-w-full px-1">Mis Movimientos</span>
+          </button>
         </nav>
       )}
     </div>

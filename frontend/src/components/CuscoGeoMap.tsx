@@ -11,13 +11,17 @@ import {
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
+  Clock,
+  Compass,
   Crosshair,
   ExternalLink,
   Layers,
   Maximize2,
   Minimize2,
   Navigation,
+  Play,
   Scan,
+  Send,
 } from 'lucide-react';
 
 export interface GeoMapPin {
@@ -57,6 +61,10 @@ export interface CuscoGeoMapProps {
   followDriver?: boolean;
   activeLeg?: 'TO_PICKUP' | 'TO_DESTINATION' | 'BOTH';
   heightClass?: string;
+  driverNavStyle?: boolean;
+  driverNavInfoText?: string;
+  driverNavStartLabel?: string;
+  onDriverNavStart?: () => void;
 }
 
 const MAPS_API_KEY = String(
@@ -351,6 +359,7 @@ const GoogleCuscoInner: React.FC<GoogleCuscoInnerProps> = ({
   fitSignal,
   followDriver = false,
   activeLeg = 'BOTH',
+  driverNavStyle = false,
   onStatusFail,
 }) => {
   const status = useApiLoadingStatus();
@@ -499,9 +508,9 @@ const GoogleCuscoInner: React.FC<GoogleCuscoInnerProps> = ({
         <GoogleRouteLine
           origin={destinationOrigin}
           destination={{ lat: destLat, lng: destLng }}
-          strokeColor={activeLeg === 'TO_DESTINATION' ? '#4F46E5' : '#16A34A'}
-          outlineColor={activeLeg === 'TO_DESTINATION' ? '#1E1B4B' : '#0F172A'}
-          badgeText={routeBadge || routeSummary}
+          strokeColor={driverNavStyle ? '#7C3AED' : activeLeg === 'TO_DESTINATION' ? '#4F46E5' : '#16A34A'}
+          outlineColor={driverNavStyle ? '#FFFFFF' : activeLeg === 'TO_DESTINATION' ? '#1E1B4B' : '#0F172A'}
+          badgeText={driverNavStyle ? undefined : routeBadge || routeSummary}
           onRouteComputed={onRouteComputed}
         />
       )}
@@ -514,11 +523,19 @@ const GoogleCuscoInner: React.FC<GoogleCuscoInnerProps> = ({
           zIndex={750}
         >
           <div className="flex items-center gap-1.5">
-            <div className="relative w-10 h-10 rounded-full bg-[#2563EB] border-[3px] border-white shadow-xl flex items-center justify-center text-base">
-              <span className="absolute -inset-1.5 rounded-full border-2 border-[#60A5FA]/70 animate-ping" />
+            <div
+              className={`relative w-10 h-10 rounded-full border-[3px] border-white shadow-xl flex items-center justify-center text-base ${
+                driverNavStyle ? 'bg-[#6D28D9]' : 'bg-[#2563EB]'
+              }`}
+            >
+              <span
+                className={`absolute -inset-1.5 rounded-full border-2 animate-ping ${
+                  driverNavStyle ? 'border-[#A855F7]/70' : 'border-[#60A5FA]/70'
+                }`}
+              />
               <span>🚕</span>
             </div>
-            {driverLabel && (
+            {driverLabel && !driverNavStyle && (
               <span className="px-2.5 py-0.5 rounded-lg bg-[#0F172A]/95 text-white border border-[#60A5FA] text-[10px] font-bold whitespace-nowrap shadow-md">
                 {driverLabel}
               </span>
@@ -531,12 +548,18 @@ const GoogleCuscoInner: React.FC<GoogleCuscoInnerProps> = ({
       {mode === 'TAXI' ? (
         activeLeg !== 'TO_DESTINATION' && (
           <AdvancedMarker position={{ lat: userLat, lng: userLng }} title={originLabel} zIndex={500}>
-            <div className="flex items-center gap-1.5 bg-[#111827] text-white px-2.5 py-1 rounded-xl border-2 border-white shadow-lg text-[11px] font-bold whitespace-nowrap">
-              <span className="w-4 h-4 rounded bg-[#2563EB] text-white inline-flex items-center justify-center text-[10px] font-extrabold">
+            {driverNavStyle ? (
+              <div className="w-8 h-8 rounded-full bg-[#5B21B6] text-white border-2 border-white shadow-lg flex items-center justify-center text-xs font-extrabold">
                 A
-              </span>
-              <span className="max-w-[115px] truncate">{originLabel}</span>
-            </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 bg-[#111827] text-white px-2.5 py-1 rounded-xl border-2 border-white shadow-lg text-[11px] font-bold whitespace-nowrap">
+                <span className="w-4 h-4 rounded bg-[#2563EB] text-white inline-flex items-center justify-center text-[10px] font-extrabold">
+                  A
+                </span>
+                <span className="max-w-[115px] truncate">{originLabel}</span>
+              </div>
+            )}
           </AdvancedMarker>
         )
       ) : (
@@ -555,12 +578,18 @@ const GoogleCuscoInner: React.FC<GoogleCuscoInnerProps> = ({
           title={destLabel || 'Destino'}
           zIndex={650}
         >
-          <div className="flex items-center gap-1.5 bg-[#0F172A] text-white px-2.5 py-1 rounded-xl border-2 border-[#4F46E5] shadow-lg text-[11px] font-bold whitespace-nowrap">
-            <span className="w-4 h-4 rounded bg-[#16A34A] text-white inline-flex items-center justify-center text-[10px] font-extrabold">
+          {driverNavStyle ? (
+            <div className="w-8 h-8 rounded-full bg-[#16A34A] text-white border-2 border-white shadow-lg flex items-center justify-center text-xs font-extrabold">
               B
-            </span>
-            <span className="max-w-[130px] truncate">{destLabel || 'Destino'}</span>
-          </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-[#0F172A] text-white px-2.5 py-1 rounded-xl border-2 border-[#4F46E5] shadow-lg text-[11px] font-bold whitespace-nowrap">
+              <span className="w-4 h-4 rounded bg-[#16A34A] text-white inline-flex items-center justify-center text-[10px] font-extrabold">
+                B
+              </span>
+              <span className="max-w-[130px] truncate">{destLabel || 'Destino'}</span>
+            </div>
+          )}
         </AdvancedMarker>
       )}
 
@@ -656,6 +685,7 @@ const CuscoGeoLeafletFallback: React.FC<
   mapTypeId,
   followDriver = false,
   activeLeg = 'BOTH',
+  driverNavStyle = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -740,10 +770,11 @@ const CuscoGeoLeafletFallback: React.FC<
         }
       ).addTo(baseGroup);
     } else {
-      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxNativeZoom: 19,
-        maxZoom: 20,
-        attribution: '&copy; OpenStreetMap contributors',
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        subdomains: 'abcd',
+        maxNativeZoom: 20,
+        maxZoom: 21,
+        attribution: '&copy; OpenStreetMap &amp; CARTO',
       }).addTo(baseGroup);
     }
   }, [mapTypeId]);
@@ -913,12 +944,14 @@ const CuscoGeoLeafletFallback: React.FC<
       }
 
       if (driverLat !== undefined && driverLng !== undefined) {
+        const ringBg = driverNavStyle ? '#6D28D9' : '#2563EB';
+        const shadowCol = driverNavStyle ? 'rgba(109,40,217,0.45)' : 'rgba(37,99,235,0.55)';
         const carIcon = L.divIcon({
           className: 'cusco-leaflet-pin',
-          iconSize: [160, 44],
-          iconAnchor: [20, 20],
-          html: `<div style="display:flex;align-items:center;gap:6px;"><div style="width:38px;height:38px;border-radius:9999px;background:#2563EB;border:3px solid #FFFFFF;box-shadow:0 6px 18px rgba(37,99,235,0.55);display:flex;align-items:center;justify-content:center;font-size:17px;">🚕</div>${
-            driverLabel
+          iconSize: [driverNavStyle ? 44 : 160, 44],
+          iconAnchor: [22, 22],
+          html: `<div style="display:flex;align-items:center;gap:6px;"><div style="width:40px;height:40px;border-radius:9999px;background:${ringBg};border:3px solid #FFFFFF;box-shadow:0 6px 18px ${shadowCol};display:flex;align-items:center;justify-content:center;font-size:18px;">🚕</div>${
+            driverLabel && !driverNavStyle
               ? `<span style="background:#0F172A;color:#FFFFFF;padding:3px 9px;border-radius:9px;border:1.5px solid #60A5FA;font-size:10px;font-weight:700;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.35);">${escapeHtml(driverLabel)}</span>`
               : ''
           }</div>`,
@@ -927,12 +960,19 @@ const CuscoGeoLeafletFallback: React.FC<
       }
 
       if (activeLeg !== 'TO_DESTINATION') {
-        const originIcon = L.divIcon({
-          className: 'cusco-leaflet-pin',
-          iconSize: [148, 38],
-          iconAnchor: [18, 34],
-          html: `<div style="display:flex;align-items:center;gap:6px;background:#111827;color:#FFFFFF;padding:5px 10px;border-radius:12px;border:2px solid #FFFFFF;box-shadow:0 8px 20px rgba(0,0,0,0.35);font-size:11px;font-weight:700;white-space:nowrap;"><span style="width:18px;height:18px;border-radius:6px;background:#2563EB;color:#FFFFFF;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">A</span><span style="max-width:105px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(originLabel)}</span></div>`,
-        });
+        const originIcon = driverNavStyle
+          ? L.divIcon({
+              className: 'cusco-leaflet-pin',
+              iconSize: [34, 34],
+              iconAnchor: [17, 17],
+              html: `<div style="width:32px;height:32px;border-radius:9999px;background:#5B21B6;color:#FFFFFF;border:2.5px solid #FFFFFF;box-shadow:0 6px 16px rgba(91,33,182,0.45);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;">A</div>`,
+            })
+          : L.divIcon({
+              className: 'cusco-leaflet-pin',
+              iconSize: [148, 38],
+              iconAnchor: [18, 34],
+              html: `<div style="display:flex;align-items:center;gap:6px;background:#111827;color:#FFFFFF;padding:5px 10px;border-radius:12px;border:2px solid #FFFFFF;box-shadow:0 8px 20px rgba(0,0,0,0.35);font-size:11px;font-weight:700;white-space:nowrap;"><span style="width:18px;height:18px;border-radius:6px;background:#2563EB;color:#FFFFFF;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">A</span><span style="max-width:105px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(originLabel)}</span></div>`,
+            });
         L.marker([userLat, userLng], { icon: originIcon, zIndexOffset: 500 }).addTo(group);
       }
 
@@ -941,16 +981,24 @@ const CuscoGeoLeafletFallback: React.FC<
           streetCoords.length >= 2
             ? streetCoords
             : buildCuscoStreetGridFallback(activeStartLat, activeStartLng, destLat, destLng);
-        const navColor = activeLeg === 'TO_DESTINATION' ? '#4F46E5' : '#16A34A';
-        const navHalo = activeLeg === 'TO_DESTINATION' ? '#1E1B4B' : '#0F172A';
-        L.polyline(linePts, { color: navHalo, weight: 8, opacity: 0.9, lineJoin: 'round' }).addTo(
+        const navColor = driverNavStyle
+          ? '#7C3AED'
+          : activeLeg === 'TO_DESTINATION'
+            ? '#4F46E5'
+            : '#16A34A';
+        const navHalo = driverNavStyle
+          ? '#FFFFFF'
+          : activeLeg === 'TO_DESTINATION'
+            ? '#1E1B4B'
+            : '#0F172A';
+        L.polyline(linePts, { color: navHalo, weight: 8, opacity: 0.92, lineJoin: 'round' }).addTo(
           group
         );
-        L.polyline(linePts, { color: navColor, weight: 5, opacity: 0.98, lineJoin: 'round' }).addTo(
+        L.polyline(linePts, { color: navColor, weight: 5.5, opacity: 0.98, lineJoin: 'round' }).addTo(
           group
         );
 
-        const routeLabel = routeBadge || routeSummary;
+        const routeLabel = driverNavStyle ? undefined : routeBadge || routeSummary;
         if (routeLabel) {
           const midPt = linePts[Math.floor(linePts.length / 2)] || [
             (activeStartLat + destLat) / 2,
@@ -965,12 +1013,19 @@ const CuscoGeoLeafletFallback: React.FC<
           L.marker(midPt, { icon: midIcon, interactive: false, zIndexOffset: 620 }).addTo(group);
         }
 
-        const destIcon = L.divIcon({
-          className: 'cusco-leaflet-pin',
-          iconSize: [160, 38],
-          iconAnchor: [18, 34],
-          html: `<div style="display:flex;align-items:center;gap:6px;background:#0F172A;color:#FFFFFF;padding:5px 10px;border-radius:12px;border:2px solid #4F46E5;box-shadow:0 8px 20px rgba(0,0,0,0.35);font-size:11px;font-weight:700;white-space:nowrap;"><span style="width:18px;height:18px;border-radius:6px;background:#16A34A;color:#FFFFFF;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">B</span><span style="max-width:118px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(destLabel || 'Destino')}</span></div>`,
-        });
+        const destIcon = driverNavStyle
+          ? L.divIcon({
+              className: 'cusco-leaflet-pin',
+              iconSize: [34, 34],
+              iconAnchor: [17, 17],
+              html: `<div style="width:32px;height:32px;border-radius:9999px;background:#16A34A;color:#FFFFFF;border:2.5px solid #FFFFFF;box-shadow:0 6px 16px rgba(22,163,74,0.45);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;">B</div>`,
+            })
+          : L.divIcon({
+              className: 'cusco-leaflet-pin',
+              iconSize: [160, 38],
+              iconAnchor: [18, 34],
+              html: `<div style="display:flex;align-items:center;gap:6px;background:#0F172A;color:#FFFFFF;padding:5px 10px;border-radius:12px;border:2px solid #4F46E5;box-shadow:0 8px 20px rgba(0,0,0,0.35);font-size:11px;font-weight:700;white-space:nowrap;"><span style="width:18px;height:18px;border-radius:6px;background:#16A34A;color:#FFFFFF;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">B</span><span style="max-width:118px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(destLabel || 'Destino')}</span></div>`,
+            });
         L.marker([destLat, destLng], { icon: destIcon, zIndexOffset: 650 }).addTo(group);
       }
     } else {
@@ -1041,6 +1096,7 @@ const CuscoGeoLeafletFallback: React.FC<
     driverStreetCoords,
     pins,
     selectedPinId,
+    driverNavStyle,
   ]);
 
   useEffect(() => {
@@ -1076,6 +1132,10 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
     followDriver = false,
     activeLeg = 'BOTH',
     heightClass = 'h-[360px] sm:h-[430px]',
+    driverNavStyle = false,
+    driverNavInfoText,
+    driverNavStartLabel,
+    onDriverNavStart,
   } = props;
 
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1100,20 +1160,28 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
     activeLeg === 'TO_DESTINATION' && driverLat !== undefined ? driverLat : userLat;
   const navOriginLng =
     activeLeg === 'TO_DESTINATION' && driverLng !== undefined ? driverLng : userLng;
+  const navTargetLat =
+    activeLeg === 'TO_PICKUP' ? userLat : destLat ?? userLat;
+  const navTargetLng =
+    activeLeg === 'TO_PICKUP' ? userLng : destLng ?? userLng;
 
   const externalMapsUrl =
     mode === 'TAXI' && destLat !== undefined && destLng !== undefined
-      ? `https://www.google.com/maps/dir/?api=1&origin=${navOriginLat},${navOriginLng}&destination=${destLat},${destLng}&travelmode=driving`
+      ? `https://www.google.com/maps/dir/?api=1&origin=${navOriginLat},${navOriginLng}&destination=${navTargetLat},${navTargetLng}&travelmode=driving`
       : selectedPin
         ? `https://www.google.com/maps/search/?api=1&query=${selectedPin.lat},${selectedPin.lng}`
         : `https://www.google.com/maps/search/?api=1&query=${userLat},${userLng}`;
+
+  const wazeUrl = `https://waze.com/ul?ll=${navTargetLat},${navTargetLng}&navigate=yes`;
 
   return (
     <div
       className={
         isFullscreen
           ? 'fixed inset-0 z-50 bg-[#E5E3DF]'
-          : 'relative rounded-3xl overflow-hidden border border-black/15 dark:border-white/20 bg-[#E5E3DF] shadow-2xl chuspa-google-border'
+          : driverNavStyle
+            ? 'relative overflow-hidden border-y border-purple-200/70 bg-[#E5E3DF]'
+            : 'relative rounded-3xl overflow-hidden border border-black/15 dark:border-white/20 bg-[#E5E3DF] shadow-2xl chuspa-google-border'
       }
     >
       {canUseGoogleSdk ? (
@@ -1140,21 +1208,73 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
         />
       )}
 
-      {/* Indicador estilo Google Maps arriba a la izquierda */}
-      <div className="pointer-events-none absolute top-3 left-3 z-[400] flex flex-wrap items-center gap-1.5">
-        <span className="px-3 py-1.5 rounded-full bg-white/95 backdrop-blur-md border border-black/10 text-[11px] font-bold text-[#14171F] flex items-center gap-1.5 shadow-lg">
-          <Navigation className="w-3.5 h-3.5 text-[#2563EB]" />
-          <span>
-            {canUseGoogleSdk
-              ? followDriver
-                ? 'Google Maps · GPS en Vivo'
-                : 'Google Maps · Cusco'
-              : followDriver
-                ? 'Mapa en Vivo · GPS Cusco'
-                : 'Mapa en Vivo · Cusco'}
+      {/* HUD Superior del Mapa (Modo Navegación Conductor estilo Google Maps vs Modo General) */}
+      {driverNavStyle ? (
+        <div className="absolute top-3 left-3 right-16 z-[400] flex flex-col items-start gap-2">
+          {driverNavInfoText && (
+            <div className="px-3.5 py-1.5 rounded-full bg-gradient-to-r from-[#581C87] to-[#7C3AED] text-white text-xs font-extrabold shadow-lg inline-flex items-center gap-1.5 border border-white/25">
+              <Clock className="w-3.5 h-3.5 text-purple-200" />
+              <span className="font-mono-tabular">{driverNavInfoText}</span>
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {onDriverNavStart && (
+              <button
+                type="button"
+                onClick={onDriverNavStart}
+                className="min-h-[38px] px-3.5 rounded-full bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-extrabold shadow-lg inline-flex items-center gap-1.5"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>{driverNavStartLabel || 'Iniciar'}</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setFitSignal((s) => s + 1);
+                onRequestGps?.();
+              }}
+              title="Centrar en mi ubicación GPS"
+              className="w-[38px] h-[38px] rounded-full bg-white text-[#5B21B6] border border-purple-200 shadow-lg flex items-center justify-center hover:bg-purple-50"
+            >
+              <Crosshair className="w-4 h-4" />
+            </button>
+            <a
+              href={externalMapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[38px] px-3.5 rounded-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-extrabold shadow-lg inline-flex items-center gap-1.5"
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Maps</span>
+            </a>
+            <a
+              href={wazeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[38px] px-3.5 rounded-full bg-[#0EA5E9] hover:bg-[#0284C7] text-white text-xs font-extrabold shadow-lg inline-flex items-center gap-1.5"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>Waze</span>
+            </a>
+          </div>
+        </div>
+      ) : (
+        <div className="pointer-events-none absolute top-3 left-3 z-[400] flex flex-wrap items-center gap-1.5">
+          <span className="px-3 py-1.5 rounded-full bg-white/95 backdrop-blur-md border border-black/10 text-[11px] font-bold text-[#14171F] flex items-center gap-1.5 shadow-lg">
+            <Navigation className="w-3.5 h-3.5 text-[#2563EB]" />
+            <span>
+              {canUseGoogleSdk
+                ? followDriver
+                  ? 'Google Maps · GPS en Vivo'
+                  : 'Google Maps · Cusco'
+                : followDriver
+                  ? 'Mapa en Vivo · GPS Cusco'
+                  : 'Mapa en Vivo · Cusco'}
+            </span>
           </span>
-        </span>
-      </div>
+        </div>
+      )}
 
       {/* Controles flotantes blancos modernos estilo Google Maps Mobile */}
       <div className="absolute top-3 right-3 z-[400] flex flex-col gap-2">
@@ -1167,12 +1287,12 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
           {isFullscreen ? (
             <>
               <Minimize2 className="w-3.5 h-3.5 text-[#2563EB]" />
-              <span>Encoger</span>
+              {!driverNavStyle && <span>Encoger</span>}
             </>
           ) : (
             <>
               <Maximize2 className="w-3.5 h-3.5 text-[#2563EB]" />
-              <span>Agrandar</span>
+              {!driverNavStyle && <span>Agrandar</span>}
             </>
           )}
         </button>
@@ -1184,10 +1304,10 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
           className="min-h-[38px] px-3 rounded-full border border-black/10 bg-white/95 text-[#14171F] text-xs font-bold flex items-center gap-1.5 shadow-lg backdrop-blur-md hover:bg-white"
         >
           <Layers className="w-3.5 h-3.5 text-[#2563EB]" />
-          <span>{mapTypeId === 'roadmap' ? 'Satélite' : 'Mapa'}</span>
+          {!driverNavStyle && <span>{mapTypeId === 'roadmap' ? 'Satélite' : 'Mapa'}</span>}
         </button>
 
-        {onRequestGps && (
+        {!driverNavStyle && onRequestGps && (
           <button
             type="button"
             onClick={onRequestGps}
@@ -1203,25 +1323,29 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
           </button>
         )}
 
-        <button
-          type="button"
-          onClick={() => setFitSignal((s) => s + 1)}
-          title="Encuadrar ruta y pines"
-          className="min-h-[38px] px-3 rounded-full border border-black/10 bg-white/95 text-[#14171F] text-xs font-bold flex items-center gap-1.5 shadow-lg backdrop-blur-md hover:bg-white"
-        >
-          <Scan className="w-3.5 h-3.5 text-[#D97706]" />
-          <span>Encuadrar</span>
-        </button>
+        {!driverNavStyle && (
+          <button
+            type="button"
+            onClick={() => setFitSignal((s) => s + 1)}
+            title="Encuadrar ruta y pines"
+            className="min-h-[38px] px-3 rounded-full border border-black/10 bg-white/95 text-[#14171F] text-xs font-bold flex items-center gap-1.5 shadow-lg backdrop-blur-md hover:bg-white"
+          >
+            <Scan className="w-3.5 h-3.5 text-[#D97706]" />
+            <span>Encuadrar</span>
+          </button>
+        )}
 
-        <a
-          href={externalMapsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="min-h-[38px] px-3 rounded-full border border-[#2563EB]/25 bg-white/95 text-[#1E40AF] text-xs font-bold flex items-center gap-1.5 shadow-lg backdrop-blur-md hover:bg-white"
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-          <span>Google Maps</span>
-        </a>
+        {!driverNavStyle && (
+          <a
+            href={externalMapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="min-h-[38px] px-3 rounded-full border border-[#2563EB]/25 bg-white/95 text-[#1E40AF] text-xs font-bold flex items-center gap-1.5 shadow-lg backdrop-blur-md hover:bg-white"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            <span>Google Maps</span>
+          </a>
+        )}
       </div>
 
       {/* Tarjeta interactiva en mapa cuando el usuario toca un pin */}
@@ -1256,15 +1380,17 @@ export const CuscoGeoMap: React.FC<CuscoGeoMapProps> = (props) => {
         </div>
       )}
 
-      {/* Leyenda */}
-      <div className="hidden sm:flex absolute bottom-3 right-3 z-[400] items-center gap-2 bg-white/95 backdrop-blur-md border border-black/10 rounded-full px-3 py-1.5 text-[10px] font-bold shadow-md">
-        <span className="flex items-center gap-1 text-emerald-700">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Mejor tarifa
-        </span>
-        <span className="flex items-center gap-1 text-amber-700">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> Estándar
-        </span>
-      </div>
+      {/* Leyenda (solo fuera del modo compacto conductor) */}
+      {!driverNavStyle && (
+        <div className="hidden sm:flex absolute bottom-3 right-3 z-[400] items-center gap-2 bg-white/95 backdrop-blur-md border border-black/10 rounded-full px-3 py-1.5 text-[10px] font-bold shadow-md">
+          <span className="flex items-center gap-1 text-emerald-700">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-600 inline-block" /> Mejor tarifa
+          </span>
+          <span className="flex items-center gap-1 text-amber-700">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> Estándar
+          </span>
+        </div>
+      )}
     </div>
   );
 };
