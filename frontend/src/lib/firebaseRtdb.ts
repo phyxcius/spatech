@@ -285,6 +285,39 @@ interface RtdbSnapshot {
   resenas?: Record<string, unknown>;
   documentos?: Record<string, PeruDocumentLookupResult>;
   oficios_catalogo?: Record<string, OficioNormalizado> | OficioNormalizado[];
+  cuentas_usuarios?: Record<string, {
+    id: number;
+    wechat_id: string;
+    documento_tipo: 'DNI' | 'RUC' | 'EXTRANJERO';
+    documento_numero: string;
+    nombre: string;
+    direccion_fiscal?: string;
+    pais_codigo: string;
+    pais_nombre: string;
+    whatsapp: string;
+    password_salt: string;
+    password_hash: string;
+    whatsapp_verificado: boolean;
+    otp_salt?: string;
+    otp_hash?: string;
+    otp_expires_at?: string;
+    otp_intentos?: number;
+    idioma: string;
+    estado_texto?: string;
+    avatar_url?: string;
+    notificaciones_activas?: boolean;
+    mostrar_siempre_arriba?: boolean;
+    created_at: string;
+  }>;
+  usuario_chats?: Record<string, Array<{
+    id: number;
+    conversacion_id: string;
+    remitente: 'USER' | 'AGENT' | 'SYSTEM' | 'CONTACT';
+    tipo_contenido: 'TEXTO' | 'VOZ' | 'UBICACION' | 'STICKER' | 'OPCIONES' | 'TARJETA';
+    texto: string;
+    meta?: Record<string, unknown> | null;
+    created_at: string;
+  }>>;
 }
 
 function toArray<T>(val: Record<string, T> | T[] | undefined | null): T[] {
@@ -3622,6 +3655,320 @@ export async function handleFirebaseRtdbRequest<T>(
         tokenFacturacionPreview: mask(nextFacturacion),
         updatedAt: new Date().toISOString(),
       } as T;
+    }
+  }
+
+  // ============================================================================
+  // CUENTAS DE USUARIO (REGISTRO RENIEC/SUNAT/PASAPORTE + WHATSAPP OTP + CHAT)
+  // ============================================================================
+  if (cleanPath === '/api/public/usuarios/registro' && method === 'POST') {
+    const rawNum = String(payload.documento_numero || '').trim();
+    const rawTipo = String(payload.documento_tipo || '').toUpperCase();
+    const tipo: 'DNI' | 'RUC' | 'EXTRANJERO' =
+      rawTipo === 'DNI' || rawTipo === 'RUC' || rawTipo === 'EXTRANJERO'
+        ? rawTipo
+        : /^\d{8}$/.test(rawNum)
+          ? 'DNI'
+          : /^\d{11}$/.test(rawNum)
+            ? 'RUC'
+            : 'EXTRANJERO';
+    const numero = tipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawNum.replace(/\D/g, '');
+    if (tipo === 'DNI' && !/^\d{8}$/.test(numero)) throw new Error('El DNI peruano debe tener exactamente 8 dígitos.');
+    if (tipo === 'RUC' && !/^(10|15|16|17|20)\d{9}$/.test(numero)) throw new Error('El RUC peruano debe tener 11 dígitos válidos.');
+    if (tipo === 'EXTRANJERO' && !/^[A-Z0-9-]{6,20}$/.test(numero)) throw new Error('Ingresa un Pasaporte o ID Extranjero válido.');
+    const password = String(payload.password || '');
+    if (password.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres.');
+    const paisCodigo = String(payload.pais_codigo || '+51').trim();
+    const paisNombre = String(payload.pais_nombre || 'Perú').trim();
+    const waDigits = String(payload.whatsapp || '').replace(/\D/g, '');
+    if (waDigits.length < 6) throw new Error('Ingresa un número de WhatsApp válido.');
+    const codeDigits = paisCodigo.replace(/\D/g, '') || '51';
+    const whatsapp = String(payload.whatsapp || '').trim().startsWith('+')
+      ? `+${waDigits}`
+      : waDigits.startsWith(codeDigits) && waDigits.length >= codeDigits.length + 6
+        ? `+${waDigits}`
+        : `+${codeDigits}${waDigits}`;
+
+    const docKey = `${tipo}_${numero}`;
+    const existing = snap.cuentas_usuarios?.[docKey];
+    if (existing && existing.whatsapp_verificado) {
+      throw new Error(`El ${tipo} ${numero} ya está registrado y verificado. Inicia sesión con tu contraseña.`);
+    }
+
+    let resolvedNombre = String(payload.nombre || '').trim();
+    let direccionFiscal = '';
+    if (tipo !== 'EXTRANJERO') {
+      try {
+        const lookup = await handleFirebaseRtdbRequest<PeruDocumentLookupResult>(
+          `/api/public/consulta-documento?tipo=${tipo}&numero=${encodeURIComponent(numero)}`,
+          'GET'
+        );
+        if (lookup?.nombre_completo) resolvedNombre = lookup.nombre_completo;
+        if (lookup?.direccion) direccionFiscal = lookup.direccion;
+      } catch {
+        // fallback below
+      }
+      if (!resolvedNombre) resolvedNombre = `Titular ${tipo} ${numero}`;
+    } else if (resolvedNombre.length < 3) {
+      throw new Error('Ingresa tu nombre completo tal como figura en tu Pasaporte.');
+    }
+
+    const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+    const pwHashed = await hashPinBrowser(password);
+    const otpHashed = await hashPinBrowser(otpCode);
+    const userRecord = {
+      id: existing?.id || Date.now(),
+      wechat_id: existing?.wechat_id || `chuspa_${tipo.toLowerCase()}_${numero.slice(-6)}`,
+      documento_tipo: tipo,
+      documento_numero: numero,
+      nombre: resolvedNombre,
+      direccion_fiscal: direccionFiscal,
+      pais_codigo: paisCodigo,
+      pais_nombre: paisNombre,
+      whatsapp,
+      password_salt: pwHashed.salt,
+      password_hash: pwHashed.hash,
+      whatsapp_verificado: false,
+      otp_salt: otpHashed.salt,
+      otp_hash: otpHashed.hash,
+      otp_expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+      otp_intentos: 0,
+      idioma: String(payload.idioma || 'Español'),
+      estado_texto: existing?.estado_texto || '',
+      avatar_url: existing?.avatar_url || '',
+      notificaciones_activas: true,
+      mostrar_siempre_arriba: false,
+      created_at: existing?.created_at || new Date().toISOString(),
+    };
+    await rtdbFetch(`cuentas_usuarios/${docKey}`, 'PUT', userRecord);
+    return {
+      ok: true,
+      requires_whatsapp_verification: true,
+      whatsapp_enviado_via: 'whatsapp_sandbox',
+      preview_otp_code: otpCode,
+      usuario: {
+        id: userRecord.id,
+        wechat_id: userRecord.wechat_id,
+        documento_tipo: userRecord.documento_tipo,
+        documento_numero: userRecord.documento_numero,
+        nombre: userRecord.nombre,
+        direccion_fiscal: userRecord.direccion_fiscal,
+        pais_codigo: userRecord.pais_codigo,
+        pais_nombre: userRecord.pais_nombre,
+        whatsapp: userRecord.whatsapp,
+        whatsapp_masked: `${whatsapp.slice(0, 4)}****${whatsapp.slice(-3)}`,
+        whatsapp_verificado: false,
+        idioma: userRecord.idioma,
+        notificaciones_activas: true,
+        mostrar_siempre_arriba: false,
+      },
+    } as T;
+  }
+
+  if (cleanPath === '/api/public/usuarios/reenviar-codigo' && method === 'POST') {
+    const tipo = String(payload.documento_tipo || 'DNI').toUpperCase();
+    const numero = tipo === 'EXTRANJERO' ? String(payload.documento_numero || '').trim().toUpperCase() : String(payload.documento_numero || '').replace(/\D/g, '');
+    const docKey = `${tipo}_${numero}`;
+    const user = snap.cuentas_usuarios?.[docKey];
+    if (!user) throw new Error('No encontramos una cuenta con ese documento.');
+    const otpCode = String(Math.floor(100000 + Math.random() * 900000));
+    const otpHashed = await hashPinBrowser(otpCode);
+    await rtdbFetch(`cuentas_usuarios/${docKey}`, 'PATCH', {
+      otp_salt: otpHashed.salt,
+      otp_hash: otpHashed.hash,
+      otp_expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+      otp_intentos: 0,
+    });
+    return {
+      ok: true,
+      whatsapp_enviado_via: 'whatsapp_sandbox',
+      preview_otp_code: otpCode,
+      whatsapp_masked: `${user.whatsapp.slice(0, 4)}****${user.whatsapp.slice(-3)}`,
+    } as T;
+  }
+
+  if (cleanPath === '/api/public/usuarios/verificar-whatsapp' && method === 'POST') {
+    const tipo = String(payload.documento_tipo || 'DNI').toUpperCase();
+    const numero = tipo === 'EXTRANJERO' ? String(payload.documento_numero || '').trim().toUpperCase() : String(payload.documento_numero || '').replace(/\D/g, '');
+    const codigo = String(payload.codigo || '').replace(/\D/g, '');
+    const docKey = `${tipo}_${numero}`;
+    const user = snap.cuentas_usuarios?.[docKey];
+    if (!user) throw new Error('Cuenta no encontrada.');
+    if (!/^\d{6}$/.test(codigo)) throw new Error('Ingresa el código de 6 dígitos enviado a tu WhatsApp.');
+    const check = await hashPinBrowser(codigo, user.otp_salt || '');
+    if (check.hash !== user.otp_hash) {
+      throw new Error('Código de verificación incorrecto.');
+    }
+    await rtdbFetch(`cuentas_usuarios/${docKey}`, 'PATCH', {
+      whatsapp_verificado: true,
+      otp_hash: '',
+      otp_salt: '',
+    });
+    return {
+      ok: true,
+      verified: true,
+      message: 'WhatsApp validado correctamente. Ya puedes iniciar sesión.',
+    } as T;
+  }
+
+  if (cleanPath === '/api/public/usuarios/login' && method === 'POST') {
+    const rawNum = String(payload.documento_numero || '').trim();
+    const rawTipo = String(payload.documento_tipo || '').toUpperCase();
+    const tipo = rawTipo || (/^\d{8}$/.test(rawNum) ? 'DNI' : /^\d{11}$/.test(rawNum) ? 'RUC' : 'EXTRANJERO');
+    const numero = tipo === 'EXTRANJERO' ? rawNum.toUpperCase() : rawNum.replace(/\D/g, '');
+    const docKey = `${tipo}_${numero}`;
+    const user = snap.cuentas_usuarios?.[docKey];
+    if (!user) throw new Error('Documento o contraseña incorrectos.');
+    const check = await hashPinBrowser(String(payload.password || ''), user.password_salt);
+    if (check.hash !== user.password_hash) throw new Error('Documento o contraseña incorrectos.');
+    if (!user.whatsapp_verificado) {
+      throw new Error('Tu cuenta aún no ha validado el código enviado a tu WhatsApp.');
+    }
+    return {
+      token: `rtdb-user:${docKey}`,
+      usuario: {
+        id: user.id,
+        wechat_id: user.wechat_id,
+        documento_tipo: user.documento_tipo,
+        documento_numero: user.documento_numero,
+        nombre: user.nombre,
+        direccion_fiscal: user.direccion_fiscal || '',
+        pais_codigo: user.pais_codigo,
+        pais_nombre: user.pais_nombre,
+        whatsapp: user.whatsapp,
+        whatsapp_verificado: true,
+        idioma: user.idioma || 'Español',
+        estado_texto: user.estado_texto || '',
+        avatar_url: user.avatar_url || '',
+        notificaciones_activas: user.notificaciones_activas !== false,
+        mostrar_siempre_arriba: Boolean(user.mostrar_siempre_arriba),
+      },
+    } as T;
+  }
+
+  if (cleanPath.startsWith('/api/usuario/')) {
+    const docKey = (token || '').replace(/^rtdb-user:/, '');
+    const user = docKey ? snap.cuentas_usuarios?.[docKey] : undefined;
+    if (!user) throw new Error('Sesión de usuario inválida.');
+
+    if (cleanPath === '/api/usuario/perfil' && method === 'GET') {
+      return {
+        usuario: {
+          ...user,
+          whatsapp_verificado: Boolean(user.whatsapp_verificado),
+          notificaciones_activas: user.notificaciones_activas !== false,
+          mostrar_siempre_arriba: Boolean(user.mostrar_siempre_arriba),
+        },
+      } as T;
+    }
+
+    if (cleanPath === '/api/usuario/perfil' && method === 'PUT') {
+      const patch = {
+        nombre: typeof payload.nombre === 'string' && payload.nombre.trim().length >= 2 ? payload.nombre.trim() : user.nombre,
+        idioma: typeof payload.idioma === 'string' && payload.idioma.trim() ? payload.idioma.trim() : user.idioma,
+        estado_texto: typeof payload.estado_texto === 'string' ? payload.estado_texto.trim() : user.estado_texto || '',
+        avatar_url: typeof payload.avatar_url === 'string' ? payload.avatar_url.trim() : user.avatar_url || '',
+        notificaciones_activas: typeof payload.notificaciones_activas === 'boolean' ? payload.notificaciones_activas : user.notificaciones_activas !== false,
+        mostrar_siempre_arriba: typeof payload.mostrar_siempre_arriba === 'boolean' ? payload.mostrar_siempre_arriba : Boolean(user.mostrar_siempre_arriba),
+      };
+      await rtdbFetch(`cuentas_usuarios/${docKey}`, 'PATCH', patch);
+      return { usuario: { ...user, ...patch, whatsapp_verificado: true } } as T;
+    }
+
+    if (cleanPath === '/api/usuario/password' && method === 'PUT') {
+      const check = await hashPinBrowser(String(payload.current_password || ''), user.password_salt);
+      if (check.hash !== user.password_hash) throw new Error('La contraseña actual es incorrecta.');
+      const nextPass = String(payload.new_password || '');
+      if (nextPass.length < 6) throw new Error('La nueva contraseña debe tener al menos 6 caracteres.');
+      const nextHashed = await hashPinBrowser(nextPass);
+      await rtdbFetch(`cuentas_usuarios/${docKey}`, 'PATCH', {
+        password_salt: nextHashed.salt,
+        password_hash: nextHashed.hash,
+      });
+      return { ok: true } as T;
+    }
+
+    if (cleanPath === '/api/usuario/chats' && method === 'GET') {
+      const existingMsgs = snap.usuario_chats?.[docKey] || [
+        {
+          id: 1,
+          conversacion_id: 'agente_chuspa',
+          remitente: 'AGENT' as const,
+          tipo_contenido: 'TEXTO' as const,
+          texto: `¡Bienvenido a La Chuspa, ${user.nombre}! Soy tu Agente Concierge en Cusco. Escríbeme o mantén pulsado para hablar y te mostraré opciones verificadas aquí mismo.`,
+          meta: null,
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: 2,
+          conversacion_id: 'equipo_chuspa',
+          remitente: 'SYSTEM' as const,
+          tipo_contenido: 'TEXTO' as const,
+          texto: `Cuenta ${user.documento_tipo} ${user.documento_numero} verificada por WhatsApp.`,
+          meta: null,
+          created_at: new Date().toISOString(),
+        },
+      ];
+      return { mensajes: existingMsgs } as T;
+    }
+
+    if (cleanPath === '/api/usuario/chats/mensaje' && method === 'POST') {
+      const prev = snap.usuario_chats?.[docKey] || [];
+      const convId = String(payload.conversacion_id || 'agente_chuspa');
+      const tipoContenido = (payload.tipo_contenido || 'TEXTO') as 'TEXTO' | 'VOZ' | 'UBICACION' | 'STICKER' | 'OPCIONES' | 'TARJETA';
+      const texto = String(payload.texto || '').trim();
+      const userMsg = {
+        id: Date.now(),
+        conversacion_id: convId,
+        remitente: 'USER' as const,
+        tipo_contenido: tipoContenido,
+        texto,
+        meta: (payload.meta as Record<string, unknown>) || null,
+        created_at: new Date().toISOString(),
+      };
+      let agentMsg: (typeof prev)[number] | null = null;
+      let assistantRes: Record<string, unknown> | null = null;
+      if (convId === 'agente_chuspa' && (tipoContenido === 'TEXTO' || tipoContenido === 'VOZ')) {
+        const res = buildOptionsPrecision(
+          snap,
+          undefined,
+          Number(payload.lat) || -13.5167,
+          Number(payload.lng) || -71.9788,
+          extractCuscoDestination(texto) || undefined,
+          texto
+        );
+        assistantRes = res as unknown as Record<string, unknown>;
+        agentMsg = {
+          id: Date.now() + 1,
+          conversacion_id: convId,
+          remitente: 'AGENT',
+          tipo_contenido: 'OPCIONES',
+          texto: res.respuesta_voz,
+          meta: {
+            categoria: res.categoria,
+            modo_resultado: res.modo_resultado,
+            rubro_solicitado: res.rubro_solicitado,
+            sin_resultados_exactos: res.sin_resultados_exactos,
+            oficio_normalizado: res.oficio_normalizado || null,
+            opciones: res.opciones.slice(0, 8),
+            alternativas_otros_rubros: res.alternativas_otros_rubros.slice(0, 4),
+          },
+          created_at: new Date().toISOString(),
+        };
+      } else if (convId === 'agente_chuspa' && tipoContenido === 'UBICACION') {
+        agentMsg = {
+          id: Date.now() + 1,
+          conversacion_id: convId,
+          remitente: 'AGENT',
+          tipo_contenido: 'UBICACION',
+          texto: 'Ubicación GPS recibida en La Chuspa. Pídeme un taxi o comercio cercano cuando quieras.',
+          meta: { lat: Number(payload.lat) || -13.5167, lng: Number(payload.lng) || -71.9788 },
+          created_at: new Date().toISOString(),
+        };
+      }
+      const nextList = [...prev, userMsg, ...(agentMsg ? [agentMsg] : [])].slice(-120);
+      await rtdbFetch(`usuario_chats/${docKey}`, 'PUT', nextList);
+      return { user_message: userMsg, agent_message: agentMsg, assistant_result: assistantRes } as T;
     }
   }
 

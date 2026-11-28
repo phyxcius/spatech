@@ -493,3 +493,51 @@ export function formatSoles(centavos: number): string {
   const val = (centavos || 0) / 100;
   return `S/ ${val.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
+
+export interface UserAccount {
+  id: number;
+  wechat_id: string;
+  documento_tipo: 'DNI' | 'RUC' | 'EXTRANJERO';
+  documento_numero: string;
+  nombre: string;
+  direccion_fiscal?: string;
+  pais_codigo: string;
+  pais_nombre: string;
+  whatsapp: string;
+  whatsapp_masked?: string;
+  whatsapp_verificado: boolean;
+  idioma: string;
+  estado_texto?: string;
+  avatar_url?: string;
+  notificaciones_activas: boolean;
+  mostrar_siempre_arriba: boolean;
+  created_at?: string;
+}
+
+export interface WeChatMessage {
+  id: number;
+  conversacion_id: string;
+  remitente: 'USER' | 'AGENT' | 'SYSTEM' | 'CONTACT';
+  tipo_contenido: 'TEXTO' | 'VOZ' | 'UBICACION' | 'STICKER' | 'OPCIONES' | 'TARJETA';
+  texto: string;
+  meta?: {
+    duracion_seg?: number;
+    lat?: number;
+    lng?: number;
+    sticker?: string;
+    categoria?: Rubro;
+    modo_resultado?: 'NEGOCIOS' | 'PRODUCTOS';
+    rubro_solicitado?: string;
+    sin_resultados_exactos?: boolean;
+    oficio_normalizado?: OficioNormalizado | null;
+    opciones?: ConciergeOpcion[];
+    alternativas_otros_rubros?: ConciergeOpcion[];
+    cancion_titulo?: string;
+    cancion_artista?: string;
+    archivo_nombre?: string;
+  } | null;
+  created_at: string;
+}
+
+export type MainWeChatTab = 'CHATS' | 'CONTACTOS' | 'CENTER_HUB' | 'DESCUBRIR' | 'YO';
+

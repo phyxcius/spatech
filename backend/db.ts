@@ -337,6 +337,44 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS cuentas_usuarios (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wechat_id TEXT UNIQUE NOT NULL,
+      documento_tipo TEXT NOT NULL CHECK(documento_tipo IN ('DNI','RUC','EXTRANJERO')),
+      documento_numero TEXT NOT NULL,
+      nombre TEXT NOT NULL,
+      direccion_fiscal TEXT,
+      pais_codigo TEXT NOT NULL DEFAULT '+51',
+      pais_nombre TEXT NOT NULL DEFAULT 'Perú',
+      whatsapp TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      whatsapp_verificado INTEGER NOT NULL DEFAULT 0,
+      otp_hash TEXT,
+      otp_salt TEXT,
+      otp_expires_at TEXT,
+      otp_intentos INTEGER NOT NULL DEFAULT 0,
+      idioma TEXT NOT NULL DEFAULT 'Español',
+      estado_texto TEXT NOT NULL DEFAULT '',
+      avatar_url TEXT NOT NULL DEFAULT '',
+      notificaciones_activas INTEGER NOT NULL DEFAULT 1,
+      mostrar_siempre_arriba INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(documento_tipo, documento_numero)
+    );
+
+    CREATE TABLE IF NOT EXISTS usuario_chats_mensajes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      usuario_id INTEGER NOT NULL REFERENCES cuentas_usuarios(id),
+      conversacion_id TEXT NOT NULL,
+      remitente TEXT NOT NULL CHECK(remitente IN ('USER','AGENT','SYSTEM','CONTACT')),
+      tipo_contenido TEXT NOT NULL DEFAULT 'TEXTO',
+      texto TEXT NOT NULL,
+      meta_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Migración idempotente para bases SQLite existentes

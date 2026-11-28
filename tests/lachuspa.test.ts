@@ -2007,6 +2007,171 @@ test('18. Catálogo universal de oficios y profesiones: sinónimos, expansión b
   }
 });
 
+test('19. Flujo WeChat de Usuario: Registro RENIEC/Pasaporte + validación obligatoria WhatsApp OTP + Login + Yo/Configuración + Chat Agente', async () => {
+  const { server, req } = await startTestServer();
+  try {
+    // 1. Caso 1 (Peruano con DNI): Registro solicita sincronización RENIEC, WhatsApp y contraseña -> envía código OTP
+    const regPeru = await req('POST', '/api/public/usuarios/registro', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      pais_codigo: '+51',
+      pais_nombre: 'Perú',
+      whatsapp: '984556677',
+      password: 'cuscoPassword123',
+      acepto_terminos: true,
+      idioma: 'Español',
+    });
+    assert.equal(regPeru.status, 201);
+    assert.equal(regPeru.data.requires_whatsapp_verification, true);
+    assert.equal(regPeru.data.usuario.whatsapp_verificado, false);
+    assert.ok(String(regPeru.data.preview_otp_code || '').length === 6);
+    assert.ok(String(regPeru.data.usuario.nombre || '').length >= 4);
+
+    // 2. Antes de validar WhatsApp, el login debe quedar bloqueado con 403 WHATSAPP_UNVERIFIED
+    const blockedLogin = await req('POST', '/api/public/usuarios/login', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      password: 'cuscoPassword123',
+    });
+    assert.equal(blockedLogin.status, 403);
+    assert.equal(blockedLogin.data.code, 'WHATSAPP_UNVERIFIED');
+
+    // 3. Reenviar código y verificar código incorrecto vs correcto
+    const resendRes = await req('POST', '/api/public/usuarios/reenviar-codigo', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+    });
+    assert.equal(resendRes.status, 200);
+    const freshOtp = String(resendRes.data.preview_otp_code || '');
+    assert.equal(freshOtp.length, 6);
+
+    const badOtp = await req('POST', '/api/public/usuarios/verificar-whatsapp', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      codigo: freshOtp === '000000' ? '111111' : '000000',
+    });
+    assert.equal(badOtp.status, 401);
+
+    const verifyOk = await req('POST', '/api/public/usuarios/verificar-whatsapp', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      codigo: freshOtp,
+    });
+    assert.equal(verifyOk.status, 200);
+    assert.equal(verifyOk.data.verified, true);
+    assert.equal(verifyOk.data.usuario.whatsapp_verificado, true);
+
+    // 4. Caso 2 (Peruano): Iniciar sesión con DNI y contraseña tras validar WhatsApp
+    const loginPeru = await req('POST', '/api/public/usuarios/login', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      password: 'cuscoPassword123',
+    });
+    assert.equal(loginPeru.status, 200);
+    assert.ok(loginPeru.data.token);
+    const userToken = loginPeru.data.token;
+    assert.equal(loginPeru.data.usuario.documento_tipo, 'DNI');
+    assert.equal(loginPeru.data.usuario.documento_numero, '44556677');
+
+    // 5. Configuración de usuario (Yo > Configuración): perfil + cambio de contraseña
+    const perfilRes = await req('GET', '/api/usuario/perfil', undefined, userToken);
+    assert.equal(perfilRes.status, 200);
+    assert.equal(perfilRes.data.usuario.wechat_id.startsWith('chuspa_'), true);
+
+    const updatePerfil = await req(
+      'PUT',
+      '/api/usuario/perfil',
+      {
+        estado_texto: 'En Plaza de Armas Cusco',
+        idioma: 'English',
+        notificaciones_activas: true,
+      },
+      userToken
+    );
+    assert.equal(updatePerfil.status, 200);
+    assert.equal(updatePerfil.data.usuario.estado_texto, 'En Plaza de Armas Cusco');
+    assert.equal(updatePerfil.data.usuario.idioma, 'English');
+
+    const changePass = await req(
+      'PUT',
+      '/api/usuario/password',
+      {
+        current_password: 'cuscoPassword123',
+        new_password: 'nuevoPassword456',
+      },
+      userToken
+    );
+    assert.equal(changePass.status, 200);
+
+    const reloginNewPass = await req('POST', '/api/public/usuarios/login', {
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      password: 'nuevoPassword456',
+    });
+    assert.equal(reloginNewPass.status, 200);
+
+    // 6. Chat estilo WeChat con Agente La Chuspa (envía orden real de taxi y devuelve opciones)
+    const initialChats = await req('GET', '/api/usuario/chats', undefined, userToken);
+    assert.equal(initialChats.status, 200);
+    assert.ok(initialChats.data.mensajes.length >= 2);
+
+    const sendChat = await req(
+      'POST',
+      '/api/usuario/chats/mensaje',
+      {
+        conversacion_id: 'agente_chuspa',
+        tipo_contenido: 'TEXTO',
+        texto: 'Quiero un taxi a la Plaza de Armas',
+        lat: -13.5167,
+        lng: -71.9788,
+      },
+      userToken
+    );
+    assert.equal(sendChat.status, 201);
+    assert.equal(sendChat.data.user_message.remitente, 'USER');
+    assert.equal(sendChat.data.agent_message.remitente, 'AGENT');
+    assert.equal(sendChat.data.agent_message.tipo_contenido, 'OPCIONES');
+    assert.equal(sendChat.data.assistant_result?.categoria, 'TRANSPORTE');
+    assert.ok(Array.isArray(sendChat.data.agent_message.meta?.opciones));
+    assert.ok(sendChat.data.agent_message.meta.opciones.length >= 1);
+
+    // 7. Flujo completo para Extranjero (Pasaporte + WhatsApp + contraseña + OTP + Login)
+    const regForeign = await req('POST', '/api/public/usuarios/registro', {
+      documento_tipo: 'EXTRANJERO',
+      documento_numero: 'US8877665',
+      nombre: 'Elena Vance',
+      pais_codigo: '+1',
+      pais_nombre: 'Estados Unidos',
+      whatsapp: '3055550188',
+      password: 'travelCusco77',
+      acepto_terminos: true,
+      idioma: 'English',
+    });
+    assert.equal(regForeign.status, 201);
+    const foreignOtp = String(regForeign.data.preview_otp_code || '');
+    assert.equal(foreignOtp.length, 6);
+
+    const verifyForeign = await req('POST', '/api/public/usuarios/verificar-whatsapp', {
+      documento_tipo: 'EXTRANJERO',
+      documento_numero: 'US8877665',
+      codigo: foreignOtp,
+    });
+    assert.equal(verifyForeign.status, 200);
+
+    const loginForeign = await req('POST', '/api/public/usuarios/login', {
+      documento_tipo: 'EXTRANJERO',
+      documento_numero: 'US8877665',
+      password: 'travelCusco77',
+    });
+    assert.equal(loginForeign.status, 200);
+    assert.equal(loginForeign.data.usuario.documento_tipo, 'EXTRANJERO');
+    assert.equal(loginForeign.data.usuario.nombre, 'Elena Vance');
+  } finally {
+    server.close();
+  }
+});
+
+
 
 
 

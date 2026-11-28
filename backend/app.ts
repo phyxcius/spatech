@@ -15,6 +15,10 @@ import {
   searchOficiosCatalog,
   upsertOficioCatalogo,
 } from './oficiosCatalog.ts';
+import {
+  registerUserAuthRoutes,
+  type DocumentLookupOutput,
+} from './userAuth.ts';
 
 function safeParseJson<T>(raw: unknown): T | null {
   if (typeof raw !== 'string' || !raw.trim()) return null;
@@ -251,7 +255,10 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
   app.set('trust proxy', 1);
   app.use((req, res, next) => {
     const reqOrigin = req.headers.origin;
-    const isAuthRoute = req.path.startsWith('/api/negocio') || req.path.startsWith('/api/admin');
+    const isAuthRoute =
+      req.path.startsWith('/api/negocio') ||
+      req.path.startsWith('/api/admin') ||
+      req.path.startsWith('/api/usuario');
     const defaultAllowedOrigins = [
       'https://phyxcius.github.io',
       'http://localhost:5173',
@@ -612,240 +619,257 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  async function lookupPeruDocumentServer(
+    rawTipo: string,
+    rawNumero: string,
+    nombreQuery = '',
+    bypassCache = false
+  ): Promise<DocumentLookupOutput> {
+    const tipo = String(rawTipo || '').trim().toUpperCase();
+    const numero = String(rawNumero || '').trim();
+
+    if (tipo === 'EXTRANJERO') {
+      const cleanDoc = numero.toUpperCase();
+      if (!isValidForeignDoc(cleanDoc)) {
+        throw new HttpError(
+          400,
+          'El Pasaporte o Carné de Extranjería debe tener entre 6 y 20 caracteres alfanuméricos.'
+        );
+      }
+      const finalNombre =
+        nombreQuery.length >= 2 ? nombreQuery.slice(0, 120) : 'Pasajero / Cliente Extranjero';
+      return {
+        valid: true,
+        validado: true,
+        tipo: 'EXTRANJERO',
+        numero: cleanDoc,
+        nombre_completo: finalNombre,
+        source: 'MIGRACIONES_EXTRANJERO',
+        fuente: 'MIGRACIONES_EXTRANJERO',
+      };
+    }
+
+    if (tipo !== 'DNI' && tipo !== 'RUC') {
+      throw new HttpError(400, 'Tipo de documento debe ser DNI, RUC o EXTRANJERO');
+    }
+    if (tipo === 'DNI' && !isValidDni(numero)) {
+      throw new HttpError(400, 'El DNI peruano debe tener exactamente 8 dígitos numéricos');
+    }
+    if (tipo === 'RUC' && !isValidRuc(numero)) {
+      throw new HttpError(400, 'El RUC peruano debe tener 11 dígitos válidos (SUNAT)');
+    }
+
+    const cached = !bypassCache
+      ? (db
+          .prepare('SELECT * FROM documentos_peru WHERE tipo = ? AND numero = ?')
+          .get(tipo, numero) as
+          | {
+              tipo: 'DNI' | 'RUC';
+              numero: string;
+              nombre_completo: string;
+              razon_social: string | null;
+              estado: string | null;
+              condicion: string | null;
+              direccion: string | null;
+            }
+          | undefined)
+      : undefined;
+
+    if (cached) {
+      return {
+        valid: true,
+        validado: true,
+        tipo: cached.tipo,
+        numero: cached.numero,
+        nombre_completo: cached.nombre_completo,
+        razon_social: cached.razon_social || undefined,
+        estado: cached.estado || undefined,
+        condicion: cached.condicion || undefined,
+        direccion: cached.direccion || undefined,
+        source: 'CACHE',
+        fuente: 'CACHE',
+      };
+    }
+
+    let nombreCompleto = '';
+    let razonSocial: string | null = null;
+    let estado: string | null = null;
+    let condicion: string | null = null;
+    let direccion: string | null = null;
+    let source: 'RENIEC' | 'SUNAT' | 'VALIDACION_LOCAL' = 'VALIDACION_LOCAL';
+    let providerUsed: 'apisperu' | 'apisnetpe' | undefined;
+
+    if (process.env.NODE_ENV !== 'test') {
+      const devCfg = await resolveDevApiConfig();
+      const apisperuToken = devCfg.tokenConsultasDniRuc;
+      const prov = devCfg.proveedorConsultas;
+
+      if (apisperuToken && (prov === 'apisperu' || prov === 'auto')) {
+        try {
+          const apisperuEndpoint =
+            tipo === 'DNI'
+              ? `https://dniruc.apisperu.com/api/v1/dni/${encodeURIComponent(numero)}?token=${encodeURIComponent(apisperuToken)}`
+              : `https://dniruc.apisperu.com/api/v1/ruc/${encodeURIComponent(numero)}?token=${encodeURIComponent(apisperuToken)}`;
+          const apRes = await fetch(apisperuEndpoint, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(5500),
+          });
+          if (apRes.ok) {
+            const apData = (await apRes.json()) as Record<string, any>;
+            if (apData && apData.success !== false) {
+              if (tipo === 'DNI') {
+                const joined = [apData.nombres, apData.apellidoPaterno, apData.apellidoMaterno]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim();
+                nombreCompleto = String(joined || apData.nombre || '').trim();
+                if (nombreCompleto) {
+                  source = 'RENIEC';
+                  providerUsed = 'apisperu';
+                }
+              } else {
+                razonSocial =
+                  String(apData.razonSocial || apData.nombreComercial || apData.nombre || '').trim() || null;
+                nombreCompleto = razonSocial || '';
+                estado = apData.estado ? String(apData.estado) : null;
+                condicion = apData.condicion ? String(apData.condicion) : null;
+                direccion = apData.direccion ? String(apData.direccion) : null;
+                if (nombreCompleto) {
+                  source = 'SUNAT';
+                  providerUsed = 'apisperu';
+                }
+              }
+            }
+          }
+        } catch {
+          // Fall through to secondary provider / local validation
+        }
+      }
+
+      if (!nombreCompleto && (prov === 'apisnetpe' || prov === 'auto')) {
+        const candidates = [
+          apisperuToken
+            ? tipo === 'DNI'
+              ? `https://api.apis.net.pe/v2/reniec/dni?numero=${encodeURIComponent(numero)}&token=${encodeURIComponent(apisperuToken)}`
+              : `https://api.apis.net.pe/v2/sunat/ruc?numero=${encodeURIComponent(numero)}&token=${encodeURIComponent(apisperuToken)}`
+            : '',
+          tipo === 'DNI'
+            ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
+            : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`,
+        ].filter(Boolean);
+
+        for (const endpoint of candidates) {
+          try {
+            const upstream = await fetch(endpoint, {
+              headers: { Accept: 'application/json' },
+              signal: AbortSignal.timeout(4500),
+            });
+            if (upstream.ok) {
+              const data = (await upstream.json()) as Record<string, any>;
+              if (tipo === 'DNI') {
+                const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
+                  .filter(Boolean)
+                  .join(' ')
+                  .trim();
+                nombreCompleto = String(data.nombreCompleto || data.nombre || joined || '').trim();
+                if (nombreCompleto) {
+                  source = 'RENIEC';
+                  providerUsed = 'apisnetpe';
+                  break;
+                }
+              } else {
+                razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
+                nombreCompleto = razonSocial || '';
+                estado = data.estado ? String(data.estado) : null;
+                condicion = data.condicion ? String(data.condicion) : null;
+                direccion = data.direccion ? String(data.direccion) : null;
+                if (nombreCompleto) {
+                  source = 'SUNAT';
+                  providerUsed = 'apisnetpe';
+                  break;
+                }
+              }
+            }
+          } catch {
+            // Try next endpoint
+          }
+        }
+      }
+    }
+
+    if (!nombreCompleto) {
+      nombreCompleto =
+        tipo === 'DNI'
+          ? `Ciudadano Verificado DNI ${numero}`
+          : `Empresa Verificada RUC ${numero}`;
+      if (tipo === 'RUC') {
+        razonSocial = nombreCompleto;
+      }
+      source = 'VALIDACION_LOCAL';
+    } else {
+      db.prepare(`
+        INSERT OR REPLACE INTO documentos_peru (tipo, numero, nombre_completo, razon_social, estado, condicion, direccion, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(tipo, numero, nombreCompleto, razonSocial, estado, condicion, direccion, source);
+
+      if (process.env.DISABLE_FIREBASE_SYNC !== 'true') {
+        const baseUrl = getRtdbBaseUrl();
+        if (baseUrl) {
+          void fetch(`${baseUrl}/lachuspa/documentos/${tipo}_${numero}.json`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              valid: true,
+              validado: true,
+              tipo,
+              numero,
+              nombre_completo: nombreCompleto,
+              razon_social: razonSocial,
+              estado,
+              condicion,
+              direccion,
+              source,
+              fuente: source,
+              updated_at: new Date().toISOString(),
+            }),
+          }).catch(() => {});
+        }
+      }
+    }
+
+    return {
+      valid: true,
+      validado: true,
+      tipo: tipo as 'DNI' | 'RUC',
+      numero,
+      nombre_completo: nombreCompleto,
+      razon_social: razonSocial || undefined,
+      estado: estado || undefined,
+      condicion: condicion || undefined,
+      direccion: direccion || undefined,
+      source,
+      fuente: providerUsed || source,
+    };
+  }
+
   app.get('/api/public/consulta-documento', publicLimiter, async (req, res, next) => {
     try {
       const tipo = String(req.query.tipo || '').trim().toUpperCase();
       const numero = String(req.query.numero || '').trim();
       const nombreQuery = String(req.query.nombre || '').trim();
-
-      if (tipo === 'EXTRANJERO') {
-        const cleanDoc = numero.toUpperCase();
-        if (!isValidForeignDoc(cleanDoc)) {
-          throw new HttpError(
-            400,
-            'El Pasaporte o Carné de Extranjería debe tener entre 6 y 20 caracteres alfanuméricos.'
-          );
-        }
-        const finalNombre =
-          nombreQuery.length >= 2 ? nombreQuery.slice(0, 120) : 'Pasajero / Cliente Extranjero';
-        res.json({
-          valid: true,
-          validado: true,
-          tipo: 'EXTRANJERO',
-          numero: cleanDoc,
-          nombre_completo: finalNombre,
-          source: 'MIGRACIONES_EXTRANJERO',
-          fuente: 'MIGRACIONES_EXTRANJERO',
-        });
-        return;
-      }
-
-      if (tipo !== 'DNI' && tipo !== 'RUC') {
-        throw new HttpError(400, 'Tipo de documento debe ser DNI, RUC o EXTRANJERO');
-      }
-      if (tipo === 'DNI' && !isValidDni(numero)) {
-        throw new HttpError(400, 'El DNI peruano debe tener exactamente 8 dígitos numéricos');
-      }
-      if (tipo === 'RUC' && !isValidRuc(numero)) {
-        throw new HttpError(400, 'El RUC peruano debe tener 11 dígitos válidos (SUNAT)');
-      }
-
       const bypassCache = String(req.query.nocache || '') === '1';
-      const cached = !bypassCache
-        ? (db
-            .prepare('SELECT * FROM documentos_peru WHERE tipo = ? AND numero = ?')
-            .get(tipo, numero) as
-            | {
-                tipo: 'DNI' | 'RUC';
-                numero: string;
-                nombre_completo: string;
-                razon_social: string | null;
-                estado: string | null;
-                condicion: string | null;
-                direccion: string | null;
-              }
-            | undefined)
-        : undefined;
-
-      if (cached) {
-        res.json({
-          valid: true,
-          validado: true,
-          tipo: cached.tipo,
-          numero: cached.numero,
-          nombre_completo: cached.nombre_completo,
-          razon_social: cached.razon_social || undefined,
-          estado: cached.estado || undefined,
-          condicion: cached.condicion || undefined,
-          direccion: cached.direccion || undefined,
-          source: 'CACHE',
-          fuente: 'CACHE',
-        });
-        return;
-      }
-
-      let nombreCompleto = '';
-      let razonSocial: string | null = null;
-      let estado: string | null = null;
-      let condicion: string | null = null;
-      let direccion: string | null = null;
-      let source: 'RENIEC' | 'SUNAT' | 'VALIDACION_LOCAL' = 'VALIDACION_LOCAL';
-      let providerUsed: 'apisperu' | 'apisnetpe' | undefined;
-
-      if (process.env.NODE_ENV !== 'test') {
-        const devCfg = await resolveDevApiConfig();
-        const apisperuToken = devCfg.tokenConsultasDniRuc;
-        const prov = devCfg.proveedorConsultas;
-
-        if (apisperuToken && (prov === 'apisperu' || prov === 'auto')) {
-          try {
-            const apisperuEndpoint =
-              tipo === 'DNI'
-                ? `https://dniruc.apisperu.com/api/v1/dni/${encodeURIComponent(numero)}?token=${encodeURIComponent(apisperuToken)}`
-                : `https://dniruc.apisperu.com/api/v1/ruc/${encodeURIComponent(numero)}?token=${encodeURIComponent(apisperuToken)}`;
-            const apRes = await fetch(apisperuEndpoint, {
-              headers: { Accept: 'application/json' },
-              signal: AbortSignal.timeout(5500),
-            });
-            if (apRes.ok) {
-              const apData = (await apRes.json()) as Record<string, any>;
-              if (apData && apData.success !== false) {
-                if (tipo === 'DNI') {
-                  const joined = [apData.nombres, apData.apellidoPaterno, apData.apellidoMaterno]
-                    .filter(Boolean)
-                    .join(' ')
-                    .trim();
-                  nombreCompleto = String(joined || apData.nombre || '').trim();
-                  if (nombreCompleto) {
-                    source = 'RENIEC';
-                    providerUsed = 'apisperu';
-                  }
-                } else {
-                  razonSocial =
-                    String(apData.razonSocial || apData.nombreComercial || apData.nombre || '').trim() || null;
-                  nombreCompleto = razonSocial || '';
-                  estado = apData.estado ? String(apData.estado) : null;
-                  condicion = apData.condicion ? String(apData.condicion) : null;
-                  direccion = apData.direccion ? String(apData.direccion) : null;
-                  if (nombreCompleto) {
-                    source = 'SUNAT';
-                    providerUsed = 'apisperu';
-                  }
-                }
-              }
-            }
-          } catch {
-            // Fall through to secondary provider / local validation
-          }
-        }
-
-        if (!nombreCompleto && (prov === 'apisnetpe' || prov === 'auto')) {
-          const candidates = [
-            apisperuToken
-              ? tipo === 'DNI'
-                ? `https://api.apis.net.pe/v2/reniec/dni?numero=${encodeURIComponent(numero)}&token=${encodeURIComponent(apisperuToken)}`
-                : `https://api.apis.net.pe/v2/sunat/ruc?numero=${encodeURIComponent(numero)}&token=${encodeURIComponent(apisperuToken)}`
-              : '',
-            tipo === 'DNI'
-              ? `https://api.apis.net.pe/v1/dni?numero=${encodeURIComponent(numero)}`
-              : `https://api.apis.net.pe/v1/ruc?numero=${encodeURIComponent(numero)}`,
-          ].filter(Boolean);
-
-          for (const endpoint of candidates) {
-            try {
-              const upstream = await fetch(endpoint, {
-                headers: { Accept: 'application/json' },
-                signal: AbortSignal.timeout(4500),
-              });
-              if (upstream.ok) {
-                const data = (await upstream.json()) as Record<string, any>;
-                if (tipo === 'DNI') {
-                  const joined = [data.nombres, data.apellidoPaterno, data.apellidoMaterno]
-                    .filter(Boolean)
-                    .join(' ')
-                    .trim();
-                  nombreCompleto = String(data.nombreCompleto || data.nombre || joined || '').trim();
-                  if (nombreCompleto) {
-                    source = 'RENIEC';
-                    providerUsed = 'apisnetpe';
-                    break;
-                  }
-                } else {
-                  razonSocial = String(data.nombre || data.razonSocial || '').trim() || null;
-                  nombreCompleto = razonSocial || '';
-                  estado = data.estado ? String(data.estado) : null;
-                  condicion = data.condicion ? String(data.condicion) : null;
-                  direccion = data.direccion ? String(data.direccion) : null;
-                  if (nombreCompleto) {
-                    source = 'SUNAT';
-                    providerUsed = 'apisnetpe';
-                    break;
-                  }
-                }
-              }
-            } catch {
-              // Try next endpoint
-            }
-          }
-        }
-      }
-
-      if (!nombreCompleto) {
-        nombreCompleto =
-          tipo === 'DNI'
-            ? `Ciudadano Verificado DNI ${numero}`
-            : `Empresa Verificada RUC ${numero}`;
-        if (tipo === 'RUC') {
-          razonSocial = nombreCompleto;
-        }
-        source = 'VALIDACION_LOCAL';
-      } else {
-        db.prepare(`
-          INSERT OR REPLACE INTO documentos_peru (tipo, numero, nombre_completo, razon_social, estado, condicion, direccion, source)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(tipo, numero, nombreCompleto, razonSocial, estado, condicion, direccion, source);
-
-        if (process.env.DISABLE_FIREBASE_SYNC !== 'true') {
-          const baseUrl = getRtdbBaseUrl();
-          if (baseUrl) {
-            void fetch(`${baseUrl}/lachuspa/documentos/${tipo}_${numero}.json`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                valid: true,
-                validado: true,
-                tipo,
-                numero,
-                nombre_completo: nombreCompleto,
-                razon_social: razonSocial,
-                estado,
-                condicion,
-                direccion,
-                source,
-                fuente: source,
-                updated_at: new Date().toISOString(),
-              }),
-            }).catch(() => {});
-          }
-        }
-      }
-
-      res.json({
-        valid: true,
-        validado: true,
-        tipo,
-        numero,
-        nombre_completo: nombreCompleto,
-        razon_social: razonSocial || undefined,
-        estado: estado || undefined,
-        condicion: condicion || undefined,
-        direccion: direccion || undefined,
-        source,
-        fuente: providerUsed || source,
-      });
+      const result = await lookupPeruDocumentServer(tipo, numero, nombreQuery, bypassCache);
+      res.json(result);
     } catch (err) {
       next(err);
     }
+  });
+
+  registerUserAuthRoutes(app, {
+    db,
+    authLimiter,
+    publicLimiter,
+    lookupPeruDocument: lookupPeruDocumentServer,
   });
 
   app.get('/api/public/directorio', publicLimiter, (_req, res) => {

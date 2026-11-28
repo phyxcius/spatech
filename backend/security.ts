@@ -103,8 +103,9 @@ export function decryptOrderPin(payload: string | null): string | null {
 }
 
 export interface SessionPayload {
-  role: 'NEGOCIO' | 'ADMIN';
+  role: 'NEGOCIO' | 'ADMIN' | 'CLIENTE';
   negocioId?: number;
+  usuarioId?: number;
   rubro?: Rubro;
   iat: number;
   exp: number;
@@ -157,7 +158,7 @@ export function verifySessionToken(token: string): SessionPayload | null {
     const parsed = JSON.parse(base64UrlDecode(payload)) as SessionPayload;
     const now = Math.floor(Date.now() / 1000);
     if (!parsed.exp || parsed.exp < now) return null;
-    if (parsed.role !== 'NEGOCIO' && parsed.role !== 'ADMIN') return null;
+    if (parsed.role !== 'NEGOCIO' && parsed.role !== 'ADMIN' && parsed.role !== 'CLIENTE') return null;
     return parsed;
   } catch {
     return null;
@@ -195,6 +196,25 @@ export function requireBusinessAuth(req: AuthedRequest, res: Response, next: Nex
       res.status(403).json({ error: 'No tienes permiso para acceder a otro negocio' });
       return;
     }
+  }
+  req.session = session;
+  next();
+}
+
+export function requireUserAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
+  const token = extractBearer(req);
+  if (!token) {
+    res.status(401).json({ error: 'Sesión de usuario requerida' });
+    return;
+  }
+  const session = verifySessionToken(token);
+  if (!session) {
+    res.status(401).json({ error: 'Sesión inválida o expirada' });
+    return;
+  }
+  if (session.role !== 'CLIENTE' || !session.usuarioId) {
+    res.status(403).json({ error: 'Acceso restringido a cuentas de usuario La Chuspa' });
+    return;
   }
   req.session = session;
   next();
