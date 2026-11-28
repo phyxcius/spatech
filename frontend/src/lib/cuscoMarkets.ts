@@ -389,12 +389,319 @@ export function extractCuscoDestination(query: string): string | null {
   return null;
 }
 
+export type SectorKey =
+  | 'TRANSPORTE'
+  | 'HOTELERIA'
+  | 'RESTAURANTE'
+  | 'FARMACIA'
+  | 'TURISMO'
+  | 'CASA_CAMBIO'
+  | 'FERRETERIA'
+  | 'PINATERIA'
+  | 'EMPLEOS'
+  | 'MINIMARKET'
+  | 'VETERINARIA';
+
+export interface SectorIntentInfo {
+  sectorKey: SectorKey;
+  sectorLabel: string;
+  rubroBase: 'TRANSPORTE' | 'TURISMO' | 'HOTEL' | 'RESTAURANTE' | 'FARMACIA' | 'CASA_CAMBIO';
+  expandedTerms: string[];
+  isHospitalityHousekeeping: boolean;
+}
+
 export interface ConciergeIntentResult {
   mode: 'TAXI' | 'MARKET' | 'DIVISAS' | 'CATALOG';
   rubro: 'TRANSPORTE' | 'TURISMO' | 'HOTEL' | 'RESTAURANTE' | 'FARMACIA' | 'CASA_CAMBIO';
+  sectorKey: SectorKey;
+  sectorLabel: string;
   openOnly: boolean;
   fromMyLocation: boolean;
   destino: string | null;
+}
+
+export const SECTOR_LABELS: Record<SectorKey, string> = {
+  TRANSPORTE: 'Taxi / Movilidad / Transporte',
+  HOTELERIA: 'Hotelería / Hospedaje / Alojamiento',
+  RESTAURANTE: 'Restaurante / Gastronomía',
+  FARMACIA: 'Botica / Farmacia',
+  TURISMO: 'Turismo & Guías',
+  CASA_CAMBIO: 'Casa de Cambio / Divisas',
+  FERRETERIA: 'Ferretería & Materiales',
+  PINATERIA: 'Piñatería & Eventos',
+  EMPLEOS: 'Empleos & Talento RRHH',
+  MINIMARKET: 'Minimarket / Bodega',
+  VETERINARIA: 'Veterinaria / Mascotas',
+};
+
+const HOUSEKEEPING_HOTEL_RX =
+  /\b(housekeeping|housekeeper|ama de llaves|camareria|camarera|camarero de piso|cuartelero|mucama|lenceria hotelera|limpieza de habitaciones|acondicionamiento de habitaciones|recepcionista de hotel|botones|bellboy)\b/;
+
+const HOTEL_CORE_RX =
+  /\b(hotel|hoteles|hoteleria|hostal|hostales|hospedaje|hospedajes|alojamiento|alojamientos|habitacion|habitaciones|suite|suites|spa|day-use|posada|lodge|airbnb)\b/;
+
+const RESTAURANT_CORE_RX =
+  /\b(restaurante|restaurantes|restaurant|gastronomia|comida|comer|almuerzo|cena|desayuno|ceviche|lomo|trucha|brasa|pollo|chifa|pizzeria|cafeteria|cocina|limpieza de cocina|limpieza de salon|salon|comedor|azafata|mozo|mesero|mesera|cocinero|chef|salonero|lavaplatos)\b/;
+
+export function detectSectorIntent(query: string): SectorIntentInfo {
+  const q = normalizeText(query);
+
+  // 1. Transporte / Taxi
+  if (
+    /\b(taxi|taxis|uber|indriver|indrive|movilidad|chofer|conductor|carrera|pasaje|traslado|llevame|llevarme)\b/.test(
+      q
+    )
+  ) {
+    return {
+      sectorKey: 'TRANSPORTE',
+      sectorLabel: SECTOR_LABELS.TRANSPORTE,
+      rubroBase: 'TRANSPORTE',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 2. Farmacia / Veterinaria
+  if (/\b(veterinaria|veterinario|mascota|mascotas|perro|gato|petshop)\b/.test(q)) {
+    return {
+      sectorKey: 'VETERINARIA',
+      sectorLabel: SECTOR_LABELS.VETERINARIA,
+      rubroBase: 'FARMACIA',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+  if (
+    /\b(farmacia|farmacias|botica|boticas|drogueria|soroche|oxigeno|pastilla|pastillas|medicina|medicinas|medicamento|medicamentos|jarabe|ibuprofeno|paracetamol|analgesico|botiquin)\b/.test(
+      q
+    )
+  ) {
+    return {
+      sectorKey: 'FARMACIA',
+      sectorLabel: SECTOR_LABELS.FARMACIA,
+      rubroBase: 'FARMACIA',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 3. Casa de cambio
+  if (
+    /\b(casa de cambio|casas de cambio|cambiar dolares|cambiar euros|cambio|dolar|dolares|usd|eur|euro|euros|divisa|divisas|cambista)\b/.test(
+      q
+    )
+  ) {
+    return {
+      sectorKey: 'CASA_CAMBIO',
+      sectorLabel: SECTOR_LABELS.CASA_CAMBIO,
+      rubroBase: 'CASA_CAMBIO',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 4. Hotelería / Hospedaje / Housekeeping (prioridad estricta sobre empleo/restaurante si pide housekeeping)
+  const isHousekeeping = HOUSEKEEPING_HOTEL_RX.test(q);
+  if (isHousekeeping || HOTEL_CORE_RX.test(q)) {
+    return {
+      sectorKey: 'HOTELERIA',
+      sectorLabel: SECTOR_LABELS.HOTELERIA,
+      rubroBase: 'HOTEL',
+      expandedTerms: isHousekeeping
+        ? [
+            'housekeeping',
+            'housekeeper',
+            'ama de llaves',
+            'camareria',
+            'camarera',
+            'camarero de piso',
+            'cuartelero',
+            'mucama',
+            'limpieza de habitaciones',
+            'acondicionamiento de habitaciones',
+          ]
+        : [],
+      isHospitalityHousekeeping: isHousekeeping,
+    };
+  }
+
+  // 5. Sub-rubros específicos dentro de comercio / servicios
+  if (
+    /\b(ferreteria|ferreterias|clavo|clavos|tornillo|tornillos|cemento|tubo|tubos|taladro|pintura|herramienta|herramientas|gasfiteria|construccion)\b/.test(
+      q
+    )
+  ) {
+    return {
+      sectorKey: 'FERRETERIA',
+      sectorLabel: SECTOR_LABELS.FERRETERIA,
+      rubroBase: 'RESTAURANTE',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  if (/\b(pinateria|pinata|cotillon|globos|cumpleanos|fiesta|decoracion)\b/.test(q)) {
+    return {
+      sectorKey: 'PINATERIA',
+      sectorLabel: SECTOR_LABELS.PINATERIA,
+      rubroBase: 'RESTAURANTE',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 6. Restaurante / Gastronomía (incluye roles de restaurante: cocina, salón, comedor, azafata, mozo)
+  if (RESTAURANT_CORE_RX.test(q)) {
+    return {
+      sectorKey: 'RESTAURANTE',
+      sectorLabel: SECTOR_LABELS.RESTAURANTE,
+      rubroBase: 'RESTAURANTE',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 7. Minimarket / Bodega
+  if (
+    /\b(market|markets|minimarket|minimarkets|bodega|bodegas|supermercado|abarrotes|viveres|leche|atun|arroz|aceite|pan|agua|azucar|huevos|fideos)\b/.test(
+      q
+    )
+  ) {
+    return {
+      sectorKey: 'MINIMARKET',
+      sectorLabel: SECTOR_LABELS.MINIMARKET,
+      rubroBase: 'RESTAURANTE',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 8. Empleos / RRHH (cuando no especificó Hotelería o Restaurante)
+  if (/\b(empleo|empleos|trabajo|vacante|vacantes|rrhh|talento|reclutamiento|postulacion)\b/.test(q)) {
+    return {
+      sectorKey: 'EMPLEOS',
+      sectorLabel: SECTOR_LABELS.EMPLEOS,
+      rubroBase: 'TURISMO',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 9. Turismo & Guías
+  if (
+    /\b(tour|tours|turismo|guia|excursion|machu|picchu|valle sagrado|maras|moray|sacsayhuaman|vinicunca)\b/.test(
+      q
+    )
+  ) {
+    return {
+      sectorKey: 'TURISMO',
+      sectorLabel: SECTOR_LABELS.TURISMO,
+      rubroBase: 'TURISMO',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  // 10. Destinos de transporte sin otra categoría explícita
+  if (/\b(auto|carro|viaje|aeropuerto|terminal|estacion|poroy|ir al|ir a la|ir hasta)\b/.test(q)) {
+    return {
+      sectorKey: 'TRANSPORTE',
+      sectorLabel: SECTOR_LABELS.TRANSPORTE,
+      rubroBase: 'TRANSPORTE',
+      expandedTerms: [],
+      isHospitalityHousekeeping: false,
+    };
+  }
+
+  return {
+    sectorKey: 'RESTAURANTE',
+    sectorLabel: SECTOR_LABELS.RESTAURANTE,
+    rubroBase: 'RESTAURANTE',
+    expandedTerms: [],
+    isHospitalityHousekeeping: false,
+  };
+}
+
+export function classifyRecordSectorClient(params: {
+  rubro?: string | null;
+  tipo_negocio?: string | null;
+  nombre?: string | null;
+  descripcion?: string | null;
+  panel_ia_titulo?: string | null;
+  atributos_rubro?: string | null;
+}): {
+  specified: boolean;
+  sectorKey: SectorKey | null;
+  sectorLabel: string;
+} {
+  const tipo = normalizeText(params.tipo_negocio || '');
+  const attrRubro = normalizeText(params.atributos_rubro || '');
+  const panelTitulo = normalizeText(params.panel_ia_titulo || '');
+  const fullDesc = normalizeText(`${params.nombre || ''} ${params.descripcion || ''}`);
+  const explicitUnspecified =
+    /(no especificado|sin especificar|rubro no especificado|indefinido|por definir|sin rubro)/.test(
+      `${tipo} ${attrRubro}`
+    ) || !params.rubro;
+
+  if (explicitUnspecified) {
+    return { specified: false, sectorKey: null, sectorLabel: 'Rubro no especificado' };
+  }
+
+  const sectorSource = `${attrRubro} ${tipo} ${panelTitulo}`.trim();
+  const isGenericTipo =
+    !sectorSource ||
+    /^(comercio multirubro|tienda multirubro|general|varios|multirubro|servicios varios)$/.test(
+      sectorSource
+    );
+
+  // Detectar sub-rubro claro por tipo_negocio / panel_ia / atributos primero
+  const probeText = isGenericTipo ? fullDesc : `${sectorSource} ${fullDesc}`;
+
+  if (/(hotel|hostal|hospedaje|alojamiento|suite|suites|posada|lodge|housekeeping|ama de llaves|habitacion)/.test(probeText)) {
+    return { specified: true, sectorKey: 'HOTELERIA', sectorLabel: SECTOR_LABELS.HOTELERIA };
+  }
+  if (/(ferreteria|clavos|tornillos|construccion|herramienta)/.test(probeText)) {
+    return { specified: true, sectorKey: 'FERRETERIA', sectorLabel: SECTOR_LABELS.FERRETERIA };
+  }
+  if (/(pinateria|cotillon|pinata|globos)/.test(probeText)) {
+    return { specified: true, sectorKey: 'PINATERIA', sectorLabel: SECTOR_LABELS.PINATERIA };
+  }
+  if (/(empleo|rrhh|talento|reclutamiento|vacante)/.test(probeText)) {
+    return { specified: true, sectorKey: 'EMPLEOS', sectorLabel: SECTOR_LABELS.EMPLEOS };
+  }
+  if (/(veterinaria|mascota|petshop)/.test(probeText)) {
+    return { specified: true, sectorKey: 'VETERINARIA', sectorLabel: SECTOR_LABELS.VETERINARIA };
+  }
+  if (/(minimarket|bodega|abarrotes|viveres)/.test(probeText)) {
+    return { specified: true, sectorKey: 'MINIMARKET', sectorLabel: SECTOR_LABELS.MINIMARKET };
+  }
+  if (/(restaurante|gastronomia|cocina|platos|gourmet|ceviche|brasa|comedor|azafata|mozo)/.test(probeText)) {
+    return { specified: true, sectorKey: 'RESTAURANTE', sectorLabel: SECTOR_LABELS.RESTAURANTE };
+  }
+  if (/(farmacia|botica|farmaceutic|soroche|apotecaria)/.test(probeText)) {
+    return { specified: true, sectorKey: 'FARMACIA', sectorLabel: SECTOR_LABELS.FARMACIA };
+  }
+  if (/(taxi|movilidad|flota|sedanes|transporte)/.test(probeText)) {
+    return { specified: true, sectorKey: 'TRANSPORTE', sectorLabel: SECTOR_LABELS.TRANSPORTE };
+  }
+  if (/(casa de cambio|divisa|dolares|euros)/.test(probeText)) {
+    return { specified: true, sectorKey: 'CASA_CAMBIO', sectorLabel: SECTOR_LABELS.CASA_CAMBIO };
+  }
+  if (/(turismo|guia|machu|excursion)/.test(probeText)) {
+    return { specified: true, sectorKey: 'TURISMO', sectorLabel: SECTOR_LABELS.TURISMO };
+  }
+
+  if (isGenericTipo) {
+    return { specified: false, sectorKey: null, sectorLabel: 'Rubro no especificado' };
+  }
+
+  const base = params.rubro as string;
+  if (base === 'HOTEL') return { specified: true, sectorKey: 'HOTELERIA', sectorLabel: SECTOR_LABELS.HOTELERIA };
+  if (base === 'FARMACIA') return { specified: true, sectorKey: 'FARMACIA', sectorLabel: SECTOR_LABELS.FARMACIA };
+  if (base === 'TRANSPORTE') return { specified: true, sectorKey: 'TRANSPORTE', sectorLabel: SECTOR_LABELS.TRANSPORTE };
+  if (base === 'CASA_CAMBIO') return { specified: true, sectorKey: 'CASA_CAMBIO', sectorLabel: SECTOR_LABELS.CASA_CAMBIO };
+  if (base === 'TURISMO') return { specified: true, sectorKey: 'TURISMO', sectorLabel: SECTOR_LABELS.TURISMO };
+  return { specified: true, sectorKey: 'RESTAURANTE', sectorLabel: SECTOR_LABELS.RESTAURANTE };
 }
 
 export function detectConciergeIntent(query: string): ConciergeIntentResult {
@@ -402,72 +709,51 @@ export function detectConciergeIntent(query: string): ConciergeIntentResult {
   const openOnly = /\b(abierta|abierto|abiertas|abiertos|de turno|turno|24h|24 horas|ahora)\b/.test(q);
   const fromMyLocation = /\b(desde mi ubicacion|mi ubicacion|aqui donde estoy|desde aqui)\b/.test(q);
   const destino = extractCuscoDestination(query);
+  const sector = detectSectorIntent(query);
 
-  const explicitTaxiRide = /\b(taxi|taxis|uber|indriver|indrive|movilidad|chofer|conductor|carrera|pasaje|traslado|llevame|llevarme)\b/.test(
-    q
-  );
-  const explicitFarmacia = /\b(farmacia|farmacias|botica|boticas|drogueria|soroche|oxigeno|pastilla|pastillas|medicina|medicinas|medicamento|medicamentos|jarabe|ibuprofeno|paracetamol|analgesico|botiquin)\b/.test(
-    q
-  );
-  const explicitRestaurante = /\b(restaurante|restaurantes|restaurant|comida|comer|almuerzo|cena|desayuno|ceviche|lomo|trucha|brasa|pollo|menu|chifa|pizzeria|cafeteria|ferreteria|ferreterias|clavos|tornillos|pinateria|veterinaria)\b/.test(
-    q
-  );
-  const explicitHotel = /\b(hotel|hoteles|hostal|hospedaje|alojamiento|habitacion|habitaciones|suite|spa|posada|day-use)\b/.test(
-    q
-  );
-  const explicitTurismo = /\b(tour|tours|turismo|guia|excursion|machu|picchu|valle sagrado|maras|moray|sacsayhuaman|vinicunca)\b/.test(
-    q
-  );
-  const explicitDivisas = /\b(casa de cambio|casas de cambio|cambiar dolares|cambiar euros|cambio|dolar|dolares|usd|eur|euro|euros|divisa|divisas|cambista)\b/.test(
-    q
-  );
-  const explicitMarket = /\b(market|markets|minimarket|minimarkets|bodega|bodegas|supermercado|abarrotes|viveres|leche|atun|arroz|aceite|pan|agua|azucar|huevos|fideos)\b/.test(
-    q
-  );
-
-  // 1. Si pide explícitamente un taxi / movilidad / traslado -> SOLO TAXIS
-  if (explicitTaxiRide) {
+  if (sector.sectorKey === 'TRANSPORTE') {
     return {
       mode: 'TAXI',
       rubro: 'TRANSPORTE',
+      sectorKey: sector.sectorKey,
+      sectorLabel: sector.sectorLabel,
+      openOnly,
+      fromMyLocation,
+      destino,
+    };
+  }
+  if (sector.sectorKey === 'CASA_CAMBIO') {
+    return {
+      mode: 'DIVISAS',
+      rubro: 'CASA_CAMBIO',
+      sectorKey: sector.sectorKey,
+      sectorLabel: sector.sectorLabel,
+      openOnly,
+      fromMyLocation,
+      destino,
+    };
+  }
+  if (sector.sectorKey === 'MINIMARKET') {
+    return {
+      mode: 'MARKET',
+      rubro: 'RESTAURANTE',
+      sectorKey: sector.sectorKey,
+      sectorLabel: sector.sectorLabel,
       openOnly,
       fromMyLocation,
       destino,
     };
   }
 
-  // 2. Categorías explícitas de negocios (tienen prioridad sobre referencias geográficas como "cerca del aeropuerto/terminal/plaza")
-  if (explicitFarmacia) {
-    return { mode: 'CATALOG', rubro: 'FARMACIA', openOnly, fromMyLocation, destino };
-  }
-  if (explicitDivisas) {
-    return { mode: 'DIVISAS', rubro: 'CASA_CAMBIO', openOnly, fromMyLocation, destino };
-  }
-  if (explicitMarket) {
-    return { mode: 'MARKET', rubro: 'RESTAURANTE', openOnly, fromMyLocation, destino };
-  }
-  if (explicitRestaurante) {
-    return { mode: 'CATALOG', rubro: 'RESTAURANTE', openOnly, fromMyLocation, destino };
-  }
-  if (explicitHotel) {
-    return { mode: 'CATALOG', rubro: 'HOTEL', openOnly, fromMyLocation, destino };
-  }
-  if (explicitTurismo) {
-    return { mode: 'CATALOG', rubro: 'TURISMO', openOnly, fromMyLocation, destino };
-  }
-
-  // 3. Fallback si menciona transporte/destino sin pedir otro negocio
-  if (/\b(auto|carro|viaje|aeropuerto|terminal|estacion|poroy|ir al|ir a la|ir hasta)\b/.test(q)) {
-    return {
-      mode: 'TAXI',
-      rubro: 'TRANSPORTE',
-      openOnly,
-      fromMyLocation,
-      destino,
-    };
-  }
-
-  return { mode: 'CATALOG', rubro: 'RESTAURANTE', openOnly, fromMyLocation, destino };
+  return {
+    mode: 'CATALOG',
+    rubro: sector.rubroBase,
+    sectorKey: sector.sectorKey,
+    sectorLabel: sector.sectorLabel,
+    openOnly,
+    fromMyLocation,
+    destino,
+  };
 }
 
 export function detectIntentFromQuery(query: string): 'TAXI' | 'MARKET' | 'DIVISAS' | 'OTHER' {

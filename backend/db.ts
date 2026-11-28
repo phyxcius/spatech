@@ -426,8 +426,8 @@ export function seedDatabase(db: DatabaseSync): void {
   }
 
   const insertNegocio = db.prepare(`
-    INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0, ?, ?, ?, ?)
+    INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido, calificacion, horario_apertura, horario_cierre, abierto_24h, tipo_negocio)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, 0, ?, ?, ?, ?, ?)
   `);
   const insertCred = db.prepare(
     'INSERT INTO seguridad_credenciales (negocio_id, pin_hash, pin_salt) VALUES (?, ?, ?)'
@@ -440,6 +440,7 @@ export function seedDatabase(db: DatabaseSync): void {
   const seedBusinesses: Array<{
     codigo: string;
     rubro: Rubro;
+    tipo_negocio: string;
     nombre: string;
     telefono: string;
     descripcion: string;
@@ -453,6 +454,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-TX-01',
       rubro: 'TRANSPORTE',
+      tipo_negocio: 'Taxi / Movilidad',
       nombre: 'Inka Executive Mobility',
       telefono: '+51984110201',
       descripcion: 'Flota privada certificada con traslados ejecutivos aeropuerto, centro y Valle Sagrado.',
@@ -466,6 +468,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-TX-02',
       rubro: 'TRANSPORTE',
+      tipo_negocio: 'Taxi / Movilidad',
       nombre: 'Qorikancha Private Cars',
       telefono: '+51984110202',
       descripcion: 'Sedanes ejecutivos y SUVs híbridas de recojo inmediato en Cusco.',
@@ -479,6 +482,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-TU-01',
       rubro: 'TURISMO',
+      tipo_negocio: 'Turismo & Guías',
       nombre: 'Apu Salkantay Atelier',
       telefono: '+51984220301',
       descripcion: 'Guías oficiales bilingües y experiencias privadas en Machu Picchu, Maras y Moray.',
@@ -492,6 +496,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-TU-02',
       rubro: 'TURISMO',
+      tipo_negocio: 'Turismo & Guías',
       nombre: 'Andes Heritage Concierge',
       telefono: '+51984220302',
       descripcion: 'Excursiones curadas al Valle Sagrado y Vinicunca con guía privado.',
@@ -505,6 +510,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-RE-01',
       rubro: 'RESTAURANTE',
+      tipo_negocio: 'Restaurante / Gastronomía',
       nombre: 'Cicciolina & Brasa Andina',
       telefono: '+51984330401',
       descripcion: 'Alta cocina cusqueña contemporánea, tapas andinas y cava privada.',
@@ -518,6 +524,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-RE-02',
       rubro: 'RESTAURANTE',
+      tipo_negocio: 'Restaurante / Gastronomía',
       nombre: 'Chicha Gourmet Express',
       telefono: '+51984330402',
       descripcion: 'Platos emblemáticos cusqueños con despacho térmico de lujo.',
@@ -531,6 +538,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-FA-01',
       rubro: 'FARMACIA',
+      tipo_negocio: 'Botica / Farmacia',
       nombre: 'Botica Imperial San Blas',
       telefono: '+51984440501',
       descripcion: 'Farmacia 24h especializada en mal de altura (soroche), oxígeno portátil y dermocosmética.',
@@ -544,6 +552,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-FA-02',
       rubro: 'FARMACIA',
+      tipo_negocio: 'Botica / Farmacia',
       nombre: 'Apotecaria Plaza Mayor',
       telefono: '+51984440502',
       descripcion: 'Atención farmacéutica bilingüe y entrega directa en hoteles boutique.',
@@ -557,6 +566,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-HO-01',
       rubro: 'HOTEL',
+      tipo_negocio: 'Hotel / Alojamiento',
       nombre: 'Palacio Nazarenas Suites',
       telefono: '+51984550601',
       descripcion: 'Suites claustro oxigenadas en casona colonial del siglo XVI con mayordomo.',
@@ -570,6 +580,7 @@ export function seedDatabase(db: DatabaseSync): void {
     {
       codigo: 'NEG-CC-01',
       rubro: 'CASA_CAMBIO',
+      tipo_negocio: 'Casa de Cambio',
       nombre: 'Casa de Cambio Inti Gold',
       telefono: '+51984660701',
       descripcion: 'Cambio preferencial USD/EUR/BRL a Soles con reserva de tasa y recojo blindado.',
@@ -598,7 +609,8 @@ export function seedDatabase(db: DatabaseSync): void {
       b.calificacion,
       is24h ? '00:00' : '07:00',
       is24h ? '23:59' : '22:30',
-      is24h ? 1 : 0
+      is24h ? 1 : 0,
+      b.tipo_negocio
     );
     const id = Number(res.lastInsertRowid);
     negocioIds[b.codigo] = id;

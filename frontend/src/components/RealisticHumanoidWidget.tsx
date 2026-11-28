@@ -542,14 +542,19 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
         method: 'POST',
         body: {
           query: clean,
-          categoria: forcedCat,
           destino: parsedIntent.destino || undefined,
           lat: -13.5167,
           lng: -71.9788,
         },
       });
+      const resolvedCat = res?.categoria || forcedCat;
       const opts = Array.isArray(res?.opciones)
-        ? res.opciones.filter((o) => o.categoria === forcedCat)
+        ? res.opciones.filter(
+            (o) =>
+              o.categoria === resolvedCat &&
+              o.rubro_estado !== 'NO_ESPECIFICADO' &&
+              o.rubro_estado !== 'OTRO_RUBRO'
+          )
         : [];
       const top = opts.find((o) => o.mejor_precio) || opts[0];
       const ms = Math.max(1, Math.round(performance.now() - t0));
@@ -564,8 +569,8 @@ export const FloatingAvatarWidget: React.FC<FloatingAvatarWidgetProps> = ({
       }
       onAssistantDispatch({
         query: clean,
-        intent: forcedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER',
-        categoria: forcedCat,
+        intent: resolvedCat === 'TRANSPORTE' ? 'TAXI' : 'OTHER',
+        categoria: resolvedCat,
         reply,
         responseMs: ms,
         opciones: opts,

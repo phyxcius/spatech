@@ -9,9 +9,13 @@ import type {
 } from '../types.ts';
 import { buildClientFallbackPanelForRubro } from './aiPanelBuilder.ts';
 import {
+  classifyRecordSectorClient,
   detectConciergeIntent,
+  detectSectorIntent,
   extractCuscoDestination,
   resolveCuscoDestination,
+  SECTOR_LABELS,
+  type SectorKey,
 } from './cuscoMarkets.ts';
 import {
   formatPeruLookupError,
@@ -821,12 +825,15 @@ function isRtdbBusinessOpenNow(n?: RtdbNegocio): boolean {
 const RTDB_STOP_WORDS = new Set([
   'quiero',
   'necesito',
+  'deseo',
+  'solicito',
   'para',
   'desde',
   'hasta',
   'hacia',
   'ubicacion',
   'busco',
+  'buscando',
   'favor',
   'cusco',
   'una',
@@ -834,6 +841,11 @@ const RTDB_STOP_WORDS = new Set([
   'las',
   'los',
   'del',
+  'con',
+  'por',
+  'sin',
+  'que',
+  'como',
   'cerca',
   'abierta',
   'abierto',
@@ -854,16 +866,35 @@ const RTDB_STOP_WORDS = new Set([
   'restaurante',
   'restaurantes',
   'restaurant',
+  'gastronomia',
   'hotel',
   'hoteles',
+  'hoteleria',
   'hostal',
+  'hostales',
   'hospedaje',
+  'hospedajes',
   'alojamiento',
+  'alojamientos',
+  'ferreteria',
+  'ferreterias',
+  'pinateria',
+  'pinaterias',
+  'veterinaria',
   'tour',
   'tours',
   'turismo',
   'taxi',
   'taxis',
+  'empleo',
+  'empleos',
+  'trabajo',
+  'oferta',
+  'ofertas',
+  'puesto',
+  'puestos',
+  'vacante',
+  'vacantes',
   'pedir',
   'comprar',
   'ver',
@@ -887,22 +918,57 @@ const RTDB_STOP_WORDS = new Set([
   'horas',
 ]);
 
-function inferCategoryFromQuery(q: string, forced?: Rubro): Rubro {
-  if (forced) return forced;
-  return detectConciergeIntent(q).rubro;
+const RTDB_RESTAURANT_CONFLICT_RX =
+  /\b(limpieza de cocina|cocina|salon|comedor|azafata|mozo|mesero|mesera|cocinero|chef|salonero|lavaplatos)\b/;
+const RTDB_HOUSEKEEPING_RX =
+  /\b(housekeeping|housekeeper|ama de llaves|camareria|camarera|camarero de piso|cuartelero|mucama|lenceria hotelera|limpieza de habitaciones|acondicionamiento de habitaciones)\b/;
+
+interface RtdbPrecisionResult {
+  categoria: Rubro;
+  rubro_solicitado: string;
+  sector_clave: SectorKey;
+  sin_resultados_exactos: boolean;
+  modo_resultado: 'NEGOCIOS' | 'PRODUCTOS';
+  opciones: ConciergeOpcion[];
+  registros_rubro_no_especificado: ConciergeOpcion[];
+  alternativas_otros_rubros: ConciergeOpcion[];
+  respuesta_voz: string;
 }
 
-function buildOptions(
+function buildOptionsPrecision(
   snap: RtdbSnapshot,
-  cat: Rubro,
+  forcedCat: Rubro | undefined,
   lat: number,
   lng: number,
   destino?: string,
   query?: string
-): ConciergeOpcion[] {
+): RtdbPrecisionResult {
+  const rawQuery = (query || '').trim();
+  const sectorIntent = detectSectorIntent(rawQuery);
+  const cat: Rubro = sectorIntent.isHospitalityHousekeeping
+    ? 'HOTEL'
+    : forcedCat || sectorIntent.rubroBase;
+  const targetSectorKey: SectorKey =
+    forcedCat && !sectorIntent.isHospitalityHousekeeping
+      ? forcedCat === 'HOTEL'
+        ? 'HOTELERIA'
+        : forcedCat === 'FARMACIA'
+        ? 'FARMACIA'
+        : forcedCat === 'TURISMO'
+        ? 'TURISMO'
+        : forcedCat === 'TRANSPORTE'
+        ? 'TRANSPORTE'
+        : forcedCat === 'CASA_CAMBIO'
+        ? 'CASA_CAMBIO'
+        : sectorIntent.rubroBase === 'RESTAURANTE'
+        ? sectorIntent.sectorKey
+        : 'RESTAURANTE'
+      : sectorIntent.sectorKey;
+  const targetSectorLabel = SECTOR_LABELS[targetSectorKey];
+
   const negociosList = toArray(snap.negocios);
   const negById = new Map<number, RtdbNegocio>(negociosList.map((n) => [n.id, n]));
-  const normQ = (query || '')
+  const normQ = rawQuery
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
@@ -911,7 +977,7 @@ function buildOptions(
   );
 
   if (cat === 'TRANSPORTE') {
-    const destText = destino || extractCuscoDestination(query || '') || '';
+    const destText = destino || extractCuscoDestination(rawQuery) || '';
     const destCoords = destText ? resolveCuscoDestination(destText, lat, lng) : null;
     const tripKm = destCoords
       ? Math.max(1.5, Number(haversineKm(lat, lng, destCoords.lat, destCoords.lng).toFixed(2)))
@@ -952,11 +1018,28 @@ function buildOptions(
           modelo: u.modelo,
           mejor_precio: false,
           disponible: true,
+          rubro_estado: 'EXACTO' as const,
+          rubro_etiqueta: SECTOR_LABELS.TRANSPORTE,
+          sector_clave: 'TRANSPORTE',
         };
       })
       .sort((a, b) => a.distancia_km - b.distancia_km || a.precio_centavos - b.precio_centavos);
     const minTaxi = taxiOpts.length > 0 ? Math.min(...taxiOpts.map((o) => o.precio_centavos)) : 0;
-    return taxiOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minTaxi }));
+    const enriched = taxiOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minTaxi }));
+    const top = enriched[0];
+    return {
+      categoria: 'TRANSPORTE',
+      rubro_solicitado: SECTOR_LABELS.TRANSPORTE,
+      sector_clave: 'TRANSPORTE',
+      sin_resultados_exactos: enriched.length === 0,
+      modo_resultado: 'NEGOCIOS',
+      opciones: enriched,
+      registros_rubro_no_especificado: [],
+      alternativas_otros_rubros: [],
+      respuesta_voz: top
+        ? `Unidades de taxi disponibles${destText ? ` rumbo a ${destText}` : ''}: ${top.titulo}, a ${top.eta_min ?? 4} minutos, tarifa estimada ${(top.precio_centavos / 100).toFixed(2)} soles.`
+        : 'No hay unidades de taxi disponibles en este momento.',
+    };
   }
 
   if (cat === 'CASA_CAMBIO') {
@@ -965,7 +1048,7 @@ function buildOptions(
       if (biz && (biz.activo === 0 || biz.en_linea === 0)) return false;
       return !openOnly || isRtdbBusinessOpenNow(biz);
     });
-    return rates.map((r, idx) => {
+    const opciones: ConciergeOpcion[] = rates.map((r, idx) => {
       const biz = negById.get(r.negocio_id);
       return {
         tipo: 'DIVISA' as const,
@@ -987,8 +1070,25 @@ function buildOptions(
         moneda_origen: r.moneda_origen,
         mejor_precio: idx === 0,
         disponible: true,
+        rubro_estado: 'EXACTO',
+        rubro_etiqueta: SECTOR_LABELS.CASA_CAMBIO,
+        sector_clave: 'CASA_CAMBIO',
       };
     });
+    return {
+      categoria: 'CASA_CAMBIO',
+      rubro_solicitado: SECTOR_LABELS.CASA_CAMBIO,
+      sector_clave: 'CASA_CAMBIO',
+      sin_resultados_exactos: opciones.length === 0,
+      modo_resultado: 'NEGOCIOS',
+      opciones,
+      registros_rubro_no_especificado: [],
+      alternativas_otros_rubros: [],
+      respuesta_voz:
+        opciones.length > 0
+          ? `Tenemos ${opciones.length} cotizaciones verificadas en casas de cambio autorizadas de Cusco.`
+          : 'No hay casas de cambio disponibles en este horario.',
+    };
   }
 
   const keywords = normQ
@@ -996,110 +1096,246 @@ function buildOptions(
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !RTDB_STOP_WORDS.has(w));
 
-  // Regla: si no pide un producto concreto (ej. "farmacias", "quiero una farmacia abierta"),
-  // devolver SOLO los negocios registrados de ese rubro (sin listar sus productos).
+  // Si no pidió un producto/rol concreto -> devolver SOLO negocios registrados del rubro exacto
   if (keywords.length === 0) {
     const allServices = toArray(snap.servicios);
-    const matchingBiz = negociosList
-      .filter((n) => n.activo !== 0 && n.en_linea !== 0 && n.rubro === cat)
+    const classified = negociosList
+      .filter((n) => n.activo !== 0 && n.en_linea !== 0)
       .filter((n) => !openOnly || isRtdbBusinessOpenNow(n))
       .map((n) => {
+        const cls = classifyRecordSectorClient({
+          rubro: n.rubro,
+          tipo_negocio: n.tipo_negocio,
+          nombre: n.nombre,
+          descripcion: n.descripcion,
+          panel_ia_titulo: n.panel_ia?.rubro_titulo || n.panel_ia?.rubro_usuario,
+        });
         const openNow = isRtdbBusinessOpenNow(n);
         const distKm = Number(haversineKm(lat, lng, n.lat, n.lng).toFixed(2));
         const prodCount = allServices.filter(
           (s) => s.negocio_id === n.id && s.disponible === 1 && s.stock > 0
         ).length;
-        return {
-          openNow,
-          distKm,
-          opt: {
-            tipo: 'CATALOGO' as const,
-            es_negocio: true,
-            total_productos: prodCount,
-            negocio_id: n.id,
-            negocio_nombre: n.nombre,
-            categoria: n.rubro,
-            titulo: n.nombre,
-            descripcion: n.descripcion,
-            zona: n.zona,
-            lat: n.lat,
-            lng: n.lng,
-            abierto_ahora: openNow,
-            horario: n.abierto_24h
-              ? '24 horas'
-              : `${n.horario_apertura || '07:00'} - ${n.horario_cierre || '22:30'}`,
-            calificacion: n.calificacion,
-            distancia_km: distKm,
-            eta_min: 15,
-            precio_centavos: 0,
-            mejor_precio: false,
-            disponible: true,
-          },
-        };
-      })
+        return { n, cls, openNow, distKm, prodCount };
+      });
+
+    const exactBiz = classified
+      .filter((x) => x.cls.specified && x.n.rubro === cat && x.cls.sectorKey === targetSectorKey)
       .sort((a, b) => {
         if (a.openNow !== b.openNow) return a.openNow ? -1 : 1;
-        return a.distKm - b.distKm || b.opt.calificacion - a.opt.calificacion;
-      });
-    return matchingBiz.map((entry, idx) => ({ ...entry.opt, mejor_precio: idx === 0 }));
+        return a.distKm - b.distKm || b.n.calificacion - a.n.calificacion;
+      })
+      .map((x, idx) => ({
+        tipo: 'CATALOGO' as const,
+        es_negocio: true,
+        total_productos: x.prodCount,
+        negocio_id: x.n.id,
+        negocio_nombre: x.n.nombre,
+        categoria: x.n.rubro,
+        titulo: x.n.nombre,
+        descripcion: x.n.descripcion,
+        zona: x.n.zona,
+        lat: x.n.lat,
+        lng: x.n.lng,
+        abierto_ahora: x.openNow,
+        horario: x.n.abierto_24h
+          ? '24 horas'
+          : `${x.n.horario_apertura || '07:00'} - ${x.n.horario_cierre || '22:30'}`,
+        calificacion: x.n.calificacion,
+        distancia_km: x.distKm,
+        eta_min: 15,
+        precio_centavos: 0,
+        mejor_precio: idx === 0,
+        disponible: true,
+        rubro_estado: 'EXACTO' as const,
+        rubro_etiqueta: x.cls.sectorLabel,
+        sector_clave: x.cls.sectorKey || targetSectorKey,
+      }));
+
+    const unspecifiedBiz: ConciergeOpcion[] = classified
+      .filter((x) => !x.cls.specified)
+      .map((x) => ({
+        tipo: 'CATALOGO' as const,
+        es_negocio: true,
+        total_productos: x.prodCount,
+        negocio_id: x.n.id,
+        negocio_nombre: x.n.nombre,
+        categoria: x.n.rubro,
+        titulo: x.n.nombre,
+        descripcion: x.n.descripcion,
+        zona: x.n.zona,
+        lat: x.n.lat,
+        lng: x.n.lng,
+        abierto_ahora: x.openNow,
+        horario: x.n.abierto_24h
+          ? '24 horas'
+          : `${x.n.horario_apertura || '07:00'} - ${x.n.horario_cierre || '22:30'}`,
+        calificacion: x.n.calificacion,
+        distancia_km: x.distKm,
+        eta_min: 15,
+        precio_centavos: 0,
+        mejor_precio: false,
+        disponible: true,
+        rubro_estado: 'NO_ESPECIFICADO',
+        rubro_etiqueta: 'Rubro no especificado',
+        nota_rubro: 'Registro sin rubro claramente especificado; no se presenta como coincidencia exacta.',
+      }));
+
+    const nombres = exactBiz.slice(0, 3).map((o) => o.negocio_nombre).join(', ');
+    return {
+      categoria: cat,
+      rubro_solicitado: targetSectorLabel,
+      sector_clave: targetSectorKey,
+      sin_resultados_exactos: exactBiz.length === 0,
+      modo_resultado: 'NEGOCIOS',
+      opciones: exactBiz,
+      registros_rubro_no_especificado: unspecifiedBiz,
+      alternativas_otros_rubros: [],
+      respuesta_voz:
+        exactBiz.length > 0
+          ? `Encontramos ${exactBiz.length} opciones disponibles en ${targetSectorLabel}: ${nombres}. Toca un negocio para ver sus productos.`
+          : `No encontramos establecimientos disponibles en el rubro ${targetSectorLabel}.`,
+    };
   }
 
-  // Búsqueda por producto/servicio concreto dentro de los negocios registrados
-  const byCat = toArray(snap.servicios).filter((s) => {
-    if (s.disponible !== 1 || s.categoria !== cat) return false;
-    const biz = negById.get(s.negocio_id);
-    if (biz && (biz.activo === 0 || biz.en_linea === 0 || biz.rubro !== cat)) return false;
-    if (openOnly && !isRtdbBusinessOpenNow(biz)) return false;
-    return true;
-  });
-
-  let selected = byCat;
-  if (keywords.length > 0 && byCat.length > 0) {
-    const narrowed = byCat.filter((s) => {
+  // Filtrado estricto en 2 pasos: primero por rubro/sector exacto, luego por rol/término/atributo
+  const activeItems = toArray(snap.servicios)
+    .filter((s) => s.disponible === 1 && s.stock > 0)
+    .map((s) => {
       const biz = negById.get(s.negocio_id);
-      const hay = `${s.nombre} ${s.descripcion} ${s.negocio_nombre} ${biz?.tipo_negocio || ''}`
+      if (biz && (biz.activo === 0 || biz.en_linea === 0)) return null;
+      const openNow = isRtdbBusinessOpenNow(biz);
+      if (openOnly && !openNow) return null;
+      const cls = classifyRecordSectorClient({
+        rubro: biz?.rubro || s.categoria,
+        tipo_negocio: biz?.tipo_negocio,
+        nombre: s.negocio_nombre,
+        descripcion: biz?.descripcion || s.descripcion,
+        panel_ia_titulo: biz?.panel_ia?.rubro_titulo || biz?.panel_ia?.rubro_usuario,
+        atributos_rubro: s.atributos?.rubro || s.atributos?.sector,
+      });
+      const hay = `${s.nombre} ${s.descripcion} ${JSON.stringify(s.atributos || {})} ${s.negocio_nombre} ${biz?.tipo_negocio || ''}`
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '');
-      return keywords.some((kw) => hay.includes(kw));
-    });
-    if (narrowed.length > 0) selected = narrowed;
-  }
+      return { s, biz, openNow, cls, hay };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  const catOpts = selected
-    .map((s) => {
-      const biz = negById.get(s.negocio_id);
-      const openNow = isRtdbBusinessOpenNow(biz);
-      return {
-        tipo: 'CATALOGO' as const,
-        es_negocio: false,
-        servicio_id: s.id,
-        negocio_id: s.negocio_id,
-        negocio_nombre: s.negocio_nombre,
-        categoria: s.categoria,
-        titulo: s.nombre,
-        descripcion: `${s.negocio_nombre} (${s.zona}) · ${s.descripcion}`,
-        zona: s.zona,
-        lat: biz?.lat,
-        lng: biz?.lng,
-        abierto_ahora: openNow,
-        horario: biz?.abierto_24h ? '24 horas' : `${biz?.horario_apertura || '07:00'} - ${biz?.horario_cierre || '22:30'}`,
-        precio_centavos: s.precio_centavos,
-        calificacion: s.calificacion,
-        distancia_km:
-          biz?.lat && biz?.lng ? Number(haversineKm(lat, lng, biz.lat, biz.lng).toFixed(2)) : undefined,
-        eta_min: s.duracion_min,
-        stock: s.stock,
-        mejor_precio: false,
-        disponible: true,
-      };
+  const termPool = Array.from(new Set([...keywords, ...sectorIntent.expandedTerms]));
+
+  const exactMatches = activeItems
+    .filter((x) => {
+      if (!x.cls.specified || x.cls.sectorKey !== targetSectorKey) return false;
+      if (
+        sectorIntent.isHospitalityHousekeeping &&
+        RTDB_RESTAURANT_CONFLICT_RX.test(x.hay) &&
+        !RTDB_HOUSEKEEPING_RX.test(x.hay)
+      ) {
+        return false;
+      }
+      return termPool.some((kw) => x.hay.includes(kw));
     })
     .sort((a, b) => {
-      if (a.abierto_ahora !== b.abierto_ahora) return a.abierto_ahora ? -1 : 1;
-      return a.precio_centavos - b.precio_centavos;
+      if (a.openNow !== b.openNow) return a.openNow ? -1 : 1;
+      return a.s.precio_centavos - b.s.precio_centavos;
     });
-  const minCat = catOpts.length > 0 ? Math.min(...catOpts.map((o) => o.precio_centavos)) : 0;
-  return catOpts.map((o) => ({ ...o, mejor_precio: o.precio_centavos === minCat }));
+
+  const unspecifiedMatches = activeItems
+    .filter((x) => !x.cls.specified && termPool.some((kw) => x.hay.includes(kw)))
+    .sort((a, b) => a.s.precio_centavos - b.s.precio_centavos);
+
+  let otherMatches: typeof activeItems = [];
+  if (exactMatches.length === 0) {
+    const otherBucket = activeItems.filter(
+      (x) => x.cls.specified && x.cls.sectorKey !== targetSectorKey
+    );
+    const directOther = otherBucket.filter((x) => keywords.some((kw) => x.hay.includes(kw)));
+    if (directOther.length > 0) {
+      otherMatches = directOther;
+    } else if (sectorIntent.isHospitalityHousekeeping) {
+      const relatedTerms = ['limpieza', 'aseo', 'limpieza de cocina', 'salon', 'comedor', 'azafata', 'mozo', 'camarer'];
+      otherMatches = otherBucket.filter((x) => relatedTerms.some((kw) => x.hay.includes(kw)));
+    }
+    otherMatches.sort((a, b) => a.s.precio_centavos - b.s.precio_centavos);
+  }
+
+  const minExact =
+    exactMatches.length > 0 ? Math.min(...exactMatches.map((x) => x.s.precio_centavos)) : 0;
+
+  const toOption = (
+    x: (typeof activeItems)[number],
+    rubroEstado: 'EXACTO' | 'NO_ESPECIFICADO' | 'OTRO_RUBRO',
+    best: boolean
+  ): ConciergeOpcion => ({
+    tipo: 'CATALOGO' as const,
+    es_negocio: false,
+    servicio_id: x.s.id,
+    negocio_id: x.s.negocio_id,
+    negocio_nombre: x.s.negocio_nombre,
+    categoria: x.s.categoria,
+    titulo: x.s.nombre,
+    descripcion: `${x.s.negocio_nombre} (${x.s.zona}) · ${x.s.descripcion}`,
+    zona: x.s.zona,
+    lat: x.biz?.lat,
+    lng: x.biz?.lng,
+    abierto_ahora: x.openNow,
+    horario: x.biz?.abierto_24h
+      ? '24 horas'
+      : `${x.biz?.horario_apertura || '07:00'} - ${x.biz?.horario_cierre || '22:30'}`,
+    precio_centavos: x.s.precio_centavos,
+    calificacion: x.s.calificacion,
+    distancia_km:
+      x.biz?.lat && x.biz?.lng
+        ? Number(haversineKm(lat, lng, x.biz.lat, x.biz.lng).toFixed(2))
+        : undefined,
+    eta_min: x.s.duracion_min,
+    stock: x.s.stock,
+    unidad_medida: x.s.unidad_medida,
+    mejor_precio: best,
+    disponible: true,
+    rubro_estado: rubroEstado,
+    rubro_etiqueta:
+      rubroEstado === 'NO_ESPECIFICADO' ? 'Rubro no especificado' : x.cls.sectorLabel,
+    sector_clave: x.cls.sectorKey || undefined,
+    nota_rubro:
+      rubroEstado === 'NO_ESPECIFICADO'
+        ? 'Registro con rubro no especificado; no se presenta como coincidencia exacta.'
+        : rubroEstado === 'OTRO_RUBRO'
+        ? `Alternativa aparte en ${x.cls.sectorLabel} (no pertenece a ${targetSectorLabel}).`
+        : undefined,
+  });
+
+  const opciones = exactMatches.map((x) =>
+    toOption(x, 'EXACTO', x.s.precio_centavos === minExact)
+  );
+  const top = opciones[0];
+  const otherNames = Array.from(new Set(otherMatches.map((x) => x.cls.sectorLabel))).join(', ');
+
+  return {
+    categoria: cat,
+    rubro_solicitado: targetSectorLabel,
+    sector_clave: targetSectorKey,
+    sin_resultados_exactos: opciones.length === 0,
+    modo_resultado: 'PRODUCTOS',
+    opciones,
+    registros_rubro_no_especificado: unspecifiedMatches.map((x) =>
+      toOption(x, 'NO_ESPECIFICADO', false)
+    ),
+    alternativas_otros_rubros: otherMatches.map((x) => toOption(x, 'OTRO_RUBRO', false)),
+    respuesta_voz: top
+      ? `Encontramos ${opciones.length} coincidencia(s) exacta(s) en ${targetSectorLabel}. En ${top.negocio_nombre}: ${top.titulo} por ${(top.precio_centavos / 100).toFixed(2)} soles.`
+      : [
+          `No encontramos resultados exactos para "${rawQuery}" en el rubro ${targetSectorLabel}.`,
+          unspecifiedMatches.length > 0
+            ? `Hay ${unspecifiedMatches.length} registro(s) con rubro no especificado (no incluidos como coincidencia exacta).`
+            : '',
+          otherMatches.length > 0
+            ? `Como alternativa aparte, hay ${otherMatches.length} opción(es) en otros rubros (${otherNames}), nunca mezcladas con ${targetSectorLabel}.`
+            : '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+  };
 }
 
 export async function handleFirebaseRtdbRequest<T>(
@@ -1259,33 +1495,32 @@ export async function handleFirebaseRtdbRequest<T>(
 
   if (cleanPath === '/api/public/asistente' && method === 'POST') {
     const q = String(payload.query || '');
-    const cat = inferCategoryFromQuery(q, payload.categoria as Rubro | undefined);
     const lat = Number(payload.lat) || -13.5167;
     const lng = Number(payload.lng) || -71.9788;
     const destino = payload.destino
       ? String(payload.destino)
       : extractCuscoDestination(q) || undefined;
-    const opciones = buildOptions(snap, cat, lat, lng, destino, q);
-    const top = opciones[0];
-
-    const isBusinessList = opciones.length > 0 && opciones.every((o) => o.es_negocio === true);
-    let respuestaVoz = `No encontramos opciones disponibles en ${cat.toLowerCase()}.`;
-    if (cat === 'TRANSPORTE' && top) {
-      respuestaVoz = `Unidades de taxi disponibles${destino ? ` rumbo a ${destino}` : ''}: ${top.titulo}, a ${top.eta_min ?? 4} minutos, tarifa estimada ${(top.precio_centavos / 100).toFixed(2)} soles.`;
-    } else if (isBusinessList) {
-      const nombres = opciones.slice(0, 3).map((o) => o.negocio_nombre).join(', ');
-      respuestaVoz = `Encontramos ${opciones.length} opciones disponibles en Cusco: ${nombres}. Toca un negocio para ver sus productos.`;
-    } else if (top) {
-      respuestaVoz = `Encontramos ${opciones.length} productos de ${cat.toLowerCase()}. En ${top.negocio_nombre}: ${top.titulo} por ${(top.precio_centavos / 100).toFixed(2)} soles.`;
-    }
+    const result = buildOptionsPrecision(
+      snap,
+      payload.categoria as Rubro | undefined,
+      lat,
+      lng,
+      destino,
+      q
+    );
 
     return {
-      categoria: cat,
-      modo_resultado: isBusinessList ? 'NEGOCIOS' : 'PRODUCTOS',
-      respuesta_voz: respuestaVoz,
+      categoria: result.categoria,
+      rubro_solicitado: result.rubro_solicitado,
+      sector_clave: result.sector_clave,
+      sin_resultados_exactos: result.sin_resultados_exactos,
+      modo_resultado: result.modo_resultado,
+      respuesta_voz: result.respuesta_voz,
       destino_sugerido: destino,
       ai_error: null,
-      opciones,
+      opciones: result.opciones,
+      registros_rubro_no_especificado: result.registros_rubro_no_especificado,
+      alternativas_otros_rubros: result.alternativas_otros_rubros,
     } as T;
   }
 

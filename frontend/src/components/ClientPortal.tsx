@@ -154,6 +154,9 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [activeCategory, setActiveCategory] = useState<Rubro>('TRANSPORTE');
   const [taxiOpciones, setTaxiOpciones] = useState<ConciergeOpcion[]>([]);
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
+  const [rubroSolicitado, setRubroSolicitado] = useState<string>('');
+  const [registrosRubroNoEspecificado, setRegistrosRubroNoEspecificado] = useState<ConciergeOpcion[]>([]);
+  const [alternativasOtrosRubros, setAlternativasOtrosRubros] = useState<ConciergeOpcion[]>([]);
   const [modoResultado, setModoResultado] = useState<'NEGOCIOS' | 'PRODUCTOS'>('NEGOCIOS');
   const [directorio, setDirectorio] = useState<DirectorioNegocio[]>([]);
   const [allServicios, setAllServicios] = useState<ServicioCatalogo[]>([]);
@@ -634,8 +637,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       return;
     }
 
-    // 3. Otras categorías estrictas del concierge (Farmacia, Restaurante, Turismo, Hotel)
+    // 3. Otras categorías estrictas del concierge (Farmacia, Restaurante, Turismo, Hotel, Ferretería, Empleos)
     setOpciones([]);
+    setRegistrosRubroNoEspecificado([]);
+    setAlternativasOtrosRubros([]);
+    setRubroSolicitado(parsedIntent.sectorLabel || RUBRO_LABELS[effectiveRubro]);
     setSelectedBusinessDrawer(null);
     setShowCatalogPriceTable(false);
     setSelectedCatalogKey(null);
@@ -646,15 +652,19 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
     try {
       const res = await apiFetch<{
         categoria: Rubro;
+        rubro_solicitado?: string;
+        sin_resultados_exactos?: boolean;
         modo_resultado?: 'NEGOCIOS' | 'PRODUCTOS';
         respuesta_voz: string;
         destino_sugerido?: string;
         opciones: ConciergeOpcion[];
+        registros_rubro_no_especificado?: ConciergeOpcion[];
+        alternativas_otros_rubros?: ConciergeOpcion[];
       }>('/api/public/asistente', {
         method: 'POST',
         body: {
           query: q,
-          categoria: effectiveRubro,
+          categoria: forcedCat ?? selectedRubro ?? undefined,
           lat: coords.lat,
           lng: coords.lng,
           destino: parsedIntent.destino || undefined,
@@ -662,17 +672,26 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       });
       const returnedCat = res.categoria || effectiveRubro;
       const safeOpciones = (Array.isArray(res?.opciones) ? res.opciones : []).filter(
-        (op) => op.tipo !== 'TAXI' && op.categoria === returnedCat
+        (op) => op.tipo !== 'TAXI' && op.categoria === returnedCat && op.rubro_estado !== 'NO_ESPECIFICADO' && op.rubro_estado !== 'OTRO_RUBRO'
       );
+      const unspecifiedList = Array.isArray(res?.registros_rubro_no_especificado)
+        ? res.registros_rubro_no_especificado
+        : [];
+      const otherRubrosList = Array.isArray(res?.alternativas_otros_rubros)
+        ? res.alternativas_otros_rubros
+        : [];
       const nextModo: 'NEGOCIOS' | 'PRODUCTOS' =
         res.modo_resultado === 'NEGOCIOS' ||
         (safeOpciones.length > 0 && safeOpciones.every((o) => o.es_negocio === true))
           ? 'NEGOCIOS'
           : 'PRODUCTOS';
 
+      setRubroSolicitado(res.rubro_solicitado || parsedIntent.sectorLabel || RUBRO_LABELS[returnedCat]);
       setModoResultado(nextModo);
       setActiveCategory(returnedCat);
       setOpciones(safeOpciones);
+      setRegistrosRubroNoEspecificado(unspecifiedList);
+      setAlternativasOtrosRubros(otherRubrosList);
       if (safeOpciones.length > 0) {
         const first = safeOpciones[0];
         setSelectedCatalogKey(`${first.negocio_id}-${first.unidad_id || first.servicio_id || 0}`);
@@ -1587,24 +1606,31 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div>
               <p className="text-[11px] uppercase tracking-[0.18em] font-bold text-[#4285F4] dark:text-[#60A5FA]">
-                Búsqueda Geolocalizada · La Chuspa
+                Precisión por Rubro · La Chuspa · {rubroSolicitado || RUBRO_LABELS[activeCategory]}
               </p>
               <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#14171F] dark:text-[#F4F1EA]">
-                {RUBRO_LABELS[activeCategory]} ({opciones.length}{' '}
-                {modoResultado === 'NEGOCIOS' ? 'establecimientos' : 'productos encontrados'})
+                {rubroSolicitado || RUBRO_LABELS[activeCategory]} ({opciones.length}{' '}
+                {modoResultado === 'NEGOCIOS' ? 'establecimientos exactos' : 'coincidencias exactas'})
               </h2>
               <p className="text-xs sm:text-sm text-[#6A717E] dark:text-[#98A0AD]">
-                {modoResultado === 'NEGOCIOS'
-                  ? 'Mostrando únicamente establecimientos registrados · Toca uno para ver sus productos'
-                  : 'Mapa centrado en Cusco · Toca cualquier producto en el mapa para confirmar tu pedido'}
+                {opciones.length === 0
+                  ? `Sin coincidencias exactas dentro de ${rubroSolicitado || RUBRO_LABELS[activeCategory]}. No mezclamos otros sectores.`
+                  : modoResultado === 'NEGOCIOS'
+                  ? 'Mostrando únicamente establecimientos verificados de este rubro · Toca uno para ver sus productos'
+                  : 'Filtrado primero por rubro exacto y luego por rol, término o atributo'}
               </p>
             </div>
           </div>
 
           {opciones.length === 0 ? (
-            <div className="rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#0D1322] p-10 text-center space-y-3 chuspa-google-border">
-              <p className="text-sm text-[#6A717E] dark:text-[#98A0AD]">
-                No encontramos disponibilidad para esa búsqueda exacta en este rubro.
+            <div className="rounded-2xl border border-amber-300/60 dark:border-amber-500/30 bg-white dark:bg-[#0D1322] p-7 sm:p-9 text-center space-y-3 chuspa-google-border">
+              <p className="text-sm sm:text-base font-bold text-[#0B2538] dark:text-white">
+                No encontramos resultados exactos en el rubro {rubroSolicitado || RUBRO_LABELS[activeCategory]}
+                {query.trim() ? ` para «${query.trim()}»` : ''}.
+              </p>
+              <p className="text-xs text-[#6A717E] dark:text-[#98A0AD] max-w-xl mx-auto">
+                {replyText ||
+                  'Para evitar confusiones entre sectores parecidos, no mezclamos ofertas de otros rubros como si fueran del mismo sector.'}
               </p>
               <button
                 type="button"
@@ -1910,6 +1936,90 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                     </article>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* Regla 4: Registros con rubro no especificado (separados y claramente etiquetados) */}
+          {registrosRubroNoEspecificado.length > 0 && (
+            <div className="rounded-3xl border border-slate-300/80 dark:border-white/15 bg-slate-50/90 dark:bg-[#071B29] p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="inline-block text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                    Rubro no especificado ({registrosRubroNoEspecificado.length})
+                  </span>
+                  <p className="text-xs text-[#516478] dark:text-slate-300 mt-1">
+                    Estos registros no indican con claridad su rubro, por lo que no se presentan como coincidencia exacta de {rubroSolicitado || RUBRO_LABELS[activeCategory]}.
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {registrosRubroNoEspecificado.map((op) => (
+                  <div
+                    key={`unspec-${op.negocio_id}-${op.servicio_id || 0}`}
+                    className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-[#0D1322] p-4 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-bold uppercase text-amber-700 dark:text-amber-400">
+                        Rubro no especificado
+                      </p>
+                      <p className="text-sm font-bold text-[#0B2538] dark:text-white truncate">
+                        {op.es_negocio ? op.negocio_nombre : op.titulo}
+                      </p>
+                      <p className="text-xs text-[#516478] dark:text-slate-400 truncate">
+                        {op.negocio_nombre} · {op.descripcion}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openCatalogItemOrBusiness(op)}
+                      className="min-h-[36px] px-3.5 rounded-xl border border-slate-300 dark:border-white/20 text-xs font-bold text-[#0B2538] dark:text-white shrink-0"
+                    >
+                      {op.es_negocio ? 'Ver' : formatSoles(op.precio_centavos)}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Regla 5: Alternativas aparte de otros rubros cuando no hubo resultados exactos */}
+          {alternativasOtrosRubros.length > 0 && (
+            <div className="rounded-3xl border border-indigo-200/80 dark:border-indigo-500/30 bg-indigo-50/50 dark:bg-indigo-950/20 p-5 space-y-3">
+              <div>
+                <span className="inline-block text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-md bg-indigo-100 dark:bg-indigo-900/50 text-indigo-800 dark:text-indigo-200">
+                  Alternativas aparte en otros rubros ({alternativasOtrosRubros.length})
+                </span>
+                <p className="text-xs text-[#516478] dark:text-slate-300 mt-1">
+                  Se muestran por separado al no haber resultados exactos en {rubroSolicitado || RUBRO_LABELS[activeCategory]}. No pertenecen al mismo sector.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {alternativasOtrosRubros.map((op) => (
+                  <div
+                    key={`other-${op.negocio_id}-${op.servicio_id || 0}`}
+                    className="rounded-2xl border border-indigo-200/70 dark:border-white/10 bg-white dark:bg-[#0D1322] p-4 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-extrabold uppercase text-indigo-700 dark:text-indigo-300">
+                        Otro rubro: {op.rubro_etiqueta || RUBRO_LABELS[op.categoria]}
+                      </p>
+                      <p className="text-sm font-bold text-[#0B2538] dark:text-white truncate">
+                        {op.titulo}
+                      </p>
+                      <p className="text-xs text-[#516478] dark:text-slate-400 truncate">
+                        {op.negocio_nombre} · {op.zona || 'Cusco'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openCatalogItemOrBusiness(op)}
+                      className="min-h-[36px] px-3.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shrink-0"
+                    >
+                      {formatSoles(op.precio_centavos)}
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           )}

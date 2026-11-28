@@ -1817,5 +1817,102 @@ test('16. Pasarela Yape (Mercado Pago Opción A), cuentas de transferencia, prot
   }
 });
 
+test('17. Precisión estricta por rubro: housekeeping prioriza Hotelería, no mezcla Restaurante, aísla rubro no especificado y separa alternativas', async () => {
+  const { db, server, req } = await startTestServer();
+  try {
+    const { detectConciergeIntent } = await import('../frontend/src/lib/cuscoMarkets.ts');
+
+    // 1) Frontend intent: "housekeeping" y "ama de llaves" deben resolverse estrictamente a Hotelería
+    const intentHk = detectConciergeIntent('busco housekeeping');
+    assert.equal(intentHk.rubro, 'HOTEL');
+    assert.equal(intentHk.sectorKey, 'HOTELERIA');
+    assert.equal(intentHk.sectorLabel, 'Hotelería / Hospedaje / Alojamiento');
+
+    const intentAma = detectConciergeIntent('ama de llaves');
+    assert.equal(intentAma.rubro, 'HOTEL');
+    assert.equal(intentAma.sectorKey, 'HOTELERIA');
+
+    // 2) Insertar puesto de Restaurante (cocina/salón/comedor/azafata/mozo) y registro con rubro no especificado
+    const restBiz = db.prepare("SELECT id FROM negocios WHERE codigo = 'NEG-RE-01'").get() as { id: number };
+    const hotelBiz = db.prepare("SELECT id FROM negocios WHERE codigo = 'NEG-HO-01'").get() as { id: number };
+
+    db.prepare(
+      `INSERT INTO servicios_catalogo (negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, disponible)
+       VALUES (?, 'RESTAURANTE', ?, ?, 8500, 480, 5, 1)`
+    ).run(
+      restBiz.id,
+      'Limpieza de cocina, salón y comedor · Azafata / Mozo',
+      'Personal de apoyo en salón comedor, lavaplatos y cocina de restaurante'
+    );
+
+    const unspecRes = db.prepare(
+      `INSERT INTO negocios (codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, tipo_negocio)
+       VALUES ('NEG-UNSPEC-01', 'RESTAURANTE', 'Servicios Varios Cusco', '+51984009988', 'Ofertas diversas en Cusco', -13.517, -71.978, 'Cusco', 1, 1, 10000, 'Rubro no especificado')`
+    ).run();
+    const unspecId = Number(unspecRes.lastInsertRowid);
+    db.prepare(
+      `INSERT INTO servicios_catalogo (negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, disponible)
+       VALUES (?, 'RESTAURANTE', ?, ?, 7500, 240, 4, 1)`
+    ).run(
+      unspecId,
+      'Apoyo housekeeping general',
+      'Servicio de limpieza general sin sector especificado'
+    );
+
+    // 3) Antes de existir housekeeping en Hotelería: debe responder transparentemente sin resultados exactos,
+    // sin mezclar Restaurante en opciones, aislando el registro sin rubro y mostrando Restaurante aparte
+    const noExactRes = await req('POST', '/api/public/asistente', {
+      query: 'housekeeping',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(noExactRes.status, 200);
+    assert.equal(noExactRes.data.categoria, 'HOTEL');
+    assert.equal(noExactRes.data.rubro_solicitado, 'Hotelería / Hospedaje / Alojamiento');
+    assert.equal(noExactRes.data.sin_resultados_exactos, true);
+    assert.equal(noExactRes.data.opciones.length, 0);
+    assert.match(noExactRes.data.respuesta_voz, /No encontramos resultados exactos/i);
+
+    assert.equal(noExactRes.data.registros_rubro_no_especificado.length, 1);
+    assert.equal(noExactRes.data.registros_rubro_no_especificado[0].rubro_estado, 'NO_ESPECIFICADO');
+    assert.equal(noExactRes.data.registros_rubro_no_especificado[0].rubro_etiqueta, 'Rubro no especificado');
+
+    assert.ok(noExactRes.data.alternativas_otros_rubros.length >= 1);
+    assert.ok(
+      noExactRes.data.alternativas_otros_rubros.every(
+        (alt: any) => alt.rubro_estado === 'OTRO_RUBRO' && alt.categoria !== 'HOTEL'
+      )
+    );
+
+    // 4) Ahora registrar oferta exacta de Housekeeping en Hotelería: debe aparecer en opciones exactas
+    db.prepare(
+      `INSERT INTO servicios_catalogo (negocio_id, categoria, nombre, descripcion, precio_centavos, duracion_min, stock, disponible)
+       VALUES (?, 'HOTEL', ?, ?, 9500, 180, 6, 1)`
+    ).run(
+      hotelBiz.id,
+      'Housekeeping · Camarería y Ama de Llaves de Habitaciones',
+      'Limpieza y acondicionamiento completo de habitaciones y suites en hotel'
+    );
+
+    const exactRes = await req('POST', '/api/public/asistente', {
+      query: 'housekeeping',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(exactRes.status, 200);
+    assert.equal(exactRes.data.categoria, 'HOTEL');
+    assert.equal(exactRes.data.sin_resultados_exactos, false);
+    assert.equal(exactRes.data.opciones.length, 1);
+    assert.equal(exactRes.data.opciones[0].rubro_estado, 'EXACTO');
+    assert.equal(exactRes.data.opciones[0].rubro_etiqueta, 'Hotelería / Hospedaje / Alojamiento');
+    assert.match(exactRes.data.opciones[0].titulo, /Housekeeping/i);
+    assert.equal(exactRes.data.alternativas_otros_rubros.length, 0);
+    assert.equal(exactRes.data.registros_rubro_no_especificado.length, 1);
+  } finally {
+    server.close();
+  }
+});
+
+
 
 

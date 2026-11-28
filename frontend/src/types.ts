@@ -214,6 +214,10 @@ export interface ConciergeOpcion {
   moneda_origen?: string;
   mejor_precio: boolean;
   disponible: boolean;
+  rubro_estado?: 'EXACTO' | 'NO_ESPECIFICADO' | 'OTRO_RUBRO';
+  rubro_etiqueta?: string;
+  sector_clave?: string;
+  nota_rubro?: string;
 }
 
 export interface PedidoPublico {
