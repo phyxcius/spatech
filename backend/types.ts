@@ -39,10 +39,40 @@ export type TipoLedger = (typeof TIPOS_LEDGER)[number];
 export const ESTADOS_REGLA = ['ACTIVO', 'INCUMPLIMIENTO', 'ESTAFA'] as const;
 export type EstadoRegla = (typeof ESTADOS_REGLA)[number];
 
+export type OficioTipoTarifa =
+  | 'por_hora'
+  | 'por_proyecto_cotizacion'
+  | 'por_prenda'
+  | 'por_servicio_fijo'
+  | 'por_dia';
+
+export type OficioTipoDato = 'texto' | 'numero' | 'seleccion' | 'booleano';
+
+export interface OficioAtributoClave {
+  clave: string;
+  etiqueta: string;
+  tipo_dato: OficioTipoDato;
+  opciones?: string[];
+}
+
+export interface OficioNormalizado {
+  oficio_id: string;
+  nombre_oficial: string;
+  macro_categoria: string;
+  sinonimos: string[];
+  modalidades_disponibles: string[];
+  tipo_tarifa_sugerida: OficioTipoTarifa;
+  atributos_clave: OficioAtributoClave[];
+  etiquetas_busqueda: string[];
+  rubro_base?: Rubro;
+  generado_por?: 'semilla_universal' | 'gemini' | 'ia_universal_local';
+  uso_count?: number;
+}
+
 export interface AiCampoEspecifico {
   key: string;
   label: string;
-  tipo: 'text' | 'number' | 'select';
+  tipo: 'text' | 'number' | 'select' | 'boolean';
   placeholder: string;
   unidad?: string;
   opciones?: string[];
@@ -76,6 +106,11 @@ export interface AiBusinessPanelSchema {
   rubro_base: Rubro;
   rubro_usuario: string;
   rubro_titulo: string;
+  macro_categoria?: string;
+  oficio_especifico?: string;
+  oficio_id?: string;
+  sinonimos?: string[];
+  tipo_tarifa_sugerida?: OficioTipoTarifa;
   subtitulo_panel: string;
   badge_panel: string;
   tema_color: {
@@ -124,6 +159,9 @@ export interface NegocioRow {
   documento_numero?: string | null;
   razon_social?: string | null;
   tipo_negocio?: string;
+  macro_categoria?: string;
+  oficio_especifico?: string;
+  oficio_id?: string | null;
   modalidades_venta?: string;
   panel_ia_json?: string | null;
   estado_regla?: EstadoRegla;

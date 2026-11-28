@@ -1913,6 +1913,101 @@ test('17. Precisión estricta por rubro: housekeeping prioriza Hotelería, no me
   }
 });
 
+test('18. Catálogo universal de oficios y profesiones: sinónimos, expansión bajo demanda y precisión estricta en búsqueda', async () => {
+  const { server, req } = await startTestServer();
+  try {
+    // 1) Sinónimos tradicionales: "fontanero" -> Gasfitero / Fontanero, "costurera" -> Sastre / Modista
+    const fontRes = await req('GET', '/api/public/oficios?q=fontanero');
+    assert.equal(fontRes.status, 200);
+    assert.ok(Array.isArray(fontRes.data.oficios) && fontRes.data.oficios.length >= 1);
+    assert.equal(fontRes.data.exact_match?.oficio_id, 'gasfitero_fontanero');
+    assert.ok(fontRes.data.exact_match?.macro_categoria);
+    assert.ok(fontRes.data.exact_match?.tipo_tarifa_sugerida);
+    assert.ok(Array.isArray(fontRes.data.exact_match?.atributos_clave));
+    assert.ok(Array.isArray(fontRes.data.exact_match?.etiquetas_busqueda));
+
+    const costRes = await req('GET', '/api/public/oficios?q=costurera');
+    assert.equal(costRes.status, 200);
+    assert.equal(costRes.data.exact_match?.oficio_id, 'sastre_modista');
+
+    // 2) Creación y persistencia bajo demanda de un oficio nuevo ("Tapicero de Muebles")
+    const normRes = await req('POST', '/api/public/ai/normalizar-oficio', {
+      query: 'Tapicero de Muebles',
+    });
+    assert.equal(normRes.status, 200);
+    assert.ok(normRes.data.oficio?.oficio_id);
+    assert.ok(normRes.data.oficio?.nombre_oficial);
+    assert.ok(normRes.data.oficio?.macro_categoria);
+    assert.ok(Array.isArray(normRes.data.oficio?.sinonimos));
+    assert.ok(Array.isArray(normRes.data.oficio?.modalidades_disponibles));
+    assert.ok(Array.isArray(normRes.data.oficio?.atributos_clave));
+    assert.ok(Array.isArray(normRes.data.oficio?.etiquetas_busqueda));
+    assert.equal(normRes.data.created, true);
+
+    const lookupSaved = await req('GET', '/api/public/oficios?q=tapicero');
+    assert.equal(lookupSaved.status, 200);
+    assert.ok(
+      lookupSaved.data.oficios.some((o: any) => o.oficio_id === normRes.data.oficio.oficio_id),
+      'El nuevo oficio normalizado debe quedar persistido en SQLite'
+    );
+
+    // 3) Registro de negocio en oficio tradicional ("Sastre y Modista") + atributo booleano + búsqueda estricta por sinónimo ("costurera")
+    const regRes = await req('POST', '/api/public/negocios/registro', {
+      rubro: 'RESTAURANTE',
+      nombre: 'Taller Sastrería Inka',
+      telefono: '+51984332211',
+      zona: 'San Blas, Cusco',
+      pin: '4321',
+      tipo_persona: 'NATURAL',
+      documento_tipo: 'DNI',
+      documento_numero: '44556677',
+      tipo_negocio: 'Sastre / Modista',
+      macro_categoria: 'Textil, Confección y Calzado',
+      oficio_especifico: 'Sastre / Modista',
+      oficio_id: 'sastre_modista',
+      modalidades_venta: ['Por prenda', 'Arreglo express'],
+    });
+    assert.equal(regRes.status, 201);
+    const token = regRes.data.token;
+    const negId = regRes.data.negocio.id;
+    assert.equal(regRes.data.negocio.oficio_id, 'sastre_modista');
+
+    const srvRes = await req(
+      'POST',
+      `/api/negocio/${negId}/servicios`,
+      {
+        nombre: 'Basta y entalle de pantalón o terno (costurera / sastre)',
+        descripcion: 'Arreglo profesional de bastas, cierres y ajustes a medida',
+        precio_centavos: 2200,
+        unidad_medida: 'Por prenda',
+        atributos: {
+          tipo_prenda: 'Pantalón / Terno',
+          toma_medidas_domicilio: 'Sí',
+        },
+      },
+      token
+    );
+    assert.equal(srvRes.status, 201);
+
+    const searchRes = await req('POST', '/api/public/asistente', {
+      query: 'necesito costurera para basta de pantalon',
+      lat: -13.5167,
+      lng: -71.9788,
+    });
+    assert.equal(searchRes.status, 200);
+    assert.equal(searchRes.data.sin_resultados_exactos, false);
+    assert.equal(searchRes.data.oficio_normalizado?.oficio_id, 'sastre_modista');
+    assert.ok(searchRes.data.opciones.length >= 1);
+    assert.ok(
+      searchRes.data.opciones.every((op: any) => op.negocio_id === negId),
+      'Solo debe mostrar el taller de sastrería registrado sin mezclar restaurantes ni tiendas'
+    );
+  } finally {
+    server.close();
+  }
+});
+
+
 
 
 

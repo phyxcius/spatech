@@ -45,6 +45,59 @@ export const SALE_MODALITIES = [
   'Servicio',
 ] as const;
 
+export const MACRO_CATEGORIAS_UNIVERSALES = [
+  'Construcción y Mantenimiento del Hogar',
+  'Textil, Confección y Calzado',
+  'Servicios Técnicos y Reparación',
+  'Gastronomía y Alimentación',
+  'Transporte, Carga y Logística',
+  'Comercio, Abastecimiento y Ferretería',
+  'Salud, Farmacia y Bienestar',
+  'Belleza, Estética y Cuidado Personal',
+  'Hotelería, Turismo y Eventos',
+  'Agricultura, Jardinería y Veterinaria',
+  'Educación, Empleo y Servicios Profesionales',
+  'Finanzas y Casa de Cambio',
+] as const;
+
+export type OficioTipoTarifa =
+  | 'por_hora'
+  | 'por_proyecto_cotizacion'
+  | 'por_prenda'
+  | 'por_servicio_fijo'
+  | 'por_dia';
+
+export type OficioTipoDato = 'texto' | 'numero' | 'seleccion' | 'booleano';
+
+export interface OficioAtributoClave {
+  clave: string;
+  etiqueta: string;
+  tipo_dato: OficioTipoDato;
+  opciones?: string[];
+}
+
+export interface OficioNormalizado {
+  oficio_id: string;
+  nombre_oficial: string;
+  macro_categoria: string;
+  sinonimos: string[];
+  modalidades_disponibles: string[];
+  tipo_tarifa_sugerida: OficioTipoTarifa;
+  atributos_clave: OficioAtributoClave[];
+  etiquetas_busqueda: string[];
+  rubro_base?: Rubro;
+  generado_por?: 'semilla_universal' | 'gemini' | 'ia_universal_local';
+  uso_count?: number;
+}
+
+export const OFICIO_TARIFA_LABELS: Record<OficioTipoTarifa, string> = {
+  por_hora: 'Tarifa por hora',
+  por_proyecto_cotizacion: 'Por proyecto / cotización',
+  por_prenda: 'Por prenda o pieza',
+  por_servicio_fijo: 'Tarifa por servicio fijo',
+  por_dia: 'Por día / jornal',
+};
+
 export const BUSINESS_CATEGORIES = [
   'Ferretería & Materiales',
   'Minimarket / Bodega',
@@ -53,6 +106,21 @@ export const BUSINESS_CATEGORIES = [
   'Taxi / Movilidad',
   'Hotel / Alojamiento',
   'Turismo & Guías',
+  'Sastre y Modista / Confección',
+  'Gasfitero / Fontanero y Plomería',
+  'Pintor de Casas, Fachadas y Acabados',
+  'Albañil / Maestro de Obra y Construcción',
+  'Electricista Domiciliario e Industrial',
+  'Carpintero / Ebanista y Melamina',
+  'Cerrajero y Apertura de Puertas / Vehículos',
+  'Mecánico Automotriz / Auxilio Vehicular',
+  'Soldador / Carpintería Metálica y Rejas',
+  'Técnico de Celulares, Laptops y Electrónica',
+  'Panadero / Pastelero y Repostería Artesanal',
+  'Estibador / Cargador, Flete y Mudanza',
+  'Jardinero / Paisajismo y Poda',
+  'Barbero / Estilista y Peluquería',
+  'Zapatero / Reparación de Calzado y Cuero',
   'Piñatería & Eventos',
   'Agencia de Empleos / RRHH',
   'Casa de Cambio',
@@ -64,7 +132,7 @@ export const BUSINESS_CATEGORIES = [
 export interface AiCampoEspecifico {
   key: string;
   label: string;
-  tipo: 'text' | 'number' | 'select';
+  tipo: 'text' | 'number' | 'select' | 'boolean';
   placeholder: string;
   unidad?: string;
   opciones?: string[];
@@ -98,6 +166,11 @@ export interface AiBusinessPanelSchema {
   rubro_base: Rubro;
   rubro_usuario: string;
   rubro_titulo: string;
+  macro_categoria?: string;
+  oficio_especifico?: string;
+  oficio_id?: string;
+  sinonimos?: string[];
+  tipo_tarifa_sugerida?: OficioTipoTarifa;
   subtitulo_panel: string;
   badge_panel: string;
   tema_color: {
@@ -134,6 +207,9 @@ export interface DirectorioNegocio {
   documento_numero?: string | null;
   razon_social?: string | null;
   tipo_negocio?: string;
+  macro_categoria?: string;
+  oficio_especifico?: string;
+  oficio_id?: string | null;
   modalidades_venta?: string;
   panel_ia?: AiBusinessPanelSchema | null;
   estado_regla?: EstadoRegla;
@@ -217,6 +293,9 @@ export interface ConciergeOpcion {
   rubro_estado?: 'EXACTO' | 'NO_ESPECIFICADO' | 'OTRO_RUBRO';
   rubro_etiqueta?: string;
   sector_clave?: string;
+  macro_categoria?: string;
+  oficio_especifico?: string;
+  oficio_id?: string;
   nota_rubro?: string;
 }
 

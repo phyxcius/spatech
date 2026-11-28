@@ -30,10 +30,14 @@ import {
   SALE_MODALITIES,
   type AiBusinessPanelSchema,
   type MetodoPago,
+  type OficioNormalizado,
   type Rubro,
 } from '../types.ts';
+import { buildClientFallbackPanelForRubro } from '../lib/aiPanelBuilder.ts';
+import { mapOficioAtributosToCampos } from '../lib/oficiosUniversal.ts';
 import { AiBusinessBuilder } from './AiBusinessBuilder.tsx';
 import { CuscoGeoMap } from './CuscoGeoMap.tsx';
+import { OficioAutocomplete } from './OficioAutocomplete.tsx';
 
 export interface BusinessConfigResumen {
   negocio: {
@@ -60,6 +64,9 @@ export interface BusinessConfigResumen {
     documento_numero?: string;
     razon_social?: string;
     tipo_negocio?: string;
+    macro_categoria?: string;
+    oficio_especifico?: string;
+    oficio_id?: string;
     modalidades_venta?: string[];
     panel_ia?: AiBusinessPanelSchema | null;
     mp_public_key?: string;
@@ -151,6 +158,12 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
   const [documentoNumero, setDocumentoNumero] = useState(n.documento_numero || '');
   const [razonSocial, setRazonSocial] = useState(n.razon_social || '');
   const [tipoNegocio, setTipoNegocio] = useState(n.tipo_negocio || BUSINESS_CATEGORIES[0]);
+  const [macroCategoria, setMacroCategoria] = useState(n.macro_categoria || n.panel_ia?.macro_categoria || '');
+  const [oficioEspecifico, setOficioEspecifico] = useState(
+    n.oficio_especifico || n.panel_ia?.oficio_especifico || n.tipo_negocio || ''
+  );
+  const [oficioId, setOficioId] = useState(n.oficio_id || n.panel_ia?.oficio_id || '');
+  const [selectedOficio, setSelectedOficio] = useState<OficioNormalizado | null>(null);
   const [modalidadesVenta, setModalidadesVenta] = useState<string[]>(() =>
     Array.isArray(n.modalidades_venta) && n.modalidades_venta.length > 0
       ? n.modalidades_venta
@@ -213,6 +226,11 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
     setDocumentoNumero(n.documento_numero || '');
     setRazonSocial(n.razon_social || '');
     setTipoNegocio(n.tipo_negocio || BUSINESS_CATEGORIES[0]);
+    setMacroCategoria(n.macro_categoria || n.panel_ia?.macro_categoria || '');
+    setOficioEspecifico(
+      n.oficio_especifico || n.panel_ia?.oficio_especifico || n.tipo_negocio || ''
+    );
+    setOficioId(n.oficio_id || n.panel_ia?.oficio_id || '');
     setModalidadesVenta(
       Array.isArray(n.modalidades_venta) && n.modalidades_venta.length > 0
         ? n.modalidades_venta
@@ -317,6 +335,10 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
           documento_numero: documentoNumero.replace(/\D/g, ''),
           razon_social: razonSocial,
           tipo_negocio: tipoNegocio,
+          macro_categoria: macroCategoria.trim() || panelIa?.macro_categoria || undefined,
+          oficio_especifico:
+            oficioEspecifico.trim() || panelIa?.oficio_especifico || tipoNegocio,
+          oficio_id: oficioId.trim() || panelIa?.oficio_id || undefined,
           modalidades_venta: modalidadesVenta,
           panel_ia: panelIa || undefined,
           mp_public_key: mpPublicKey.trim(),
@@ -666,25 +688,42 @@ export const BusinessConfigTab: React.FC<BusinessConfigTabProps> = ({
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                  Categoría / Tipo de Negocio
-                </label>
-                <select
-                  value={BUSINESS_CATEGORIES.includes(tipoNegocio as any) ? tipoNegocio : '__CUSTOM__'}
-                  onChange={(e) => {
-                    if (e.target.value !== '__CUSTOM__') setTipoNegocio(e.target.value);
+                <OficioAutocomplete
+                  value={oficioEspecifico || tipoNegocio}
+                  selectedOficio={selectedOficio}
+                  label="Categoría u Oficio Universal (cualquier oficio o profesión)"
+                  placeholder="Busca o crea tu oficio (ej: Sastre, Gasfitero, Pintor, Carpintero...)"
+                  onSelectOficio={(oficio) => {
+                    setSelectedOficio(oficio);
+                    setTipoNegocio(oficio.nombre_oficial);
+                    setOficioEspecifico(oficio.nombre_oficial);
+                    setMacroCategoria(oficio.macro_categoria);
+                    setOficioId(oficio.oficio_id);
+                    if (oficio.modalidades_disponibles.length > 0) {
+                      setModalidadesVenta((prev) =>
+                        Array.from(new Set([...oficio.modalidades_disponibles, ...prev])).slice(0, 10)
+                      );
+                    }
+                    const autoPanel = buildClientFallbackPanelForRubro({
+                      rubro_usuario: oficio.nombre_oficial,
+                      nombre,
+                    });
+                    setPanelIa((prev) => ({
+                      ...(prev || autoPanel),
+                      rubro_usuario: oficio.nombre_oficial,
+                      rubro_titulo: oficio.nombre_oficial,
+                      macro_categoria: oficio.macro_categoria,
+                      oficio_especifico: oficio.nombre_oficial,
+                      oficio_id: oficio.oficio_id,
+                      sinonimos: oficio.sinonimos,
+                      tipo_tarifa_sugerida: oficio.tipo_tarifa_sugerida,
+                      campos_especificos:
+                        oficio.atributos_clave.length > 0
+                          ? mapOficioAtributosToCampos(oficio.atributos_clave)
+                          : (prev || autoPanel).campos_especificos,
+                    }));
                   }}
-                  className="w-full min-h-[40px] px-3 rounded-xl border border-black/15 dark:border-white/15 bg-white dark:bg-[#121620] text-xs"
-                >
-                  {BUSINESS_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
-                    </option>
-                  ))}
-                  {!BUSINESS_CATEGORIES.includes(tipoNegocio as any) && (
-                    <option value="__CUSTOM__">{tipoNegocio} (Generado por IA)</option>
-                  )}
-                </select>
+                />
               </div>
             </div>
 

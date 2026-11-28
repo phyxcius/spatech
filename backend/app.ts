@@ -7,6 +7,14 @@ import {
   haversineKm,
   runConciergeSearch,
 } from './assistant.ts';
+import {
+  buildUniversalOficioFallback,
+  findExactOrSynonymOficio,
+  MACRO_CATEGORIAS_UNIVERSALES,
+  normalizeOficioWithAi,
+  searchOficiosCatalog,
+  upsertOficioCatalogo,
+} from './oficiosCatalog.ts';
 
 function safeParseJson<T>(raw: unknown): T | null {
   if (typeof raw !== 'string' || !raw.trim()) return null;
@@ -847,7 +855,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
                horario_apertura, horario_cierre, abierto_24h, metodos_pago_aceptados,
                tarifa_minima_centavos, radio_cobertura_km,
                tipo_persona, documento_tipo, documento_numero, razon_social,
-               tipo_negocio, modalidades_venta, panel_ia_json, estado_regla, motivo_estado,
+               tipo_negocio, macro_categoria, oficio_especifico, oficio_id,
+               modalidades_venta, panel_ia_json, estado_regla, motivo_estado,
                mp_public_key,
                CASE WHEN mp_access_token IS NOT NULL AND TRIM(mp_access_token) != '' THEN 1 ELSE 0 END AS mp_yape_configurado,
                yape_numero, plin_numero, banco_nombre, banco_titular, banco_cuenta, banco_cci
@@ -928,6 +937,29 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
     }
   });
 
+  app.get('/api/public/oficios', publicLimiter, (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const { oficios, exact_match } = searchOficiosCatalog(db, q);
+    res.json({
+      oficios,
+      exact_match,
+      macro_categorias: MACRO_CATEGORIAS_UNIVERSALES,
+    });
+  });
+
+  app.post('/api/public/ai/normalizar-oficio', publicLimiter, async (req, res, next) => {
+    try {
+      const { query } = req.body || {};
+      if (typeof query !== 'string' || query.trim().length < 2) {
+        throw new HttpError(400, 'Escribe el oficio, profesión o servicio (mínimo 2 caracteres).');
+      }
+      const result = await normalizeOficioWithAi(db, query);
+      res.json(result);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post('/api/public/ai/generar-panel-rubro', publicLimiter, async (req, res, next) => {
     try {
       const { rubro_usuario, nombre, descripcion, zona } = req.body || {};
@@ -939,6 +971,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nombre: typeof nombre === 'string' ? nombre : undefined,
         descripcion: typeof descripcion === 'string' ? descripcion : undefined,
         zona: typeof zona === 'string' ? zona : undefined,
+        db,
       });
       res.json({ panel_ia });
     } catch (err) {
@@ -2322,6 +2355,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         documento_numero,
         razon_social,
         tipo_negocio,
+        macro_categoria,
+        oficio_especifico,
+        oficio_id,
         modalidades_venta,
         panel_ia,
         panel_ia_json,
@@ -2364,7 +2400,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const nextTipoNegocio =
         typeof tipo_negocio === 'string' && tipo_negocio.trim()
           ? tipo_negocio.trim().slice(0, 80)
-          : 'Comercio Multirubro';
+          : typeof oficio_especifico === 'string' && oficio_especifico.trim()
+            ? oficio_especifico.trim().slice(0, 80)
+            : 'Comercio Multirubro';
       const nextModalidades = Array.isArray(modalidades_venta)
         ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
         : typeof modalidades_venta === 'string' && modalidades_venta.trim()
@@ -2385,6 +2423,51 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             ? safeParseJson(panel_ia_json)
             : null;
       const nextPanelJson = rawPanelObj ? JSON.stringify(rawPanelObj) : null;
+
+      // Resolver y expandir automáticamente en oficios_catalogo si corresponde
+      const oficioQueryProbe =
+        (typeof oficio_especifico === 'string' && oficio_especifico.trim()) ||
+        (rawPanelObj && typeof (rawPanelObj as any).oficio_especifico === 'string'
+          ? String((rawPanelObj as any).oficio_especifico)
+          : nextTipoNegocio);
+      const matchedSeed =
+        oficioQueryProbe && oficioQueryProbe !== 'Comercio Multirubro'
+          ? findExactOrSynonymOficio(db, oficioQueryProbe)
+          : null;
+      let resolvedOficio = matchedSeed;
+      if (
+        !resolvedOficio &&
+        oficioQueryProbe &&
+        oficioQueryProbe !== 'Comercio Multirubro'
+      ) {
+        const fb = buildUniversalOficioFallback(oficioQueryProbe);
+        if (typeof macro_categoria === 'string' && macro_categoria.trim()) {
+          fb.macro_categoria = macro_categoria.trim().slice(0, 100);
+        }
+        if (typeof oficio_id === 'string' && oficio_id.trim()) {
+          fb.oficio_id = oficio_id.trim().slice(0, 64);
+        }
+        fb.rubro_base = rubro;
+        resolvedOficio = upsertOficioCatalogo(db, fb, 'ia_universal_local');
+      }
+      const nextMacroCategoria =
+        typeof macro_categoria === 'string' && macro_categoria.trim()
+          ? macro_categoria.trim().slice(0, 100)
+          : resolvedOficio?.macro_categoria ||
+            (rawPanelObj && typeof (rawPanelObj as any).macro_categoria === 'string'
+              ? String((rawPanelObj as any).macro_categoria).slice(0, 100)
+              : 'Comercio, Abastecimiento y Ferretería');
+      const nextOficioEspecifico =
+        typeof oficio_especifico === 'string' && oficio_especifico.trim()
+          ? oficio_especifico.trim().slice(0, 100)
+          : resolvedOficio?.nombre_oficial || nextTipoNegocio;
+      const nextOficioId =
+        typeof oficio_id === 'string' && oficio_id.trim()
+          ? oficio_id.trim().slice(0, 64)
+          : resolvedOficio?.oficio_id ||
+            (rawPanelObj && typeof (rawPanelObj as any).oficio_id === 'string'
+              ? String((rawPanelObj as any).oficio_id).slice(0, 64)
+              : null);
 
       const nextMpPublic =
         typeof mp_public_key === 'string' && mp_public_key.trim()
@@ -2426,10 +2509,12 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         .prepare(`
           INSERT INTO negocios (
             codigo, rubro, nombre, telefono, descripcion, lat, lng, zona, en_linea, activo, saldo, saldo_retenido,
-            tipo_persona, documento_tipo, documento_numero, razon_social, tipo_negocio, modalidades_venta, panel_ia_json, estado_regla,
+            tipo_persona, documento_tipo, documento_numero, razon_social,
+            tipo_negocio, macro_categoria, oficio_especifico, oficio_id,
+            modalidades_venta, panel_ia_json, estado_regla,
             mp_public_key, mp_access_token, yape_numero, plin_numero, banco_nombre, banco_titular, banco_cuenta, banco_cci
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO', ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVO', ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           codigo,
@@ -2438,7 +2523,7 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           telefono.trim(),
           typeof descripcion === 'string' && descripcion.trim()
             ? descripcion.trim()
-            : `Negocio verificado en ${nextTipoNegocio} en Cusco`,
+            : `Negocio verificado en ${nextOficioEspecifico} en Cusco`,
           nextLat,
           nextLng,
           typeof zona === 'string' && zona.trim() ? zona.trim() : 'Centro Histórico, Cusco',
@@ -2447,6 +2532,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
           nextDocNum,
           typeof razon_social === 'string' && razon_social.trim() ? razon_social.trim().slice(0, 140) : null,
           nextTipoNegocio,
+          nextMacroCategoria,
+          nextOficioEspecifico,
+          nextOficioId,
           nextModalidades,
           nextPanelJson,
           nextMpPublic,
@@ -2718,6 +2806,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         documento_numero,
         razon_social,
         tipo_negocio,
+        macro_categoria,
+        oficio_especifico,
+        oficio_id,
         modalidades_venta,
         panel_ia,
         panel_ia_json,
@@ -2812,7 +2903,38 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
       const nextTipoNegocio =
         typeof tipo_negocio === 'string' && tipo_negocio.trim()
           ? tipo_negocio.trim().slice(0, 80)
-          : current.tipo_negocio || 'Comercio Multirubro';
+          : typeof oficio_especifico === 'string' && oficio_especifico.trim()
+            ? oficio_especifico.trim().slice(0, 80)
+            : current.tipo_negocio || 'Comercio Multirubro';
+      const nextMacroCategoria =
+        typeof macro_categoria === 'string' && macro_categoria.trim()
+          ? macro_categoria.trim().slice(0, 100)
+          : current.macro_categoria || 'Comercio, Abastecimiento y Ferretería';
+      const nextOficioEspecifico =
+        typeof oficio_especifico === 'string' && oficio_especifico.trim()
+          ? oficio_especifico.trim().slice(0, 100)
+          : typeof tipo_negocio === 'string' && tipo_negocio.trim()
+            ? tipo_negocio.trim().slice(0, 100)
+            : current.oficio_especifico || nextTipoNegocio;
+      const nextOficioId =
+        typeof oficio_id === 'string' && oficio_id.trim()
+          ? oficio_id.trim().slice(0, 64)
+          : current.oficio_id ?? null;
+
+      if (
+        (typeof oficio_especifico === 'string' && oficio_especifico.trim()) ||
+        (typeof tipo_negocio === 'string' && tipo_negocio.trim())
+      ) {
+        const probe = nextOficioEspecifico;
+        if (probe && probe !== 'Comercio Multirubro' && !findExactOrSynonymOficio(db, probe)) {
+          const fb = buildUniversalOficioFallback(probe);
+          fb.macro_categoria = nextMacroCategoria;
+          if (nextOficioId) fb.oficio_id = nextOficioId;
+          fb.rubro_base = current.rubro;
+          upsertOficioCatalogo(db, fb, 'ia_universal_local');
+        }
+      }
+
       const nextModalidades = Array.isArray(modalidades_venta)
         ? modalidades_venta.map(String).filter(Boolean).join(',') || 'Unidad,Servicio'
         : typeof modalidades_venta === 'string' && modalidades_venta.trim()
@@ -2866,7 +2988,8 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
             horario_apertura = ?, horario_cierre = ?, abierto_24h = ?, metodos_pago_aceptados = ?,
             auto_aceptar_pedidos = ?, alerta_voz_activa = ?, tarifa_minima_centavos = ?, radio_cobertura_km = ?,
             tipo_persona = ?, documento_tipo = ?, documento_numero = ?, razon_social = ?,
-            tipo_negocio = ?, modalidades_venta = ?, panel_ia_json = ?,
+            tipo_negocio = ?, macro_categoria = ?, oficio_especifico = ?, oficio_id = ?,
+            modalidades_venta = ?, panel_ia_json = ?,
             mp_public_key = ?, mp_access_token = ?, yape_numero = ?, plin_numero = ?,
             banco_nombre = ?, banco_titular = ?, banco_cuenta = ?, banco_cci = ?
         WHERE id = ?
@@ -2891,6 +3014,9 @@ export function createApp(options: { db: DatabaseSync; skipRateLimit?: boolean }
         nextDocNumero,
         nextRazonSocial,
         nextTipoNegocio,
+        nextMacroCategoria,
+        nextOficioEspecifico,
+        nextOficioId,
         nextModalidades,
         nextPanelJson,
         nextMpPublic,

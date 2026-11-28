@@ -36,10 +36,12 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, ApiError, playLuxuryChime, speakSpanish } from '../lib/api.ts';
+import { buildClientFallbackPanelForRubro } from '../lib/aiPanelBuilder.ts';
 import { haversineKm } from '../lib/cuscoMarkets.ts';
 import { subscribeFirebaseRtdbPath } from '../lib/firebaseRtdb.ts';
 import { playInDriveNotificationSound } from '../lib/notificationSounds.ts';
 import { emitCenterNotification } from '../lib/notifications.ts';
+import { mapOficioAtributosToCampos } from '../lib/oficiosUniversal.ts';
 import {
   formatPeruLookupError,
   type PeruDocumentLookupResult,
@@ -55,9 +57,11 @@ import {
   type DirectorioNegocio,
   type MetodoPago,
   type MetodoRecarga,
+  type OficioNormalizado,
   type PedidoNegocio,
   type Rubro,
 } from '../types.ts';
+import { OficioAutocomplete } from './OficioAutocomplete.tsx';
 import { AiBusinessBuilder, AiDynamicToolsBar } from './AiBusinessBuilder.tsx';
 import { BusinessConfigTab } from './BusinessConfigTab.tsx';
 import { CuscoGeoMap, type GeoMapPin } from './CuscoGeoMap.tsx';
@@ -280,6 +284,10 @@ export const BusinessPanel: React.FC = () => {
   const [regDocVerificado, setRegDocVerificado] = useState<PeruDocumentLookupResult | null>(null);
   const [regDocLoading, setRegDocLoading] = useState(false);
   const [regTipoNegocio, setRegTipoNegocio] = useState<string>(BUSINESS_CATEGORIES[0]);
+  const [regMacroCategoria, setRegMacroCategoria] = useState<string>('');
+  const [regOficioEspecifico, setRegOficioEspecifico] = useState<string>('');
+  const [regOficioId, setRegOficioId] = useState<string>('');
+  const [regSelectedOficio, setRegSelectedOficio] = useState<OficioNormalizado | null>(null);
   const [regModalidades, setRegModalidades] = useState<string[]>(['Unidad', 'Kilo']);
   const [regNombre, setRegNombre] = useState('');
   const [regTelefono, setRegTelefono] = useState('');
@@ -687,6 +695,10 @@ export const BusinessPanel: React.FC = () => {
           documento_numero: regDocNumero.replace(/\D/g, ''),
           razon_social: regRazonSocial || regNombre,
           tipo_negocio: regTipoNegocio,
+          macro_categoria: regMacroCategoria || regPanelIa?.macro_categoria || undefined,
+          oficio_especifico:
+            regOficioEspecifico || regPanelIa?.oficio_especifico || regTipoNegocio,
+          oficio_id: regOficioId || regPanelIa?.oficio_id || undefined,
           modalidades_venta: regModalidades,
           panel_ia: regPanelIa || undefined,
           catalogo_inicial: regPanelIa?.catalogo_inicial || undefined,
@@ -1493,6 +1505,9 @@ export const BusinessPanel: React.FC = () => {
                   setRegPanelIa(schema);
                   setRegRubro(schema.rubro_base);
                   setRegTipoNegocio(schema.rubro_titulo);
+                  setRegMacroCategoria(schema.macro_categoria || '');
+                  setRegOficioEspecifico(schema.oficio_especifico || schema.rubro_titulo);
+                  setRegOficioId(schema.oficio_id || '');
                   if (schema.unidades_medida.length > 0) {
                     setRegModalidades(schema.unidades_medida);
                     setNewServUnidadMedida(schema.unidades_medida[0]);
@@ -1500,7 +1515,7 @@ export const BusinessPanel: React.FC = () => {
                 }}
               />
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
                 <div>
                   <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
                     Rubro operativo base
@@ -1520,25 +1535,41 @@ export const BusinessPanel: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-[#6A717E] dark:text-[#98A0AD] mb-1">
-                    Categoría / Especialidad del Negocio
-                  </label>
-                  <select
-                    value={BUSINESS_CATEGORIES.includes(regTipoNegocio as any) ? regTipoNegocio : '__CUSTOM__'}
-                    onChange={(e) => {
-                      if (e.target.value !== '__CUSTOM__') setRegTipoNegocio(e.target.value);
+                  <OficioAutocomplete
+                    value={regOficioEspecifico || regTipoNegocio}
+                    selectedOficio={regSelectedOficio}
+                    label="Oficio o Categoría Universal (busca o crea cualquiera)"
+                    placeholder="Ej: Sastre, Gasfitero, Pintor, Técnico de celulares, Ferretería..."
+                    onSelectOficio={(oficio) => {
+                      setRegSelectedOficio(oficio);
+                      setRegTipoNegocio(oficio.nombre_oficial);
+                      setRegMacroCategoria(oficio.macro_categoria);
+                      setRegOficioEspecifico(oficio.nombre_oficial);
+                      setRegOficioId(oficio.oficio_id);
+                      setRegRubro(oficio.rubro_base || 'RESTAURANTE');
+                      if (oficio.modalidades_disponibles.length > 0) {
+                        setRegModalidades(oficio.modalidades_disponibles);
+                        setNewServUnidadMedida(oficio.modalidades_disponibles[0]);
+                      }
+                      const panelAuto = buildClientFallbackPanelForRubro({
+                        rubro_usuario: oficio.nombre_oficial,
+                        nombre: regNombre || undefined,
+                      });
+                      const customCampos =
+                        oficio.atributos_clave.length > 0
+                          ? mapOficioAtributosToCampos(oficio.atributos_clave)
+                          : panelAuto.campos_especificos;
+                      setRegPanelIa({
+                        ...panelAuto,
+                        macro_categoria: oficio.macro_categoria,
+                        oficio_especifico: oficio.nombre_oficial,
+                        oficio_id: oficio.oficio_id,
+                        sinonimos: oficio.sinonimos,
+                        tipo_tarifa_sugerida: oficio.tipo_tarifa_sugerida,
+                        campos_especificos: customCampos,
+                      });
                     }}
-                    className="w-full min-h-[44px] px-3.5 rounded-xl border border-black/15 dark:border-white/15 bg-[#F8F7F4] dark:bg-[#0B0E14] text-xs"
-                  >
-                    {BUSINESS_CATEGORIES.map((cat) => (
-                      <option key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                    {!BUSINESS_CATEGORIES.includes(regTipoNegocio as any) && (
-                      <option value="__CUSTOM__">{regTipoNegocio} (Generado por IA)</option>
-                    )}
-                  </select>
+                  />
                 </div>
               </div>
 
@@ -3359,7 +3390,32 @@ export const BusinessPanel: React.FC = () => {
                                 {campo.label}
                                 {campo.unidad ? ` (${campo.unidad})` : ''}
                               </label>
-                              {campo.tipo === 'select' && Array.isArray(campo.opciones) && campo.opciones.length > 0 ? (
+                              {campo.tipo === 'boolean' ? (
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  {(['Sí', 'No'] as const).map((opt) => {
+                                    const active = (newServAtributos[campo.key] || '') === opt;
+                                    return (
+                                      <button
+                                        key={opt}
+                                        type="button"
+                                        onClick={() =>
+                                          setNewServAtributos((prev) => ({
+                                            ...prev,
+                                            [campo.key]: active ? '' : opt,
+                                          }))
+                                        }
+                                        className={`min-h-[36px] rounded-lg border text-xs font-semibold transition-colors ${
+                                          active
+                                            ? 'bg-[#2563EB] text-white border-[#2563EB]'
+                                            : 'border-black/15 dark:border-white/15 bg-white dark:bg-[#0B0E14] text-[#555B66] dark:text-[#CBD5E1]'
+                                        }`}
+                                      >
+                                        {opt}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : campo.tipo === 'select' && Array.isArray(campo.opciones) && campo.opciones.length > 0 ? (
                                 <select
                                   value={newServAtributos[campo.key] || ''}
                                   onChange={(e) =>

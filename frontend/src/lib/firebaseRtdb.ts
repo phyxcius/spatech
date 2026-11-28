@@ -1,13 +1,21 @@
-import type {
-  AiBusinessPanelSchema,
-  ConciergeOpcion,
-  EntidadEmergencia,
-  EstadoRegla,
-  MetodoPago,
-  PedidoPublico,
-  Rubro,
+import {
+  MACRO_CATEGORIAS_UNIVERSALES,
+  type AiBusinessPanelSchema,
+  type ConciergeOpcion,
+  type EntidadEmergencia,
+  type EstadoRegla,
+  type MetodoPago,
+  type OficioNormalizado,
+  type PedidoPublico,
+  type Rubro,
 } from '../types.ts';
 import { buildClientFallbackPanelForRubro } from './aiPanelBuilder.ts';
+import {
+  buildUniversalOficioClientFallback,
+  findExactOrSynonymOficioClient,
+  searchOficiosLocal,
+  UNIVERSAL_OFICIOS_CLIENT_SEED,
+} from './oficiosUniversal.ts';
 import {
   classifyRecordSectorClient,
   detectConciergeIntent,
@@ -123,6 +131,9 @@ interface RtdbNegocio {
   documento_numero?: string | null;
   razon_social?: string | null;
   tipo_negocio?: string;
+  macro_categoria?: string;
+  oficio_especifico?: string;
+  oficio_id?: string;
   modalidades_venta?: string;
   panel_ia?: AiBusinessPanelSchema | null;
   mp_public_key?: string | null;
@@ -273,6 +284,7 @@ interface RtdbSnapshot {
   partners?: Record<string, RtdbPartner>;
   resenas?: Record<string, unknown>;
   documentos?: Record<string, PeruDocumentLookupResult>;
+  oficios_catalogo?: Record<string, OficioNormalizado> | OficioNormalizado[];
 }
 
 function toArray<T>(val: Record<string, T> | T[] | undefined | null): T[] {
@@ -929,10 +941,20 @@ interface RtdbPrecisionResult {
   sector_clave: SectorKey;
   sin_resultados_exactos: boolean;
   modo_resultado: 'NEGOCIOS' | 'PRODUCTOS';
+  oficio_normalizado?: OficioNormalizado | null;
   opciones: ConciergeOpcion[];
   registros_rubro_no_especificado: ConciergeOpcion[];
   alternativas_otros_rubros: ConciergeOpcion[];
   respuesta_voz: string;
+}
+
+function mergeRtdbOficiosCatalog(snap: RtdbSnapshot): OficioNormalizado[] {
+  const byId = new Map<string, OficioNormalizado>();
+  for (const item of UNIVERSAL_OFICIOS_CLIENT_SEED) byId.set(item.oficio_id, item);
+  for (const item of toArray(snap.oficios_catalogo)) {
+    if (item && item.oficio_id) byId.set(item.oficio_id, item);
+  }
+  return Array.from(byId.values());
 }
 
 function buildOptionsPrecision(
@@ -944,12 +966,34 @@ function buildOptionsPrecision(
   query?: string
 ): RtdbPrecisionResult {
   const rawQuery = (query || '').trim();
+  const catalogList = mergeRtdbOficiosCatalog(snap);
   const sectorIntent = detectSectorIntent(rawQuery);
+  const catalogMatch = findExactOrSynonymOficioClient(rawQuery, catalogList);
+  const CORE_OFICIOS = new Set([
+    'taxi_transporte',
+    'farmacia_botica',
+    'restaurante_gastronomia',
+    'hotel_alojamiento',
+    'housekeeping_hoteleria',
+    'ferreteria_materiales',
+    'turismo_guiado',
+    'veterinaria_mascotas',
+    'contador_asesoria',
+    'agencia_empleos',
+    'casa_cambio',
+  ]);
+  const isCustomTrade =
+    sectorIntent.sectorKey === 'OFICIO_ESPECIFICO' ||
+    Boolean(catalogMatch && !CORE_OFICIOS.has(catalogMatch.oficio_id));
+  const activeOficio = isCustomTrade
+    ? catalogMatch || sectorIntent.oficioMatch || null
+    : catalogMatch || null;
+
   const cat: Rubro = sectorIntent.isHospitalityHousekeeping
     ? 'HOTEL'
-    : forcedCat || sectorIntent.rubroBase;
+    : forcedCat || (isCustomTrade && activeOficio ? activeOficio.rubro_base || 'RESTAURANTE' : sectorIntent.rubroBase);
   const targetSectorKey: SectorKey =
-    forcedCat && !sectorIntent.isHospitalityHousekeeping
+    forcedCat && !sectorIntent.isHospitalityHousekeeping && !isCustomTrade
       ? forcedCat === 'HOTEL'
         ? 'HOTELERIA'
         : forcedCat === 'FARMACIA'
@@ -963,8 +1007,13 @@ function buildOptionsPrecision(
         : sectorIntent.rubroBase === 'RESTAURANTE'
         ? sectorIntent.sectorKey
         : 'RESTAURANTE'
+      : isCustomTrade
+      ? 'OFICIO_ESPECIFICO'
       : sectorIntent.sectorKey;
-  const targetSectorLabel = SECTOR_LABELS[targetSectorKey];
+  const targetSectorLabel =
+    targetSectorKey === 'OFICIO_ESPECIFICO' && activeOficio
+      ? activeOficio.nombre_oficial
+      : SECTOR_LABELS[targetSectorKey];
 
   const negociosList = toArray(snap.negocios);
   const negById = new Map<number, RtdbNegocio>(negociosList.map((n) => [n.id, n]));
@@ -976,7 +1025,7 @@ function buildOptionsPrecision(
     normQ
   );
 
-  if (cat === 'TRANSPORTE') {
+  if (cat === 'TRANSPORTE' && targetSectorKey !== 'OFICIO_ESPECIFICO') {
     const destText = destino || extractCuscoDestination(rawQuery) || '';
     const destCoords = destText ? resolveCuscoDestination(destText, lat, lng) : null;
     const tripKm = destCoords
@@ -1106,6 +1155,9 @@ function buildOptionsPrecision(
         const cls = classifyRecordSectorClient({
           rubro: n.rubro,
           tipo_negocio: n.tipo_negocio,
+          macro_categoria: n.macro_categoria,
+          oficio_especifico: n.oficio_especifico,
+          oficio_id: n.oficio_id,
           nombre: n.nombre,
           descripcion: n.descripcion,
           panel_ia_titulo: n.panel_ia?.rubro_titulo || n.panel_ia?.rubro_usuario,
@@ -1119,7 +1171,13 @@ function buildOptionsPrecision(
       });
 
     const exactBiz = classified
-      .filter((x) => x.cls.specified && x.n.rubro === cat && x.cls.sectorKey === targetSectorKey)
+      .filter((x) => {
+        if (!x.cls.specified) return false;
+        if (targetSectorKey === 'OFICIO_ESPECIFICO' && activeOficio) {
+          return x.cls.oficioId === activeOficio.oficio_id || x.cls.sectorKey === 'OFICIO_ESPECIFICO';
+        }
+        return x.n.rubro === cat && x.cls.sectorKey === targetSectorKey;
+      })
       .sort((a, b) => {
         if (a.openNow !== b.openNow) return a.openNow ? -1 : 1;
         return a.distKm - b.distKm || b.n.calificacion - a.n.calificacion;
@@ -1149,6 +1207,9 @@ function buildOptionsPrecision(
         rubro_estado: 'EXACTO' as const,
         rubro_etiqueta: x.cls.sectorLabel,
         sector_clave: x.cls.sectorKey || targetSectorKey,
+        macro_categoria: x.n.macro_categoria || activeOficio?.macro_categoria,
+        oficio_especifico: x.n.oficio_especifico || activeOficio?.nombre_oficial,
+        oficio_id: x.n.oficio_id || activeOficio?.oficio_id,
       }));
 
     const unspecifiedBiz: ConciergeOpcion[] = classified
@@ -1187,6 +1248,7 @@ function buildOptionsPrecision(
       sector_clave: targetSectorKey,
       sin_resultados_exactos: exactBiz.length === 0,
       modo_resultado: 'NEGOCIOS',
+      oficio_normalizado: activeOficio,
       opciones: exactBiz,
       registros_rubro_no_especificado: unspecifiedBiz,
       alternativas_otros_rubros: [],
@@ -1208,12 +1270,15 @@ function buildOptionsPrecision(
       const cls = classifyRecordSectorClient({
         rubro: biz?.rubro || s.categoria,
         tipo_negocio: biz?.tipo_negocio,
+        macro_categoria: biz?.macro_categoria,
+        oficio_especifico: biz?.oficio_especifico,
+        oficio_id: biz?.oficio_id,
         nombre: s.negocio_nombre,
         descripcion: biz?.descripcion || s.descripcion,
         panel_ia_titulo: biz?.panel_ia?.rubro_titulo || biz?.panel_ia?.rubro_usuario,
         atributos_rubro: s.atributos?.rubro || s.atributos?.sector,
       });
-      const hay = `${s.nombre} ${s.descripcion} ${JSON.stringify(s.atributos || {})} ${s.negocio_nombre} ${biz?.tipo_negocio || ''}`
+      const hay = `${s.nombre} ${s.descripcion} ${JSON.stringify(s.atributos || {})} ${s.negocio_nombre} ${biz?.tipo_negocio || ''} ${biz?.oficio_especifico || ''}`
         .toLowerCase()
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '');
@@ -1221,11 +1286,27 @@ function buildOptionsPrecision(
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  const termPool = Array.from(new Set([...keywords, ...sectorIntent.expandedTerms]));
+  const extraTradeTerms = activeOficio
+    ? [activeOficio.nombre_oficial, ...activeOficio.sinonimos, ...activeOficio.etiquetas_busqueda]
+        .map((t) =>
+          t
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+        )
+        .filter((t) => t.length >= 3)
+    : [];
+  const termPool = Array.from(new Set([...keywords, ...sectorIntent.expandedTerms, ...extraTradeTerms]));
 
   const exactMatches = activeItems
     .filter((x) => {
-      if (!x.cls.specified || x.cls.sectorKey !== targetSectorKey) return false;
+      if (!x.cls.specified) return false;
+      if (targetSectorKey === 'OFICIO_ESPECIFICO' && activeOficio) {
+        const sameOficioId = Boolean(x.cls.oficioId && x.cls.oficioId === activeOficio.oficio_id);
+        const oficioHayMatch = extraTradeTerms.some((t) => x.hay.includes(t));
+        return sameOficioId || (x.cls.sectorKey === 'OFICIO_ESPECIFICO' && oficioHayMatch);
+      }
+      if (x.cls.sectorKey !== targetSectorKey) return false;
       if (
         sectorIntent.isHospitalityHousekeeping &&
         RTDB_RESTAURANT_CONFLICT_RX.test(x.hay) &&
@@ -1297,6 +1378,9 @@ function buildOptionsPrecision(
     rubro_etiqueta:
       rubroEstado === 'NO_ESPECIFICADO' ? 'Rubro no especificado' : x.cls.sectorLabel,
     sector_clave: x.cls.sectorKey || undefined,
+    macro_categoria: x.biz?.macro_categoria || activeOficio?.macro_categoria,
+    oficio_especifico: x.biz?.oficio_especifico || activeOficio?.nombre_oficial,
+    oficio_id: x.biz?.oficio_id || activeOficio?.oficio_id,
     nota_rubro:
       rubroEstado === 'NO_ESPECIFICADO'
         ? 'Registro con rubro no especificado; no se presenta como coincidencia exacta.'
@@ -1317,6 +1401,7 @@ function buildOptionsPrecision(
     sector_clave: targetSectorKey,
     sin_resultados_exactos: opciones.length === 0,
     modo_resultado: 'PRODUCTOS',
+    oficio_normalizado: activeOficio,
     opciones,
     registros_rubro_no_especificado: unspecifiedMatches.map((x) =>
       toOption(x, 'NO_ESPECIFICADO', false)
@@ -1493,6 +1578,43 @@ export async function handleFirebaseRtdbRequest<T>(
 
   const snap = await getSnapshot();
 
+  if (cleanPath === '/api/public/oficios' && method === 'GET') {
+    const params = new URLSearchParams(queryStr);
+    const q = (params.get('q') || '').trim();
+    const catalogList = mergeRtdbOficiosCatalog(snap);
+    const result = searchOficiosLocal(q, catalogList);
+    return {
+      oficios: result.oficios,
+      exact_match: result.exact_match,
+      macro_categorias: Array.from(MACRO_CATEGORIAS_UNIVERSALES),
+    } as T;
+  }
+
+  if (cleanPath === '/api/public/ai/normalizar-oficio' && method === 'POST') {
+    const rawQuery = String(payload.query || payload.oficio || '').trim();
+    if (rawQuery.length < 2) {
+      throw new Error('Describe el oficio o servicio (mínimo 2 caracteres).');
+    }
+    const catalogList = mergeRtdbOficiosCatalog(snap);
+    const existing = findExactOrSynonymOficioClient(rawQuery, catalogList);
+    if (existing) {
+      return {
+        oficio: existing,
+        created: false,
+        ai_used: false,
+        ai_error: null,
+      } as T;
+    }
+    const createdOficio = buildUniversalOficioClientFallback(rawQuery);
+    await rtdbFetch(`oficios_catalogo/${createdOficio.oficio_id}`, 'PUT', createdOficio).catch(() => {});
+    return {
+      oficio: createdOficio,
+      created: true,
+      ai_used: false,
+      ai_error: null,
+    } as T;
+  }
+
   if (cleanPath === '/api/public/asistente' && method === 'POST') {
     const q = String(payload.query || '');
     const lat = Number(payload.lat) || -13.5167;
@@ -1515,6 +1637,7 @@ export async function handleFirebaseRtdbRequest<T>(
       sector_clave: result.sector_clave,
       sin_resultados_exactos: result.sin_resultados_exactos,
       modo_resultado: result.modo_resultado,
+      oficio_normalizado: result.oficio_normalizado || null,
       respuesta_voz: result.respuesta_voz,
       destino_sugerido: destino,
       ai_error: null,
@@ -2249,7 +2372,19 @@ export async function handleFirebaseRtdbRequest<T>(
       documento_tipo: payload.documento_tipo === 'DNI' ? 'DNI' : 'RUC',
       documento_numero: payload.documento_numero || null,
       razon_social: payload.razon_social || null,
-      tipo_negocio: String(payload.tipo_negocio || 'Comercio Multirubro'),
+      tipo_negocio: String(payload.tipo_negocio || payload.oficio_especifico || 'Comercio Multirubro'),
+      macro_categoria:
+        typeof payload.macro_categoria === 'string' && payload.macro_categoria.trim()
+          ? payload.macro_categoria.trim()
+          : nextPanelIa?.macro_categoria || undefined,
+      oficio_especifico:
+        typeof payload.oficio_especifico === 'string' && payload.oficio_especifico.trim()
+          ? payload.oficio_especifico.trim()
+          : nextPanelIa?.oficio_especifico || String(payload.tipo_negocio || '').trim() || undefined,
+      oficio_id:
+        typeof payload.oficio_id === 'string' && payload.oficio_id.trim()
+          ? payload.oficio_id.trim()
+          : nextPanelIa?.oficio_id || undefined,
       modalidades_venta: Array.isArray(payload.modalidades_venta)
         ? payload.modalidades_venta.join(',')
         : String(payload.modalidades_venta || 'Unidad,Servicio'),
@@ -2268,6 +2403,16 @@ export async function handleFirebaseRtdbRequest<T>(
       pin_hash: hashed.hash,
     };
     await rtdbFetch(`negocios/${codigo}`, 'PUT', newBiz);
+    if (newBiz.oficio_especifico) {
+      const catMatch = findExactOrSynonymOficioClient(
+        newBiz.oficio_especifico,
+        mergeRtdbOficiosCatalog(snap)
+      );
+      if (!catMatch) {
+        const autoOficio = buildUniversalOficioClientFallback(newBiz.oficio_especifico);
+        await rtdbFetch(`oficios_catalogo/${autoOficio.oficio_id}`, 'PUT', autoOficio).catch(() => {});
+      }
+    }
 
     const starterItems = Array.isArray(payload.catalogo_inicial)
       ? payload.catalogo_inicial
@@ -2438,6 +2583,9 @@ export async function handleFirebaseRtdbRequest<T>(
         documento_numero: payload.documento_numero !== undefined ? String(payload.documento_numero || '').trim() || null : biz.documento_numero || null,
         razon_social: payload.razon_social !== undefined ? String(payload.razon_social || '').trim() || null : biz.razon_social || null,
         tipo_negocio: payload.tipo_negocio || biz.tipo_negocio || 'Comercio Multirubro',
+        ...(typeof payload.macro_categoria === 'string' ? { macro_categoria: payload.macro_categoria.trim() || biz.macro_categoria } : {}),
+        ...(typeof payload.oficio_especifico === 'string' ? { oficio_especifico: payload.oficio_especifico.trim() || biz.oficio_especifico } : {}),
+        ...(typeof payload.oficio_id === 'string' ? { oficio_id: payload.oficio_id.trim() || biz.oficio_id } : {}),
         modalidades_venta: Array.isArray(payload.modalidades_venta)
           ? payload.modalidades_venta.join(',')
           : payload.modalidades_venta || biz.modalidades_venta || 'Unidad,Servicio',
@@ -2451,6 +2599,16 @@ export async function handleFirebaseRtdbRequest<T>(
         ...(typeof payload.banco_cci === 'string' ? { banco_cci: payload.banco_cci.trim() || null } : {}),
       };
       await rtdbFetch(`negocios/${biz.codigo}`, 'PATCH', updates);
+      if (typeof updates.oficio_especifico === 'string' && updates.oficio_especifico) {
+        const catMatch = findExactOrSynonymOficioClient(
+          updates.oficio_especifico,
+          mergeRtdbOficiosCatalog(snap)
+        );
+        if (!catMatch) {
+          const autoOficio = buildUniversalOficioClientFallback(updates.oficio_especifico);
+          await rtdbFetch(`oficios_catalogo/${autoOficio.oficio_id}`, 'PUT', autoOficio).catch(() => {});
+        }
+      }
       return { ok: true, negocio: { ...biz, ...updates } } as T;
     }
 

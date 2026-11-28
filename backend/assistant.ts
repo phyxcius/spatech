@@ -1,6 +1,20 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import type { DatabaseSync } from 'node:sqlite';
-import { HttpError, RUBROS, type AiBusinessPanelSchema, type Rubro } from './types.ts';
+import {
+  findExactOrSynonymOficio,
+  inferMacroAndRubroFromText,
+  normalizeOficioWithAi,
+  slugifyOficioId,
+  upsertOficioCatalogo,
+} from './oficiosCatalog.ts';
+import {
+  HttpError,
+  RUBROS,
+  type AiBusinessPanelSchema,
+  type OficioNormalizado,
+  type OficioTipoTarifa,
+  type Rubro,
+} from './types.ts';
 
 export function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -228,7 +242,8 @@ export type SectorKey =
   | 'PINATERIA'
   | 'EMPLEOS'
   | 'MINIMARKET'
-  | 'VETERINARIA';
+  | 'VETERINARIA'
+  | 'OFICIO_ESPECIFICO';
 
 const SECTOR_LABELS: Record<SectorKey, string> = {
   TRANSPORTE: 'Taxi / Movilidad / Transporte',
@@ -242,6 +257,7 @@ const SECTOR_LABELS: Record<SectorKey, string> = {
   EMPLEOS: 'Empleos & Talento RRHH',
   MINIMARKET: 'Minimarket / Bodega',
   VETERINARIA: 'Veterinaria / Mascotas',
+  OFICIO_ESPECIFICO: 'Oficio / Servicio Especializado',
 };
 
 const HOUSEKEEPING_HOTEL_RX =
@@ -501,11 +517,16 @@ interface RecordSectorClassification {
   specified: boolean;
   sectorKey: SectorKey | null;
   sectorLabel: string;
+  oficioId?: string | null;
+  macroCategoria?: string;
 }
 
 function classifyRecordSector(params: {
   negocioRubro?: string | null;
   tipoNegocio?: string | null;
+  macroCategoria?: string | null;
+  oficioEspecifico?: string | null;
+  oficioId?: string | null;
   negocioNombre?: string | null;
   negocioDescripcion?: string | null;
   panelIaJson?: string | null;
@@ -519,8 +540,9 @@ function classifyRecordSector(params: {
     String(attrs?.rubro || attrs?.sector || attrs?.categoria_rubro || '')
   );
   const tipo = normalizeText(String(params.tipoNegocio || ''));
+  const oficioEsp = normalizeText(String(params.oficioEspecifico || ''));
   const panelTitulo = normalizeText(
-    String(panel?.rubro_titulo || panel?.rubro_usuario || '')
+    String(panel?.rubro_titulo || panel?.rubro_usuario || panel?.oficio_especifico || '')
   );
 
   // Regla 4: detectar si el registro NO indica con claridad su rubro
@@ -533,12 +555,16 @@ function classifyRecordSector(params: {
     return { specified: false, sectorKey: null, sectorLabel: 'Rubro no especificado' };
   }
 
-  const declaredMeta = `${attrRubro} ${tipo} ${panelTitulo}`.trim();
+  const declaredMeta = `${attrRubro} ${tipo} ${oficioEsp} ${panelTitulo}`.trim();
   const isGenericTipo =
     !declaredMeta ||
     /^(comercio multirubro|tienda multirubro|general|varios|multirubro|servicios varios)$/.test(
       declaredMeta
     );
+
+  const resolvedOficioId = params.oficioId || (typeof panel?.oficio_id === 'string' ? panel.oficio_id : null);
+  const resolvedMacro = params.macroCategoria || (typeof panel?.macro_categoria === 'string' ? panel.macro_categoria : undefined);
+  const resolvedOficioLabel = params.oficioEspecifico || (typeof panel?.oficio_especifico === 'string' ? panel.oficio_especifico : params.tipoNegocio);
 
   const bizText = normalizeText(`${params.negocioNombre || ''} ${params.negocioDescripcion || ''}`);
   const itemText = normalizeText(`${params.itemNombre || ''} ${params.itemDescripcion || ''}`);
@@ -586,6 +612,16 @@ function classifyRecordSector(params: {
     return { specified: true, sectorKey: 'TURISMO', sectorLabel: SECTOR_LABELS.TURISMO };
   }
 
+  if (resolvedOficioId && !['farmacia_botica', 'restaurante_gastronomia', 'hotel_alojamiento', 'turismo_guias', 'taxi_movilidad_chofer', 'casa_cambio_divisas', 'housekeeping_hoteleria', 'ferreteria_materiales', 'veterinaria_mascotas', 'agencia_empleos_rrhh'].includes(resolvedOficioId)) {
+    return {
+      specified: true,
+      sectorKey: 'OFICIO_ESPECIFICO',
+      sectorLabel: String(resolvedOficioLabel || params.macroCategoria || SECTOR_LABELS.OFICIO_ESPECIFICO),
+      oficioId: resolvedOficioId,
+      macroCategoria: resolvedMacro,
+    };
+  }
+
   // Si tipo_negocio era genérico ("Comercio Multirubro") y ni el nombre ni la descripción aclaran el sector
   if (isGenericTipo) {
     return { specified: false, sectorKey: null, sectorLabel: 'Rubro no especificado' };
@@ -597,7 +633,13 @@ function classifyRecordSector(params: {
   if (base === 'TRANSPORTE') return { specified: true, sectorKey: 'TRANSPORTE', sectorLabel: SECTOR_LABELS.TRANSPORTE };
   if (base === 'CASA_CAMBIO') return { specified: true, sectorKey: 'CASA_CAMBIO', sectorLabel: SECTOR_LABELS.CASA_CAMBIO };
   if (base === 'TURISMO') return { specified: true, sectorKey: 'TURISMO', sectorLabel: SECTOR_LABELS.TURISMO };
-  return { specified: true, sectorKey: 'RESTAURANTE', sectorLabel: SECTOR_LABELS.RESTAURANTE };
+  return {
+    specified: true,
+    sectorKey: 'RESTAURANTE',
+    sectorLabel: SECTOR_LABELS.RESTAURANTE,
+    oficioId: resolvedOficioId,
+    macroCategoria: resolvedMacro,
+  };
 }
 
 const RESTAURANT_ROLE_CONFLICT_RX =
@@ -608,6 +650,30 @@ export function inferCategoryFromText(query: string): Rubro {
 }
 
 const MAX_CUSCO_DESTINATION_KM = 150;
+
+const CORE_STATIC_OFICIO_IDS = new Set([
+  'farmacia_botica',
+  'restaurante_gastronomia',
+  'hotel_alojamiento',
+  'turismo_guias',
+  'taxi_movilidad_chofer',
+  'casa_cambio_divisas',
+  'housekeeping_hoteleria',
+  'ferreteria_materiales',
+  'veterinaria_mascotas',
+  'agencia_empleos_rrhh',
+]);
+
+function extractTradeCandidateFromQuery(rawQuery: string): string {
+  return rawQuery
+    .replace(/^(hola|buenos dias|buenas tardes|buenas noches)[,\s]*/i, '')
+    .replace(
+      /^(quiero|necesito|busco|buscando|deseo|solicito|me urge|requiero|contratar|pedir|dame|mostrar)\s+(un|una|unos|unas|el|la)?\s*/i,
+      ''
+    )
+    .replace(/\b(en cusco|cerca de mi|a domicilio|urgente|abierto|abierta|ahora|por favor)\b/gi, '')
+    .trim();
+}
 
 export async function runConciergeSearch(
   db: DatabaseSync,
@@ -623,10 +689,11 @@ export async function runConciergeSearch(
   const userLng = typeof params.lng === 'number' && !Number.isNaN(params.lng) ? params.lng : -71.9788;
 
   const sectorIntent = resolveRequestedSector(params.query, params.categoria);
-  let detectedCategory: Rubro = params.categoria || sectorIntent.rubroBase;
-  if (sectorIntent.isHospitalityHousekeeping) {
-    detectedCategory = 'HOTEL';
-  }
+  let matchedOficio: OficioNormalizado | null =
+    !params.categoria && params.query.trim().length >= 3
+      ? findExactOrSynonymOficio(db, params.query)
+      : null;
+
   const normQuery = normalizeText(params.query);
   const openOnly = /\b(abierta|abierto|abiertas|abiertos|de turno|turno|24h|24 horas|ahora)\b/.test(
     normQuery
@@ -639,8 +706,40 @@ export async function runConciergeSearch(
   let aiUsed = false;
   let aiError: string | null = null;
 
+  // Expansión universal bajo demanda: si no coincidió con sector base ni catálogo conocido, crear/normalizar oficio
+  if (
+    !matchedOficio &&
+    !sectorIntent.explicit &&
+    !params.categoria &&
+    searchKeywords.length > 0 &&
+    params.query.trim().length >= 3
+  ) {
+    const candidate = extractTradeCandidateFromQuery(params.query);
+    if (candidate.length >= 3) {
+      const normalizedRes = await normalizeOficioWithAi(db, candidate);
+      matchedOficio = normalizedRes.oficio;
+      if (normalizedRes.ai_used) aiUsed = true;
+    }
+  }
+
+  const isCustomTradeSearch = Boolean(
+    matchedOficio &&
+      !CORE_STATIC_OFICIO_IDS.has(matchedOficio.oficio_id) &&
+      !sectorIntent.isHospitalityHousekeeping &&
+      !params.categoria
+  );
+
+  let detectedCategory: Rubro = params.categoria
+    ? params.categoria
+    : isCustomTradeSearch && matchedOficio?.rubro_base
+      ? matchedOficio.rubro_base
+      : sectorIntent.rubroBase;
+  if (sectorIntent.isHospitalityHousekeeping) {
+    detectedCategory = 'HOTEL';
+  }
+
   const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (apiKey && apiKey !== 'MY_GEMINI_API_KEY' && params.query.trim().length > 0 && !params.categoria) {
+  if (apiKey && apiKey !== 'MY_GEMINI_API_KEY' && params.query.trim().length > 0 && !params.categoria && !isCustomTradeSearch) {
     try {
       const ai = new GoogleGenAI({
         apiKey,
@@ -652,7 +751,7 @@ export async function runConciergeSearch(
         config: {
           systemInstruction: [
             'Eres el agente de búsqueda de la plataforma multinegocios La Chuspa en Cusco, Perú.',
-            'Tu tarea es buscar ofertas, productos o servicios respetando estrictamente la categoría o rubro del negocio para evitar confusiones entre sectores parecidos.',
+            'Tu tarea es buscar ofertas, productos, oficios tradicionales o servicios respetando estrictamente la categoría o rubro del negocio para evitar confusiones entre sectores parecidos.',
             'Reglas estrictas de precisión por rubro:',
             '1) Prioriza siempre el rubro exacto solicitado (por ejemplo: si el usuario busca "housekeeping", "ama de llaves" o "camarería", usa HOTEL / Hotelería / Hospedaje / Alojamiento).',
             '2) Evita mezclar rubros distintos cuando el término pertenece a un sector específico: "Housekeeping" pertenece a Hotelería/Hospedaje (limpieza y acondicionamiento de habitaciones, camarería, ama de llaves). NO lo confundas con puestos de Restaurante (limpieza de cocina, salón, comedor, azafata o mozo).',
@@ -700,8 +799,8 @@ export async function runConciergeSearch(
     }
   }
 
-  // Si es TRANSPORTE: buscar SOLO unidades de conductores activas y certificadas con distancia Haversine
-  if (detectedCategory === 'TRANSPORTE') {
+  // Si es TRANSPORTE de pasajeros (y NO un oficio especializado como estibador/mudanza): buscar SOLO unidades de taxi
+  if (detectedCategory === 'TRANSPORTE' && (!isCustomTradeSearch || matchedOficio?.oficio_id === 'taxi_movilidad_chofer')) {
     const destResolved = extractServerDestination(params.query, destinoExtraido);
     const tripKmEstimate =
       destResolved.lat !== null && destResolved.lng !== null
@@ -873,17 +972,188 @@ export async function runConciergeSearch(
     };
   }
 
-  const targetSectorKey: SectorKey =
-    params.categoria && !sectorIntent.explicit
+  const targetSectorKey: SectorKey = isCustomTradeSearch
+    ? 'OFICIO_ESPECIFICO'
+    : params.categoria && !sectorIntent.explicit
       ? params.categoria === 'HOTEL'
         ? 'HOTELERIA'
         : params.categoria === 'FARMACIA'
-        ? 'FARMACIA'
-        : params.categoria === 'TURISMO'
-        ? 'TURISMO'
-        : 'RESTAURANTE'
+          ? 'FARMACIA'
+          : params.categoria === 'TURISMO'
+            ? 'TURISMO'
+            : 'RESTAURANTE'
       : sectorIntent.sectorKey;
-  const targetSectorLabel = SECTOR_LABELS[targetSectorKey];
+  const targetSectorLabel =
+    isCustomTradeSearch && matchedOficio
+      ? `${matchedOficio.nombre_oficial} (${matchedOficio.macro_categoria})`
+      : SECTOR_LABELS[targetSectorKey];
+
+  // Si el usuario buscó un oficio tradicional, técnico o personalizado específico (sastre, gasfitero, tapicero, etc.):
+  if (isCustomTradeSearch && matchedOficio) {
+    const tradeSynPool = Array.from(
+      new Set([
+        matchedOficio.oficio_id.replace(/_/g, ' '),
+        normalizeText(matchedOficio.nombre_oficial),
+        ...matchedOficio.sinonimos.map(normalizeText),
+        ...matchedOficio.etiquetas_busqueda.map(normalizeText),
+        ...searchKeywords,
+      ])
+    ).filter((t) => t.length >= 3);
+
+    const bizRows = db
+      .prepare(`
+        SELECT n.*,
+          (SELECT COUNT(*) FROM servicios_catalogo s
+           WHERE s.negocio_id = n.id AND s.disponible = 1 AND s.stock > 0) AS total_productos
+        FROM negocios n
+        WHERE n.activo = 1 AND n.en_linea = 1
+        ORDER BY n.calificacion DESC
+      `)
+      .all() as Array<{
+      id: number;
+      rubro: Rubro;
+      nombre: string;
+      descripcion: string;
+      zona: string;
+      lat: number;
+      lng: number;
+      calificacion: number;
+      horario_apertura?: string;
+      horario_cierre?: string;
+      abierto_24h?: number;
+      en_linea?: number;
+      tipo_negocio?: string;
+      macro_categoria?: string;
+      oficio_especifico?: string;
+      oficio_id?: string | null;
+      panel_ia_json?: string | null;
+      total_productos?: number;
+    }>;
+
+    const matchingBiz = bizRows
+      .map((n) => {
+        const cls = classifyRecordSector({
+          negocioRubro: n.rubro,
+          tipoNegocio: n.tipo_negocio,
+          macroCategoria: n.macro_categoria,
+          oficioEspecifico: n.oficio_especifico,
+          oficioId: n.oficio_id,
+          negocioNombre: n.nombre,
+          negocioDescripcion: n.descripcion,
+          panelIaJson: n.panel_ia_json,
+        });
+        const hay = normalizeText(
+          `${n.oficio_id || ''} ${n.oficio_especifico || ''} ${n.tipo_negocio || ''} ${n.nombre} ${n.descripcion}`
+        );
+        const directIdMatch =
+          n.oficio_id === matchedOficio!.oficio_id ||
+          cls.oficioId === matchedOficio!.oficio_id;
+        const termMatch = tradeSynPool.some((t) => hay.includes(t));
+        return {
+          ...n,
+          cls,
+          directIdMatch,
+          termMatch,
+          abiertoAhora: isBusinessOpenNow(n),
+          distanciaKm: haversineKm(userLat, userLng, n.lat, n.lng),
+        };
+      })
+      .filter((n) => n.cls.specified && (n.directIdMatch || n.termMatch))
+      .filter((n) => !openOnly || n.abiertoAhora)
+      .sort((a, b) => {
+        if (a.directIdMatch !== b.directIdMatch) return a.directIdMatch ? -1 : 1;
+        return a.distanciaKm - b.distanciaKm || b.calificacion - a.calificacion;
+      });
+
+    const unspecifiedBiz = bizRows.filter((n) => {
+      const cls = classifyRecordSector({
+        negocioRubro: n.rubro,
+        tipoNegocio: n.tipo_negocio,
+        macroCategoria: n.macro_categoria,
+        oficioEspecifico: n.oficio_especifico,
+        oficioId: n.oficio_id,
+        negocioNombre: n.nombre,
+        negocioDescripcion: n.descripcion,
+        panelIaJson: n.panel_ia_json,
+      });
+      if (cls.specified) return false;
+      const hay = normalizeText(`${n.nombre} ${n.descripcion}`);
+      return tradeSynPool.some((t) => hay.includes(t));
+    });
+
+    return {
+      categoria: matchedOficio.rubro_base || detectedCategory,
+      rubro_solicitado: targetSectorLabel,
+      sector_clave: 'OFICIO_ESPECIFICO' as const,
+      oficio_normalizado: matchedOficio,
+      sin_resultados_exactos: matchingBiz.length === 0,
+      modo_resultado: 'NEGOCIOS' as const,
+      respuesta_voz:
+        matchingBiz.length > 0
+          ? `Encontramos ${matchingBiz.length} especialista(s) en ${matchedOficio.nombre_oficial} (${matchedOficio.macro_categoria}): ${matchingBiz
+              .slice(0, 3)
+              .map((b) => b.nombre)
+              .join(', ')}.`
+          : `Catalogamos "${matchedOficio.nombre_oficial}" dentro de ${matchedOficio.macro_categoria}, pero aún no hay especialistas o negocios registrados en ese oficio en Cusco.`,
+      ai_used: aiUsed,
+      ai_error: aiError,
+      opciones: matchingBiz.map((n, idx) => ({
+        tipo: 'CATALOGO' as const,
+        es_negocio: true,
+        total_productos: Number(n.total_productos || 0),
+        negocio_id: n.id,
+        negocio_nombre: n.nombre,
+        categoria: n.rubro,
+        titulo: n.nombre,
+        descripcion: n.descripcion,
+        zona: n.zona,
+        lat: n.lat,
+        lng: n.lng,
+        abierto_ahora: n.abiertoAhora,
+        horario: n.abierto_24h
+          ? '24 horas'
+          : `${n.horario_apertura || '07:00'} - ${n.horario_cierre || '22:30'}`,
+        calificacion: n.calificacion,
+        distancia_km: n.distanciaKm,
+        eta_min: 15,
+        precio_centavos: 0,
+        mejor_precio: idx === 0,
+        disponible: true,
+        rubro_estado: 'EXACTO' as const,
+        rubro_etiqueta: matchedOficio!.nombre_oficial,
+        sector_clave: 'OFICIO_ESPECIFICO',
+        macro_categoria: matchedOficio!.macro_categoria,
+        oficio_id: matchedOficio!.oficio_id,
+      })),
+      registros_rubro_no_especificado: unspecifiedBiz.map((n) => ({
+        tipo: 'CATALOGO' as const,
+        es_negocio: true,
+        total_productos: Number(n.total_productos || 0),
+        negocio_id: n.id,
+        negocio_nombre: n.nombre,
+        categoria: n.rubro,
+        titulo: n.nombre,
+        descripcion: n.descripcion,
+        zona: n.zona,
+        lat: n.lat,
+        lng: n.lng,
+        abierto_ahora: isBusinessOpenNow(n),
+        horario: n.abierto_24h
+          ? '24 horas'
+          : `${n.horario_apertura || '07:00'} - ${n.horario_cierre || '22:30'}`,
+        calificacion: n.calificacion,
+        distancia_km: haversineKm(userLat, userLng, n.lat, n.lng),
+        eta_min: 15,
+        precio_centavos: 0,
+        mejor_precio: false,
+        disponible: true,
+        rubro_estado: 'NO_ESPECIFICADO' as const,
+        rubro_etiqueta: 'Rubro no especificado',
+        nota_rubro: 'Registro sin rubro claramente especificado; no se presenta como coincidencia exacta.',
+      })),
+      alternativas_otros_rubros: [],
+    };
+  }
 
   // Resto de categorías:
   // Regla: si el usuario pidió solo el negocio/categoría ("farmacias", "quiero una farmacia abierta", "restaurantes", "hoteles")
@@ -912,6 +1182,9 @@ export async function runConciergeSearch(
       abierto_24h?: number;
       en_linea?: number;
       tipo_negocio?: string;
+      macro_categoria?: string;
+      oficio_especifico?: string;
+      oficio_id?: string | null;
       panel_ia_json?: string | null;
       total_productos?: number;
     }>;
@@ -920,6 +1193,9 @@ export async function runConciergeSearch(
       const cls = classifyRecordSector({
         negocioRubro: n.rubro,
         tipoNegocio: n.tipo_negocio,
+        macroCategoria: n.macro_categoria,
+        oficioEspecifico: n.oficio_especifico,
+        oficioId: n.oficio_id,
         negocioNombre: n.nombre,
         negocioDescripcion: n.descripcion,
         panelIaJson: n.panel_ia_json,
@@ -1040,7 +1316,7 @@ export async function runConciergeSearch(
     .prepare(`
       SELECT s.*, n.rubro AS negocio_rubro, n.nombre AS negocio_nombre, n.descripcion AS negocio_descripcion,
              n.zona, n.calificacion, n.lat, n.lng, n.horario_apertura, n.horario_cierre, n.abierto_24h,
-             n.en_linea, n.tipo_negocio, n.panel_ia_json
+             n.en_linea, n.tipo_negocio, n.macro_categoria, n.oficio_especifico, n.oficio_id, n.panel_ia_json
       FROM servicios_catalogo s
       JOIN negocios n ON n.id = s.negocio_id
       WHERE n.activo = 1 AND n.en_linea = 1 AND s.disponible = 1 AND s.stock > 0
@@ -1069,6 +1345,9 @@ export async function runConciergeSearch(
     abierto_24h?: number;
     en_linea?: number;
     tipo_negocio?: string;
+    macro_categoria?: string;
+    oficio_especifico?: string;
+    oficio_id?: string | null;
     panel_ia_json?: string | null;
   }>;
 
@@ -1076,6 +1355,9 @@ export async function runConciergeSearch(
     const cls = classifyRecordSector({
       negocioRubro: r.negocio_rubro,
       tipoNegocio: r.tipo_negocio,
+      macroCategoria: r.macro_categoria,
+      oficioEspecifico: r.oficio_especifico,
+      oficioId: r.oficio_id,
       negocioNombre: r.negocio_nombre,
       negocioDescripcion: r.negocio_descripcion,
       panelIaJson: r.panel_ia_json,
@@ -1221,6 +1503,7 @@ export async function runConciergeSearch(
     categoria: detectedCategory,
     rubro_solicitado: targetSectorLabel,
     sector_clave: targetSectorKey,
+    ...(matchedOficio ? { oficio_normalizado: matchedOficio } : {}),
     sin_resultados_exactos: exactMatched.length === 0,
     modo_resultado: 'PRODUCTOS' as const,
     respuesta_voz: respuestaVoz,
@@ -1243,6 +1526,7 @@ export async function generateAiBusinessPanelConfig(params: {
   nombre?: string;
   descripcion?: string;
   zona?: string;
+  db?: DatabaseSync;
 }): Promise<AiBusinessPanelSchema> {
   const rubroUsuario = params.rubro_usuario.trim().slice(0, 120);
   if (rubroUsuario.length < 2) {
@@ -1263,7 +1547,7 @@ export async function generateAiBusinessPanelConfig(params: {
   });
 
   const promptContext = [
-    `Rubro / industria solicitada por el dueño: "${rubroUsuario}"`,
+    `Oficio, profesión, comercio o industria solicitada por el dueño: "${rubroUsuario}"`,
     params.nombre ? `Nombre comercial: "${params.nombre.trim()}"` : '',
     params.descripcion ? `Detalle adicional: "${params.descripcion.trim()}"` : '',
     params.zona ? `Ciudad / Zona: "${params.zona.trim()}"` : 'Ciudad: Cusco, Perú',
@@ -1278,21 +1562,29 @@ export async function generateAiBusinessPanelConfig(params: {
       contents: promptContext,
       config: {
         systemInstruction: [
-          'Eres el Arquitecto Multi-Rubro de La Chuspa.',
-          'Diseña la configuración completa y realista de un Panel de Control Empresarial en español para CUALQUIER rubro o negocio del mundo (ferretería, hotel, bolsa de empleos, restaurante, piñatería, veterinaria, taller mecánico, librería, spa, farmacia, minimarket, etc.).',
-          'Reglas obligatorias:',
-          '1) "rubro_base" debe ser EXACTAMENTE uno de: TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO (usa TRANSPORTE solo si es movilidad/taxis; HOTEL para hospedajes; FARMACIA para boticas/clínicas; TURISMO para viajes/eventos; CASA_CAMBIO para finanzas; RESTAURANTE para comercios generales, tiendas, ferreterías, empleos, piñaterías, etc.).',
-          '2) "unidades_medida": incluye entre 8 y 16 unidades REALES y específicas del rubro. Por ejemplo, si es Ferretería DEBES incluir unidades como: Unidad, Kilo (kg), Gramo (g), Litro (L), Metro (m), Pulgada (in), Pie (ft), Grosor (mm), Metro cúbico (m³), Cubo, Amperio (A), Grano, Caja, Rollo, Saco. Si es Hotel: Noche, Hora, Persona, Suite, Día, Paquete. Si es Empleos: Vacante, Hora, Jornada, Mes, Proyecto. Si es Piñatería: Unidad, Docena, Paquete, Metro, Combo, Ciento.',
-          '3) "campos_especificos": entre 4 y 6 campos técnicos del producto/servicio que aparecerán en el formulario de catálogo del dueño (key en snake_case, label en español, tipo "text"|"number"|"select", placeholder, unidad opcional, opciones si tipo==="select").',
-          '4) "modulos_panel": entre 2 y 4 módulos operativos. "tipo_herramienta" debe ser uno de: CALCULADORA_MEDIDAS, COTIZADOR_VOLUMEN, CHECKIN_CUPO, POSTULACIONES, COMANDA_COCINA, RECETARIO_STOCK, INFO.',
-          '5) "catalogo_inicial": entre 4 y 6 productos/servicios reales del rubro con precio_centavos (entero en céntimos de Sol, ej. 1550 = S/ 15.50), unidad_medida elegida de tu lista, stock (entero >= 1), y atributos como lista de pares { clave, valor }.',
-          '6) "tema_color": colores hex elegantes con buen contraste para primaryHex y accentHex.',
+          'Eres el clasificador y arquitecto universal de categorías y oficios de la plataforma multinegocios La Chuspa.',
+          'Tu misión es generar, clasificar y estructurar TODAS las categorías de trabajos, oficios, servicios y rubros que existen en el mundo, sin omitir oficios tradicionales, manuales, técnicos, informales, artísticos, agrícolas, de construcción, textiles, domésticos o profesionales.',
+          'Principios obligatorios:',
+          '1) Cobertura total: Incluye oficios como sastre, modista, gasfitero/fontanero, pintor, albañil, electricista, carpintero, cerrajero, mecánico, soldador, técnico de celulares, panadero, estibador, jardinero, fumigador, zapatero, ferretería, hotel, restaurante, botica, empleos, veterinaria, etc. Nunca excluyas oficios tradicionales ni informales.',
+          '2) Taxonomía en dos niveles: Asigna una "macro_categoria" amplia y clara, más "oficio_especifico", "oficio_id" (snake_case) y "sinonimos" regionales (ej. gasfitero = fontanero / plomero; sastre = modista / costurera).',
+          '3) "rubro_base" debe ser EXACTAMENTE uno de: TRANSPORTE, TURISMO, HOTEL, RESTAURANTE, FARMACIA, CASA_CAMBIO (usa TRANSPORTE para taxis/carga/estiba; HOTEL para hospedajes/housekeeping; FARMACIA para boticas/salud/veterinaria; TURISMO para viajes/eventos/educación/empleos; CASA_CAMBIO para divisas; RESTAURANTE para oficios del hogar, construcción, textil, técnicos, comercios, ferreterías, gastronomía, belleza, etc.).',
+          '4) "tipo_tarifa_sugerida": EXACTAMENTE uno de: por_hora, por_proyecto_cotizacion, por_prenda, por_servicio_fijo, por_dia.',
+          '5) "unidades_medida": incluye entre 6 y 16 unidades o modalidades reales del oficio/negocio (ej. Por prenda, Por hora, Por metro cuadrado m², Por punto, Por día, Unidad, Kilo kg, etc.).',
+          '6) "campos_especificos": entre 3 y 6 campos técnicos propios del oficio/producto (key en snake_case, label en español, tipo "text"|"number"|"select"|"boolean", placeholder, unidad opcional, opciones si tipo==="select").',
+          '7) "modulos_panel": entre 2 y 4 módulos operativos con "tipo_herramienta" uno de: CALCULADORA_MEDIDAS, COTIZADOR_VOLUMEN, CHECKIN_CUPO, POSTULACIONES, COMANDA_COCINA, RECETARIO_STOCK, INFO.',
+          '8) "catalogo_inicial": entre 3 y 6 productos/servicios reales del oficio o negocio con precio_centavos (entero en céntimos de Sol), unidad_medida elegida de tu lista, stock >= 1, y atributos [{ clave, valor }].',
+          '9) "tema_color": colores hex elegantes con buen contraste para primaryHex y accentHex.',
         ].join('\n'),
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
             rubro_base: { type: Type.STRING },
+            macro_categoria: { type: Type.STRING },
+            oficio_especifico: { type: Type.STRING },
+            oficio_id: { type: Type.STRING },
+            sinonimos: { type: Type.ARRAY, items: { type: Type.STRING } },
+            tipo_tarifa_sugerida: { type: Type.STRING },
             rubro_titulo: { type: Type.STRING },
             subtitulo_panel: { type: Type.STRING },
             badge_panel: { type: Type.STRING },
@@ -1375,6 +1667,9 @@ export async function generateAiBusinessPanelConfig(params: {
           },
           required: [
             'rubro_base',
+            'macro_categoria',
+            'oficio_especifico',
+            'oficio_id',
             'rubro_titulo',
             'subtitulo_panel',
             'badge_panel',
@@ -1403,9 +1698,10 @@ export async function generateAiBusinessPanelConfig(params: {
     throw new HttpError(502, 'La respuesta de Gemini AI no tuvo formato JSON válido.');
   }
 
+  const inferred = inferMacroAndRubroFromText(rubroUsuario);
   const validBase: Rubro = RUBROS.includes(parsed.rubro_base as Rubro)
     ? (parsed.rubro_base as Rubro)
-    : inferCategoryFromText(rubroUsuario);
+    : inferred.rubro_base || inferCategoryFromText(rubroUsuario);
 
   const allowedTools = new Set([
     'CALCULADORA_MEDIDAS',
@@ -1432,10 +1728,9 @@ export async function generateAiBusinessPanelConfig(params: {
             .replace(/[^a-z0-9_]/g, '_')
             .slice(0, 40) || `campo_${idx + 1}`,
         label: String(c?.label || `Especificación ${idx + 1}`).slice(0, 60),
-        tipo: (c?.tipo === 'number' || c?.tipo === 'select' ? c.tipo : 'text') as
-          | 'text'
-          | 'number'
-          | 'select',
+        tipo: (c?.tipo === 'number' || c?.tipo === 'select' || c?.tipo === 'boolean'
+          ? c.tipo
+          : 'text') as 'text' | 'number' | 'select' | 'boolean',
         placeholder: String(c?.placeholder || '').slice(0, 80),
         ...(c?.unidad ? { unidad: String(c.unidad).slice(0, 24) } : {}),
         ...(Array.isArray(c?.opciones) && c.opciones.length > 0
@@ -1485,10 +1780,68 @@ export async function generateAiBusinessPanelConfig(params: {
     ? String(parsed.tema_color.accentHex)
     : '#D4AF37';
 
+  const macroCategoria =
+    typeof parsed.macro_categoria === 'string' && parsed.macro_categoria.trim()
+      ? parsed.macro_categoria.trim().slice(0, 100)
+      : inferred.macro_categoria;
+  const oficioEspecifico =
+    typeof parsed.oficio_especifico === 'string' && parsed.oficio_especifico.trim()
+      ? parsed.oficio_especifico.trim().slice(0, 100)
+      : String(parsed.rubro_titulo || rubroUsuario).slice(0, 100);
+  const oficioId = slugifyOficioId(String(parsed.oficio_id || oficioEspecifico));
+  const sinonimos = Array.isArray(parsed.sinonimos)
+    ? parsed.sinonimos.map(String).filter(Boolean).slice(0, 12)
+    : [rubroUsuario.toLowerCase()];
+  const validTarifas: OficioTipoTarifa[] = [
+    'por_hora',
+    'por_proyecto_cotizacion',
+    'por_prenda',
+    'por_servicio_fijo',
+    'por_dia',
+  ];
+  const tipoTarifa = validTarifas.includes(parsed.tipo_tarifa_sugerida)
+    ? (parsed.tipo_tarifa_sugerida as OficioTipoTarifa)
+    : inferred.tipo_tarifa_sugerida;
+
+  if (params.db) {
+    upsertOficioCatalogo(
+      params.db,
+      {
+        oficio_id: oficioId,
+        nombre_oficial: oficioEspecifico,
+        macro_categoria: macroCategoria,
+        rubro_base: validBase,
+        sinonimos,
+        modalidades_disponibles: unidades,
+        tipo_tarifa_sugerida: tipoTarifa,
+        atributos_clave: campos.map((c) => ({
+          clave: c.key,
+          etiqueta: c.label,
+          tipo_dato:
+            c.tipo === 'number'
+              ? 'numero'
+              : c.tipo === 'select'
+                ? 'seleccion'
+                : c.tipo === 'boolean'
+                  ? 'booleano'
+                  : 'texto',
+          ...(c.opciones ? { opciones: c.opciones } : {}),
+        })),
+        etiquetas_busqueda: Array.from(new Set([rubroUsuario.toLowerCase(), ...sinonimos])),
+      },
+      'gemini'
+    );
+  }
+
   return {
     rubro_base: validBase,
     rubro_usuario: rubroUsuario,
-    rubro_titulo: String(parsed.rubro_titulo || rubroUsuario).slice(0, 90),
+    rubro_titulo: String(parsed.rubro_titulo || oficioEspecifico || rubroUsuario).slice(0, 90),
+    macro_categoria: macroCategoria,
+    oficio_especifico: oficioEspecifico,
+    oficio_id: oficioId,
+    sinonimos,
+    tipo_tarifa_sugerida: tipoTarifa,
     subtitulo_panel: String(
       parsed.subtitulo_panel || `Gestión especializada para ${rubroUsuario}`
     ).slice(0, 180),

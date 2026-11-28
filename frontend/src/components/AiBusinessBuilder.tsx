@@ -14,6 +14,7 @@ import { apiFetch } from '../lib/api.ts';
 import { buildClientFallbackPanelForRubro } from '../lib/aiPanelBuilder.ts';
 import {
   formatSoles,
+  OFICIO_TARIFA_LABELS,
   type AiBusinessPanelSchema,
 } from '../types.ts';
 
@@ -25,14 +26,18 @@ interface AiBusinessBuilderProps {
 }
 
 const PRESET_INDUSTRIES = [
+  'Sastre / Modista',
+  'Gasfitero / Fontanero',
+  'Pintor de Casas y Obras',
+  'Albañil / Maestro de Obra',
+  'Electricista Domiciliario',
+  'Carpintero / Ebanista',
+  'Técnico de Celulares',
+  'Mecánico Automotriz',
+  'Estibador / Mudanza',
   'Ferretería & Materiales',
   'Hotel Boutique',
-  'Agencia de Empleos',
   'Restaurante / Pollería',
-  'Piñatería & Eventos',
-  'Veterinaria & PetShop',
-  'Taller Automotriz',
-  'Botica / Salud',
 ] as const;
 
 export const AiBusinessBuilder: React.FC<AiBusinessBuilderProps> = ({
@@ -145,7 +150,7 @@ export const AiBusinessBuilder: React.FC<AiBusinessBuilderProps> = ({
           type="text"
           value={rubroPrompt}
           onChange={(e) => setRubroPrompt(e.target.value)}
-          placeholder='Ej: "Ferretería", "Hotel", "Empleos", "Piñatería", "Taller mecánico"...'
+          placeholder='Ej: "Sastre", "Gasfitero", "Pintor", "Albañil", "Técnico de celulares", "Ferretería"...'
           className="flex-1 min-h-[42px] px-3.5 rounded-xl border border-[#2563EB]/30 bg-white dark:bg-[#0B0E14] text-xs sm:text-sm text-[#14171F] dark:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]"
         />
         <button
@@ -168,7 +173,7 @@ export const AiBusinessBuilder: React.FC<AiBusinessBuilderProps> = ({
       {value && (
         <div className="rounded-xl border border-black/10 dark:border-white/10 bg-white/90 dark:bg-[#0B0E14]/90 p-3.5 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/8 dark:border-white/8 pb-2.5">
-            <div>
+            <div className="space-y-0.5">
               <p className="text-[10px] uppercase tracking-wider font-bold text-[#9A7B2C] dark:text-[#E5C158]">
                 {value.badge_panel}
               </p>
@@ -178,6 +183,20 @@ export const AiBusinessBuilder: React.FC<AiBusinessBuilderProps> = ({
               <p className="text-[11px] text-[#6A717E] dark:text-[#98A0AD]">
                 {value.subtitulo_panel}
               </p>
+              {(value.macro_categoria || value.tipo_tarifa_sugerida) && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px]">
+                  {value.macro_categoria && (
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-bold">
+                      {value.macro_categoria}
+                    </span>
+                  )}
+                  {value.tipo_tarifa_sugerida && (
+                    <span className="px-2 py-0.5 rounded bg-[#2563EB]/10 text-[#1E40AF] dark:text-[#93C5FD] font-semibold">
+                      Tarifa: {OFICIO_TARIFA_LABELS[value.tipo_tarifa_sugerida] || value.tipo_tarifa_sugerida}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-1.5 text-[10px] font-mono-tabular">
               <span
@@ -240,6 +259,7 @@ export const AiBusinessBuilder: React.FC<AiBusinessBuilderProps> = ({
                 <p key={c.key} className="text-[10px] text-[#6A717E] dark:text-[#98A0AD]">
                   • <span className="font-semibold text-[#14171F] dark:text-[#E2E8F0]">{c.label}</span>
                   {c.unidad ? ` (${c.unidad})` : ''}
+                  {c.tipo === 'boolean' ? ' [Sí/No]' : ''}
                 </p>
               ))}
             </div>

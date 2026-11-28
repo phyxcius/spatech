@@ -38,10 +38,12 @@ import {
 } from '../lib/peruDocs.ts';
 import {
   formatSoles,
+  OFICIO_TARIFA_LABELS,
   RUBRO_LABELS,
   type ConciergeOpcion,
   type DirectorioNegocio,
   type MetodoPago,
+  type OficioNormalizado,
   type PedidoPublico,
   type Rubro,
   type ServicioCatalogo,
@@ -155,6 +157,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
   const [taxiOpciones, setTaxiOpciones] = useState<ConciergeOpcion[]>([]);
   const [opciones, setOpciones] = useState<ConciergeOpcion[]>([]);
   const [rubroSolicitado, setRubroSolicitado] = useState<string>('');
+  const [oficioNormalizado, setOficioNormalizado] = useState<OficioNormalizado | null>(null);
   const [registrosRubroNoEspecificado, setRegistrosRubroNoEspecificado] = useState<ConciergeOpcion[]>([]);
   const [alternativasOtrosRubros, setAlternativasOtrosRubros] = useState<ConciergeOpcion[]>([]);
   const [modoResultado, setModoResultado] = useState<'NEGOCIOS' | 'PRODUCTOS'>('NEGOCIOS');
@@ -637,10 +640,11 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
       return;
     }
 
-    // 3. Otras categorías estrictas del concierge (Farmacia, Restaurante, Turismo, Hotel, Ferretería, Empleos)
+    // 3. Otras categorías estrictas del concierge (Farmacia, Restaurante, Turismo, Hotel, Ferretería, Empleos u Oficios Universales)
     setOpciones([]);
     setRegistrosRubroNoEspecificado([]);
     setAlternativasOtrosRubros([]);
+    setOficioNormalizado(null);
     setRubroSolicitado(parsedIntent.sectorLabel || RUBRO_LABELS[effectiveRubro]);
     setSelectedBusinessDrawer(null);
     setShowCatalogPriceTable(false);
@@ -655,6 +659,7 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         rubro_solicitado?: string;
         sin_resultados_exactos?: boolean;
         modo_resultado?: 'NEGOCIOS' | 'PRODUCTOS';
+        oficio_normalizado?: OficioNormalizado | null;
         respuesta_voz: string;
         destino_sugerido?: string;
         opciones: ConciergeOpcion[];
@@ -671,8 +676,15 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
         },
       });
       const returnedCat = res.categoria || effectiveRubro;
+      const returnedOficio = res.oficio_normalizado || null;
       const safeOpciones = (Array.isArray(res?.opciones) ? res.opciones : []).filter(
-        (op) => op.tipo !== 'TAXI' && op.categoria === returnedCat && op.rubro_estado !== 'NO_ESPECIFICADO' && op.rubro_estado !== 'OTRO_RUBRO'
+        (op) =>
+          op.tipo !== 'TAXI' &&
+          (op.categoria === returnedCat ||
+            (returnedOficio && op.oficio_id === returnedOficio.oficio_id) ||
+            op.sector_clave === 'OFICIO_ESPECIFICO') &&
+          op.rubro_estado !== 'NO_ESPECIFICADO' &&
+          op.rubro_estado !== 'OTRO_RUBRO'
       );
       const unspecifiedList = Array.isArray(res?.registros_rubro_no_especificado)
         ? res.registros_rubro_no_especificado
@@ -686,7 +698,13 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
           ? 'NEGOCIOS'
           : 'PRODUCTOS';
 
-      setRubroSolicitado(res.rubro_solicitado || parsedIntent.sectorLabel || RUBRO_LABELS[returnedCat]);
+      setOficioNormalizado(returnedOficio);
+      setRubroSolicitado(
+        res.rubro_solicitado ||
+          returnedOficio?.nombre_oficial ||
+          parsedIntent.sectorLabel ||
+          RUBRO_LABELS[returnedCat]
+      );
       setModoResultado(nextModo);
       setActiveCategory(returnedCat);
       setOpciones(safeOpciones);
@@ -1619,6 +1637,24 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                   ? 'Mostrando únicamente establecimientos verificados de este rubro · Toca uno para ver sus productos'
                   : 'Filtrado primero por rubro exacto y luego por rol, término o atributo'}
               </p>
+              {oficioNormalizado && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1.5 text-[11px]">
+                  <span className="px-2.5 py-0.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 font-bold">
+                    {oficioNormalizado.macro_categoria}
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-lg bg-[#1565F5]/10 border border-[#1565F5]/25 text-[#1565F5] dark:text-[#93C5FD] font-semibold">
+                    Tarifa sugerida: {OFICIO_TARIFA_LABELS[oficioNormalizado.tipo_tarifa_sugerida]}
+                  </span>
+                  {oficioNormalizado.sinonimos.slice(0, 3).map((syn) => (
+                    <span
+                      key={syn}
+                      className="px-2 py-0.5 rounded-lg bg-black/5 dark:bg-white/10 text-[#516478] dark:text-slate-300"
+                    >
+                      {syn}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1632,16 +1668,27 @@ export const ClientPortal: React.FC<ClientPortalProps> = ({
                 {replyText ||
                   'Para evitar confusiones entre sectores parecidos, no mezclamos ofertas de otros rubros como si fueran del mismo sector.'}
               </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery('');
-                  handleSearch('', activeCategory);
-                }}
-                className="min-h-[44px] px-5 rounded-xl border border-[#D4AF37]/50 text-xs font-medium text-[#9A7B2C] dark:text-[#E5C158] chuspa-google-btn"
-              >
-                Ver establecimientos de {RUBRO_LABELS[activeCategory]}
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                {oficioNormalizado && (
+                  <button
+                    type="button"
+                    onClick={() => setSubTab('OFICIOS')}
+                    className="min-h-[44px] px-5 rounded-xl bg-[#04334B] text-[#F5C400] text-xs font-bold"
+                  >
+                    Solicitar {oficioNormalizado.nombre_oficial} en Oficios Universal
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuery('');
+                    handleSearch('', activeCategory);
+                  }}
+                  className="min-h-[44px] px-5 rounded-xl border border-[#D4AF37]/50 text-xs font-medium text-[#9A7B2C] dark:text-[#E5C158] chuspa-google-btn"
+                >
+                  Ver establecimientos de {RUBRO_LABELS[activeCategory]}
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-5">

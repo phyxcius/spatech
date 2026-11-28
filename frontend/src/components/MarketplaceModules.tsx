@@ -34,7 +34,15 @@ import {
   isValidForeignDoc,
   type PeruDocumentLookupResult,
 } from '../lib/peruDocs.ts';
-import type { MetodoPago, SharedCustomerDoc } from '../types.ts';
+import {
+  OFICIO_TARIFA_LABELS,
+  type ConciergeOpcion,
+  type MetodoPago,
+  type OficioNormalizado,
+  type SharedCustomerDoc,
+} from '../types.ts';
+import { UNIVERSAL_OFICIOS_CLIENT_SEED } from '../lib/oficiosUniversal.ts';
+import { OficioAutocomplete } from './OficioAutocomplete.tsx';
 import { YapePlinTransferCheckoutBox } from './YapePlinTransferCheckoutBox.tsx';
 
 interface MarketplaceModuleProps {
@@ -1051,16 +1059,26 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
   customerDoc,
   onCustomerDocVerified,
 }) => {
-  const [oficio, setOficio] = useState<TechnicianItem['oficio']>('Gasfitería');
+  const defaultOficio = useMemo(
+    () =>
+      UNIVERSAL_OFICIOS_CLIENT_SEED.find((o) => o.oficio_id === 'gasfitero_fontanero') ||
+      UNIVERSAL_OFICIOS_CLIENT_SEED[0],
+    []
+  );
+  const [selectedOficio, setSelectedOficio] = useState<OficioNormalizado>(defaultOficio);
+  const [oficio, setOficio] = useState<string>(defaultOficio.nombre_oficial);
   const [solicitud, setSolicitud] = useState('Fuga en tubería de lavadero / baño');
   const [modo, setModo] = useState<'INMEDIATO' | 'PROGRAMAR'>('INMEDIATO');
   const [fechaProg, setFechaProg] = useState('Hoy · 16:00 hrs');
   const [selectedTech, setSelectedTech] = useState<TechnicianItem | null>(null);
+  const [liveProviders, setLiveProviders] = useState<TechnicianItem[]>([]);
+  const [attrValues, setAttrValues] = useState<Record<string, string>>({});
   const [visitBooking, setVisitBooking] = useState<{
     codigo: string;
     pin: string;
     tech: TechnicianItem;
     horario: string;
+    detalles?: string;
   } | null>(null);
   const [localDoc, setLocalDoc] = useState<SharedCustomerDoc | null>(customerDoc ?? null);
   const [nombre, setNombre] = useState(customerDoc?.nombre || '');
@@ -1075,6 +1093,37 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
     }
   }, [customerDoc?.verificado, customerDoc?.numero, customerDoc?.nombre]);
 
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ opciones?: ConciergeOpcion[] }>('/api/public/asistente', {
+      method: 'POST',
+      body: { query: selectedOficio.nombre_oficial, lat: -13.5167, lng: -71.9788 },
+    })
+      .then((res) => {
+        if (!active) return;
+        const opts = Array.isArray(res?.opciones) ? res.opciones : [];
+        const mapped: TechnicianItem[] = opts.map((op, idx) => ({
+          id: `live-${op.negocio_id}-${op.servicio_id || idx}`,
+          nombre: op.negocio_nombre,
+          oficio: selectedOficio.nombre_oficial as TechnicianItem['oficio'],
+          rating: op.calificacion || 4.8,
+          trabajos: 24 + idx * 7,
+          etaMin: op.eta_min || 18,
+          tarifaCentavos: op.precio_centavos > 0 ? op.precio_centavos : 3500,
+          masCercano: idx === 0,
+          enLinea: op.abierto_ahora !== false,
+          especialidad: op.titulo || op.descripcion || selectedOficio.nombre_oficial,
+        }));
+        setLiveProviders(mapped);
+      })
+      .catch(() => {
+        if (active) setLiveProviders([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedOficio.oficio_id, selectedOficio.nombre_oficial]);
+
   const activeDoc = customerDoc?.verificado ? customerDoc : localDoc;
   const isDocValid = Boolean(activeDoc?.verificado);
 
@@ -1085,7 +1134,46 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
     onCustomerDocVerified?.(doc);
   }
 
-  const visibleTechs = TECHNICIANS.filter((t) => t.oficio === oficio);
+  const visibleTechs = useMemo(() => {
+    if (liveProviders.length > 0) return liveProviders;
+    const normOf = oficio.toLowerCase();
+    const matchedStatic = TECHNICIANS.filter((t) => {
+      const k = t.oficio.toLowerCase();
+      return (
+        normOf.includes(k) ||
+        (k.includes('gasfit') && normOf.includes('gasfit')) ||
+        (k.includes('electri') && normOf.includes('electri')) ||
+        (k.includes('cerraj') && normOf.includes('cerraj'))
+      );
+    });
+    if (matchedStatic.length > 0) return matchedStatic;
+    return [
+      {
+        id: `universal-${selectedOficio.oficio_id}`,
+        nombre: `Red Verificada · ${selectedOficio.nombre_oficial}`,
+        oficio: selectedOficio.nombre_oficial as TechnicianItem['oficio'],
+        rating: 4.9,
+        trabajos: 38,
+        etaMin: 20,
+        tarifaCentavos:
+          selectedOficio.tipo_tarifa_sugerida === 'por_hora'
+            ? 3500
+            : selectedOficio.tipo_tarifa_sugerida === 'por_prenda'
+            ? 2000
+            : 4000,
+        masCercano: true,
+        enLinea: true,
+        especialidad: `${selectedOficio.macro_categoria} · Especialistas en ${selectedOficio.sinonimos.slice(0, 3).join(', ') || selectedOficio.nombre_oficial}.`,
+      },
+    ];
+  }, [liveProviders, oficio, selectedOficio]);
+
+  function handleSelectUniversalOficio(next: OficioNormalizado) {
+    setSelectedOficio(next);
+    setOficio(next.nombre_oficial);
+    setAttrValues({});
+    setSolicitud(`Necesito ${next.nombre_oficial.toLowerCase()}`);
+  }
 
   function handleConfirmVisit(e: React.FormEvent) {
     e.preventDefault();
@@ -1095,14 +1183,38 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
       return;
     }
     setDocError(null);
+    const detallesList = Object.entries(attrValues)
+      .filter(([, v]) => v && v.trim())
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' · ');
     setVisitBooking({
       codigo: `OFI-${Math.floor(1000 + Math.random() * 9000)}`,
       pin: String(Math.floor(1000 + Math.random() * 9000)),
       tech: selectedTech,
       horario: modo === 'INMEDIATO' ? `Llegada inmediata (~${selectedTech.etaMin} min)` : fechaProg,
+      detalles: detallesList || undefined,
     });
     setSelectedTech(null);
   }
+
+  const quickTradeSeeds = useMemo(
+    () =>
+      [
+        'gasfitero_fontanero',
+        'electricista_instalador',
+        'sastre_modista',
+        'pintor_brocha_acabados',
+        'albanil_maestro_obra',
+        'carpintero_ebanista',
+        'tecnico_celulares',
+        'mecanico_automotriz',
+        'cerrajero_24h',
+        'estibador_mudanza',
+      ]
+        .map((id) => UNIVERSAL_OFICIOS_CLIENT_SEED.find((o) => o.oficio_id === id))
+        .filter((o): o is OficioNormalizado => Boolean(o)),
+    []
+  );
 
   return (
     <section className="space-y-6">
@@ -1110,10 +1222,10 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="space-y-1">
             <p className="text-[10px] uppercase tracking-[0.2em] text-amber-400 font-bold">
-              Chuspa Oficios · Técnicos con Antecedentes Verificados
+              Chuspa Oficios Universal · Todos los Oficios del Mundo
             </p>
             <h2 className="font-display text-2xl sm:text-3xl font-semibold text-white">
-              Comparador de Oficios en Vivo
+              Buscador y Comparador de Oficios
             </h2>
           </div>
 
@@ -1145,41 +1257,50 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
           </div>
         </div>
 
-        {/* Resumen detectado por voz o editable */}
-        <div className="rounded-2xl border border-amber-500/30 bg-[#07090E] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex-1 space-y-1">
-            <div className="flex items-center gap-2">
+        {/* Autocompletado inteligente de cualquier oficio del mundo */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          <OficioAutocomplete
+            value={oficio}
+            selectedOficio={selectedOficio}
+            darkSurface
+            label="Busca cualquier oficio tradicional, técnico o profesional"
+            placeholder="Ej: Sastre, Gasfitero, Pintor, Albañil, Estibador, Técnico de celulares..."
+            onSelectOficio={handleSelectUniversalOficio}
+          />
+
+          <div className="rounded-2xl border border-amber-500/30 bg-[#07090E] p-3.5 space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">
-                Problema detectado
+                Trabajo o necesidad específica
               </span>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-semibold border border-amber-500/30">
-                {oficio}
+                {OFICIO_TARIFA_LABELS[selectedOficio.tipo_tarifa_sugerida]}
               </span>
             </div>
             <input
               type="text"
               value={solicitud}
               onChange={(e) => setSolicitud(e.target.value)}
-              className="w-full bg-transparent text-sm font-semibold text-white focus:outline-none border-b border-transparent focus:border-amber-400 pb-0.5"
+              className="w-full bg-transparent text-sm font-semibold text-white focus:outline-none border-b border-white/10 focus:border-amber-400 pb-1"
             />
           </div>
+        </div>
 
-          <div className="flex flex-wrap gap-2">
-            {(['Gasfitería', 'Electricidad', 'Cerrajería'] as const).map((cat) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => setOficio(cat)}
-                className={`min-h-[38px] px-3.5 rounded-xl text-xs font-semibold border transition-colors ${
-                  oficio === cat
-                    ? 'bg-amber-400 text-slate-950 border-amber-400'
-                    : 'border-white/15 text-slate-300 hover:border-amber-400/50'
-                }`}
-              >
-                {cat}
-              </button>
-            ))}
-          </div>
+        <div className="flex flex-wrap gap-1.5">
+          {quickTradeSeeds.map((item) => (
+            <button
+              key={item.oficio_id}
+              type="button"
+              onClick={() => handleSelectUniversalOficio(item)}
+              className={`min-h-[34px] px-3 rounded-xl text-xs font-semibold border transition-colors ${
+                selectedOficio.oficio_id === item.oficio_id
+                  ? 'bg-amber-400 text-slate-950 border-amber-400'
+                  : 'border-white/15 text-slate-300 hover:border-amber-400/50'
+              }`}
+            >
+              {item.nombre_oficial}
+            </button>
+          ))}
         </div>
 
         {modo === 'PROGRAMAR' && (
@@ -1207,13 +1328,14 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
         <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="space-y-1">
             <p className="text-xs font-bold text-emerald-500 uppercase tracking-wider">
-              ✓ Visita Técnica Confirmada ({visitBooking.codigo})
+              ✓ Visita / Servicio Confirmado ({visitBooking.codigo})
             </p>
             <p className="text-sm font-semibold text-[#14171F] dark:text-white">
               {visitBooking.tech.nombre} · {visitBooking.horario}
             </p>
             <p className="text-xs text-[#6A717E] dark:text-slate-300">
-              Inspección: {solicitud} · Pago protegido al aprobar la reparación
+              Solicitud: {solicitud}
+              {visitBooking.detalles ? ` · ${visitBooking.detalles}` : ''} · Pago protegido al aprobar
             </p>
           </div>
           <div className="rounded-xl bg-[#07090E] border border-emerald-500/30 px-4 py-2.5 text-center">
@@ -1322,13 +1444,80 @@ export const OficiosModule: React.FC<MarketplaceModuleProps> = ({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <form onSubmit={handleConfirmVisit} className="space-y-3">
+            <form onSubmit={handleConfirmVisit} className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
               <MandatoryDocGate
                 customerDoc={activeDoc}
                 onVerified={handleDocVerified}
                 contextLabel="Visita Técnica"
               />
               {docError && <p className="text-[11px] text-rose-400">{docError}</p>}
+              {selectedOficio.atributos_clave.length > 0 && (
+                <div className="rounded-2xl border border-white/10 bg-[#07090E] p-3 space-y-2">
+                  <p className="text-[10px] uppercase tracking-wider font-bold text-amber-400">
+                    Detalles de {selectedOficio.nombre_oficial}
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {selectedOficio.atributos_clave.map((attr) => (
+                      <div key={attr.clave}>
+                        <label className="block text-[10px] text-slate-300 mb-0.5">
+                          {attr.etiqueta}
+                        </label>
+                        {attr.tipo_dato === 'booleano' ? (
+                          <div className="grid grid-cols-2 gap-1">
+                            {(['Sí', 'No'] as const).map((opt) => (
+                              <button
+                                key={opt}
+                                type="button"
+                                onClick={() =>
+                                  setAttrValues((prev) => ({ ...prev, [attr.etiqueta]: opt }))
+                                }
+                                className={`min-h-[34px] rounded-lg border text-xs font-semibold ${
+                                  attrValues[attr.etiqueta] === opt
+                                    ? 'bg-amber-400 text-slate-950 border-amber-400'
+                                    : 'border-white/15 text-slate-300'
+                                }`}
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                        ) : attr.tipo_dato === 'seleccion' && attr.opciones && attr.opciones.length > 0 ? (
+                          <select
+                            value={attrValues[attr.etiqueta] || ''}
+                            onChange={(e) =>
+                              setAttrValues((prev) => ({
+                                ...prev,
+                                [attr.etiqueta]: e.target.value,
+                              }))
+                            }
+                            className="w-full min-h-[36px] px-2.5 rounded-lg border border-white/15 bg-[#0D1117] text-xs text-white"
+                          >
+                            <option value="">Seleccionar...</option>
+                            {attr.opciones.map((op) => (
+                              <option key={op} value={op}>
+                                {op}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            type={attr.tipo_dato === 'numero' ? 'number' : 'text'}
+                            value={attrValues[attr.etiqueta] || ''}
+                            onChange={(e) =>
+                              setAttrValues((prev) => ({
+                                ...prev,
+                                [attr.etiqueta]: e.target.value,
+                              }))
+                            }
+                            placeholder={attr.opciones?.join(' / ') || attr.etiqueta}
+                            className="w-full min-h-[36px] px-2.5 rounded-lg border border-white/15 bg-[#0D1117] text-xs text-white"
+                          />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <input
                 type="text"
                 required

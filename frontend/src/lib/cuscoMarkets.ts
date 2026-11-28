@@ -1,3 +1,6 @@
+import type { OficioNormalizado } from '../types.ts';
+import { findExactOrSynonymOficioClient } from './oficiosUniversal.ts';
+
 export interface RequestedMarketItem {
   sku: string;
   label: string;
@@ -400,7 +403,8 @@ export type SectorKey =
   | 'PINATERIA'
   | 'EMPLEOS'
   | 'MINIMARKET'
-  | 'VETERINARIA';
+  | 'VETERINARIA'
+  | 'OFICIO_ESPECIFICO';
 
 export interface SectorIntentInfo {
   sectorKey: SectorKey;
@@ -408,6 +412,7 @@ export interface SectorIntentInfo {
   rubroBase: 'TRANSPORTE' | 'TURISMO' | 'HOTEL' | 'RESTAURANTE' | 'FARMACIA' | 'CASA_CAMBIO';
   expandedTerms: string[];
   isHospitalityHousekeeping: boolean;
+  oficioMatch?: OficioNormalizado;
 }
 
 export interface ConciergeIntentResult {
@@ -432,6 +437,7 @@ export const SECTOR_LABELS: Record<SectorKey, string> = {
   EMPLEOS: 'Empleos & Talento RRHH',
   MINIMARKET: 'Minimarket / Bodega',
   VETERINARIA: 'Veterinaria / Mascotas',
+  OFICIO_ESPECIFICO: 'Oficios & Servicios Especializados',
 };
 
 const HOUSEKEEPING_HOTEL_RX =
@@ -445,6 +451,33 @@ const RESTAURANT_CORE_RX =
 
 export function detectSectorIntent(query: string): SectorIntentInfo {
   const q = normalizeText(query);
+
+  // 0. Estibador / Mudanza y oficios técnicos específicos antes que taxi o ferretería
+  const tradeMatch = findExactOrSynonymOficioClient(query);
+  const CORE_STATIC_OFICIOS = new Set([
+    'taxi_transporte',
+    'farmacia_botica',
+    'restaurante_gastronomia',
+    'hotel_alojamiento',
+    'housekeeping_hoteleria',
+    'ferreteria_materiales',
+    'turismo_guiado',
+    'veterinaria_mascotas',
+    'contador_asesoria',
+    'agencia_empleos',
+    'casa_cambio',
+  ]);
+
+  if (tradeMatch && tradeMatch.oficio_id === 'estibador_mudanza') {
+    return {
+      sectorKey: 'OFICIO_ESPECIFICO',
+      sectorLabel: tradeMatch.nombre_oficial,
+      rubroBase: tradeMatch.rubro_base || 'TRANSPORTE',
+      expandedTerms: [tradeMatch.nombre_oficial, ...tradeMatch.sinonimos, ...tradeMatch.etiquetas_busqueda],
+      isHospitalityHousekeeping: false,
+      oficioMatch: tradeMatch,
+    };
+  }
 
   // 1. Transporte / Taxi
   if (
@@ -525,9 +558,21 @@ export function detectSectorIntent(query: string): SectorIntentInfo {
     };
   }
 
+  // 4b. Oficio especializado o tradicional detectado (sastre, gasfitero, pintor, albañil, carpintero, mecánico, técnico celulares, etc.)
+  if (tradeMatch && !CORE_STATIC_OFICIOS.has(tradeMatch.oficio_id)) {
+    return {
+      sectorKey: 'OFICIO_ESPECIFICO',
+      sectorLabel: tradeMatch.nombre_oficial,
+      rubroBase: tradeMatch.rubro_base || 'RESTAURANTE',
+      expandedTerms: [tradeMatch.nombre_oficial, ...tradeMatch.sinonimos, ...tradeMatch.etiquetas_busqueda],
+      isHospitalityHousekeeping: false,
+      oficioMatch: tradeMatch,
+    };
+  }
+
   // 5. Sub-rubros específicos dentro de comercio / servicios
   if (
-    /\b(ferreteria|ferreterias|clavo|clavos|tornillo|tornillos|cemento|tubo|tubos|taladro|pintura|herramienta|herramientas|gasfiteria|construccion)\b/.test(
+    /\b(ferreteria|ferreterias|clavo|clavos|tornillo|tornillos|cemento|tubo|tubos|taladro|herramienta|herramientas)\b/.test(
       q
     )
   ) {
@@ -625,6 +670,9 @@ export function detectSectorIntent(query: string): SectorIntentInfo {
 export function classifyRecordSectorClient(params: {
   rubro?: string | null;
   tipo_negocio?: string | null;
+  macro_categoria?: string | null;
+  oficio_especifico?: string | null;
+  oficio_id?: string | null;
   nombre?: string | null;
   descripcion?: string | null;
   panel_ia_titulo?: string | null;
@@ -633,8 +681,10 @@ export function classifyRecordSectorClient(params: {
   specified: boolean;
   sectorKey: SectorKey | null;
   sectorLabel: string;
+  oficioId?: string;
 } {
   const tipo = normalizeText(params.tipo_negocio || '');
+  const oficioEsp = normalizeText(params.oficio_especifico || '');
   const attrRubro = normalizeText(params.atributos_rubro || '');
   const panelTitulo = normalizeText(params.panel_ia_titulo || '');
   const fullDesc = normalizeText(`${params.nombre || ''} ${params.descripcion || ''}`);
@@ -647,20 +697,20 @@ export function classifyRecordSectorClient(params: {
     return { specified: false, sectorKey: null, sectorLabel: 'Rubro no especificado' };
   }
 
-  const sectorSource = `${attrRubro} ${tipo} ${panelTitulo}`.trim();
+  const sectorSource = `${attrRubro} ${oficioEsp} ${tipo} ${panelTitulo}`.trim();
   const isGenericTipo =
     !sectorSource ||
     /^(comercio multirubro|tienda multirubro|general|varios|multirubro|servicios varios)$/.test(
       sectorSource
     );
 
-  // Detectar sub-rubro claro por tipo_negocio / panel_ia / atributos primero
+  // Detectar sub-rubro claro por tipo_negocio / oficio_especifico / panel_ia / atributos primero
   const probeText = isGenericTipo ? fullDesc : `${sectorSource} ${fullDesc}`;
 
   if (/(hotel|hostal|hospedaje|alojamiento|suite|suites|posada|lodge|housekeeping|ama de llaves|habitacion)/.test(probeText)) {
     return { specified: true, sectorKey: 'HOTELERIA', sectorLabel: SECTOR_LABELS.HOTELERIA };
   }
-  if (/(ferreteria|clavos|tornillos|construccion|herramienta)/.test(probeText)) {
+  if (/(ferreteria|clavos|tornillos|herramienta)/.test(probeText)) {
     return { specified: true, sectorKey: 'FERRETERIA', sectorLabel: SECTOR_LABELS.FERRETERIA };
   }
   if (/(pinateria|cotillon|pinata|globos)/.test(probeText)) {
@@ -681,7 +731,7 @@ export function classifyRecordSectorClient(params: {
   if (/(farmacia|botica|farmaceutic|soroche|apotecaria)/.test(probeText)) {
     return { specified: true, sectorKey: 'FARMACIA', sectorLabel: SECTOR_LABELS.FARMACIA };
   }
-  if (/(taxi|movilidad|flota|sedanes|transporte)/.test(probeText)) {
+  if (/(taxi|movilidad|flota|sedanes|transporte)/.test(probeText) && !/(estibador|mudanza)/.test(probeText)) {
     return { specified: true, sectorKey: 'TRANSPORTE', sectorLabel: SECTOR_LABELS.TRANSPORTE };
   }
   if (/(casa de cambio|divisa|dolares|euros)/.test(probeText)) {
@@ -689,6 +739,21 @@ export function classifyRecordSectorClient(params: {
   }
   if (/(turismo|guia|machu|excursion)/.test(probeText)) {
     return { specified: true, sectorKey: 'TURISMO', sectorLabel: SECTOR_LABELS.TURISMO };
+  }
+
+  // Oficio especializado / tradicional explícito
+  const matchedOficio = findExactOrSynonymOficioClient(`${params.oficio_especifico || ''} ${params.tipo_negocio || ''} ${params.panel_ia_titulo || ''}`);
+  if (params.oficio_id || params.oficio_especifico || matchedOficio) {
+    return {
+      specified: true,
+      sectorKey: 'OFICIO_ESPECIFICO',
+      sectorLabel:
+        params.oficio_especifico ||
+        matchedOficio?.nombre_oficial ||
+        params.tipo_negocio ||
+        SECTOR_LABELS.OFICIO_ESPECIFICO,
+      oficioId: params.oficio_id || matchedOficio?.oficio_id,
+    };
   }
 
   if (isGenericTipo) {

@@ -1,4 +1,10 @@
 import type { AiBusinessPanelSchema, Rubro } from '../types.ts';
+import {
+  findExactOrSynonymOficioClient,
+  inferMacroAndRubroClient,
+  mapOficioAtributosToCampos,
+  slugifyOficioClient,
+} from './oficiosUniversal.ts';
 
 function normalize(raw: string): string {
   return raw
@@ -616,21 +622,86 @@ export function buildClientFallbackPanelForRubro(params: {
     };
   }
 
-  // Generador Universal para cualquier otro negocio del mundo
-  const baseRubro: Rubro =
-    params.rubro_base_hint ||
-    (/(cambio|divisa|dolar|casa de cambio|financ)/.test(q)
-      ? 'CASA_CAMBIO'
-      : /(tour|viaje|agencia|guia|aventura)/.test(q)
-        ? 'TURISMO'
-        : 'RESTAURANTE');
+  // Perfiles dedicados para oficios tradicionales, manuales y técnicos
+  const matchedTrade = findExactOrSynonymOficioClient(rawInput);
+  if (
+    matchedTrade &&
+    !['ferreteria_materiales', 'hotel_alojamiento', 'agencia_empleos_rrhh', 'restaurante_gastronomia', 'farmacia_botica', 'turismo_guias', 'taxi_movilidad_chofer', 'casa_cambio_divisas', 'veterinaria_mascotas'].includes(
+      matchedTrade.oficio_id
+    )
+  ) {
+    const tradeCampos = mapOficioAtributosToCampos(matchedTrade.atributos_clave);
+    const baseRubro = params.rubro_base_hint || matchedTrade.rubro_base || 'RESTAURANTE';
+    return {
+      rubro_base: baseRubro,
+      rubro_usuario: rawInput,
+      rubro_titulo: matchedTrade.nombre_oficial,
+      macro_categoria: matchedTrade.macro_categoria,
+      oficio_especifico: matchedTrade.nombre_oficial,
+      oficio_id: matchedTrade.oficio_id,
+      sinonimos: matchedTrade.sinonimos,
+      tipo_tarifa_sugerida: matchedTrade.tipo_tarifa_sugerida,
+      subtitulo_panel: `Especialidad en ${matchedTrade.macro_categoria} · Sinónimos: ${matchedTrade.sinonimos.slice(0, 4).join(', ')}.`,
+      badge_panel: `Oficio Verificado · ${matchedTrade.macro_categoria.split(',')[0]}`,
+      tema_color: { primaryHex: '#1D4ED8', accentHex: '#D4AF37' },
+      terminologia: {
+        clienteLabel: 'Cliente / Solicitante',
+        pedidoLabel: 'Orden de Trabajo',
+        catalogoLabel: `Servicios de ${matchedTrade.nombre_oficial.split('/')[0].trim()}`,
+        nuevoItemBtn: 'Publicar Servicio / Tarifa',
+      },
+      unidades_medida: matchedTrade.modalidades_disponibles.length > 0
+        ? matchedTrade.modalidades_disponibles
+        : ['Por servicio', 'Por hora', 'A domicilio'],
+      campos_especificos: tradeCampos,
+      modulos_panel: [
+        {
+          id: 'calc_oficio',
+          titulo: `Cotizador de ${matchedTrade.nombre_oficial.split('/')[0].trim()}`,
+          descripcion: `Tarifas (${matchedTrade.tipo_tarifa_sugerida.replace(/_/g, ' ')}) y especificaciones técnicas del oficio.`,
+          tipo_herramienta: 'CALCULADORA_MEDIDAS',
+        },
+      ],
+      catalogo_inicial: [
+        {
+          nombre: `Servicio Estándar · ${matchedTrade.nombre_oficial.split('/')[0].trim()}`,
+          descripcion: `Atención garantizada en Cusco (${matchedTrade.sinonimos.slice(0, 3).join(' / ')}).`,
+          precio_centavos: 4500,
+          unidad_medida: matchedTrade.modalidades_disponibles[0] || 'Servicio',
+          stock: 20,
+          duracion_min: 60,
+          atributos: { especialidad: matchedTrade.nombre_oficial },
+        },
+        {
+          nombre: `Visita de Diagnóstico / Presupuesto en Domicilio`,
+          descripcion: `Evaluación técnica presencial en Cusco con cotización transparente.`,
+          precio_centavos: 2500,
+          unidad_medida: matchedTrade.modalidades_disponibles[1] || 'Visita',
+          stock: 25,
+          duracion_min: 40,
+          atributos: { atencion_domicilio: 'Sí' },
+        },
+      ],
+      generado_por: 'ia_estatico',
+      updated_at: now,
+    };
+  }
+
+  // Generador Universal para cualquier otro oficio, profesión o negocio del mundo
+  const inferred = inferMacroAndRubroClient(rawInput);
+  const baseRubro: Rubro = params.rubro_base_hint || inferred.rubro_base;
 
   return {
     rubro_base: baseRubro,
     rubro_usuario: rawInput,
-    rubro_titulo: `${rawInput} · Panel Inteligente Multi-Rubro`,
-    subtitulo_panel: `Entorno operativo personalizado para ${rawInput} con catálogo técnico, medidas flexibles y SUNAT.`,
-    badge_panel: `Panel IA · ${rawInput}`,
+    rubro_titulo: rawInput,
+    macro_categoria: inferred.macro_categoria,
+    oficio_especifico: rawInput,
+    oficio_id: slugifyOficioClient(rawInput),
+    sinonimos: [q],
+    tipo_tarifa_sugerida: inferred.tipo_tarifa_sugerida,
+    subtitulo_panel: `Entorno operativo personalizado para ${rawInput} (${inferred.macro_categoria}) con catálogo técnico, medidas flexibles y SUNAT.`,
+    badge_panel: `Panel IA · ${inferred.macro_categoria.split(',')[0]}`,
     tema_color: { primaryHex: '#2563EB', accentHex: '#D4AF37' },
     terminologia: {
       clienteLabel: 'Cliente',
@@ -642,6 +713,9 @@ export function buildClientFallbackPanelForRubro(params: {
       'Unidad',
       'Servicio',
       'Hora',
+      'Por día',
+      'Por prenda',
+      'Por proyecto',
       'Kilo (kg)',
       'Gramo (g)',
       'Litro (L)',
@@ -661,6 +735,12 @@ export function buildClientFallbackPanelForRubro(params: {
         placeholder: 'Ej: Talla, medida, capacidad, voltaje o presentación',
       },
       {
+        key: 'incluye_materiales',
+        label: 'Incluye materiales o insumos',
+        tipo: 'boolean',
+        placeholder: 'Sí / No',
+      },
+      {
         key: 'garantia_duracion',
         label: 'Garantía o duración',
         tipo: 'text',
@@ -671,7 +751,7 @@ export function buildClientFallbackPanelForRubro(params: {
       {
         id: 'calc_universal',
         titulo: 'Calculadora de Unidades & Cotización Rápida',
-        descripcion: `Herramienta de medidas, pesos y volúmenes adaptable para ${rawInput}.`,
+        descripcion: `Herramienta de medidas, tarifas y especificaciones adaptable para ${rawInput}.`,
         tipo_herramienta: 'CALCULADORA_MEDIDAS',
       },
     ],
@@ -683,7 +763,7 @@ export function buildClientFallbackPanelForRubro(params: {
         unidad_medida: 'Servicio',
         stock: 30,
         duracion_min: 30,
-        atributos: { especificacion_tecnica: 'Atención personalizada', garantia_duracion: 'Garantía La Chuspa' },
+        atributos: { especificacion_tecnica: 'Atención personalizada', incluye_materiales: 'No', garantia_duracion: 'Garantía La Chuspa' },
       },
       {
         nombre: `Paquete / Producto Destacado · ${rawInput}`,
@@ -692,7 +772,7 @@ export function buildClientFallbackPanelForRubro(params: {
         unidad_medida: 'Unidad',
         stock: 25,
         duracion_min: 20,
-        atributos: { especificacion_tecnica: 'Presentación estándar' },
+        atributos: { especificacion_tecnica: 'Presentación estándar', incluye_materiales: 'Sí' },
       },
     ],
     generado_por: 'ia_estatico',

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hashPin } from './security.ts';
+import { ensureUniversalOficiosCatalog } from './oficiosCatalog.ts';
 import type { Rubro } from './types.ts';
 
 export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachuspa.sqlite')): DatabaseSync {
@@ -320,6 +321,22 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
       token_facturacion TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS oficios_catalogo (
+      oficio_id TEXT PRIMARY KEY,
+      nombre_oficial TEXT NOT NULL,
+      macro_categoria TEXT NOT NULL,
+      rubro_base TEXT NOT NULL DEFAULT 'RESTAURANTE',
+      sinonimos_json TEXT NOT NULL DEFAULT '[]',
+      modalidades_json TEXT NOT NULL DEFAULT '[]',
+      tipo_tarifa_sugerida TEXT NOT NULL DEFAULT 'por_servicio_fijo',
+      atributos_clave_json TEXT NOT NULL DEFAULT '[]',
+      etiquetas_busqueda_json TEXT NOT NULL DEFAULT '[]',
+      generado_por TEXT NOT NULL DEFAULT 'semilla_universal',
+      uso_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Migración idempotente para bases SQLite existentes
@@ -348,6 +365,9 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     ['documento_numero', 'TEXT'],
     ['razon_social', 'TEXT'],
     ['tipo_negocio', "TEXT NOT NULL DEFAULT 'Comercio Multirubro'"],
+    ['macro_categoria', "TEXT NOT NULL DEFAULT 'Comercio, Abastecimiento y Ferretería'"],
+    ['oficio_especifico', "TEXT NOT NULL DEFAULT 'Comercio Multirubro'"],
+    ['oficio_id', 'TEXT'],
     ['modalidades_venta', "TEXT NOT NULL DEFAULT 'UNIDAD,SERVICIO'"],
     ['panel_ia_json', 'TEXT'],
     ['estado_regla', "TEXT NOT NULL DEFAULT 'ACTIVO'"],
@@ -408,6 +428,8 @@ export function initDatabase(dbPath = path.resolve(process.cwd(), 'data', 'lachu
     SET abierto_24h = 1, horario_apertura = '00:00', horario_cierre = '23:59'
     WHERE codigo IN ('NEG-FA-01', 'NEG-HO-01') AND abierto_24h = 0 AND horario_apertura = '07:00';
   `);
+
+  ensureUniversalOficiosCatalog(db);
 
   return db;
 }
